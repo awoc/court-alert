@@ -1,0 +1,95 @@
+use chrono::{Duration as ChronoDuration, TimeZone, Utc};
+
+use super::*;
+use crate::config::MonitoredCourt;
+use crate::domain::SlotObservation;
+
+fn court() -> MonitoredCourt {
+    toml::from_str(
+        r#"
+            id = "00000000-0000-0000-0000-000000000001"
+            name = "Court 1"
+        "#,
+    )
+    .unwrap()
+}
+
+fn observation(court: &MonitoredCourt) -> SlotObservation {
+    let starts_at = Utc.with_ymd_and_hms(2026, 6, 2, 8, 0, 0).unwrap();
+    SlotObservation {
+        court_id: court.id(),
+        court_name: court.name().to_owned(),
+        starts_at,
+        ends_at: starts_at + ChronoDuration::hours(1),
+        booking_closes_at: None,
+        available_places: 1,
+        already_booked: false,
+        already_in_cart: false,
+        already_on_waiting_list: false,
+        blocked_by_resource: false,
+    }
+}
+
+#[test]
+fn quiet_first_poll_is_used_only_for_an_empty_initial_snapshot() {
+    let empty = MonitorState::new(BookableSlotSnapshot::new(), true);
+    assert!(empty.suppress_next_publish);
+
+    let court = court();
+    let observed_at = Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
+    let populated = build_snapshot(vec![(&court, vec![observation(&court)])], observed_at);
+    let restored = MonitorState::new(populated, true);
+    assert!(!restored.suppress_next_publish);
+}
+
+#[test]
+fn committing_a_poll_enables_future_publication() {
+    let mut state = MonitorState::new(BookableSlotSnapshot::new(), true);
+    state.commit(BookableSlotSnapshot::new());
+    assert!(!state.suppress_next_publish);
+}
+
+#[test]
+fn operating_window_uses_berlin_time_and_excludes_its_end() {
+    assert!(is_within_operating_window(
+        Utc.with_ymd_and_hms(2026, 6, 2, 6, 0, 0).unwrap(),
+        8,
+        24,
+    ));
+    assert!(!is_within_operating_window(
+        Utc.with_ymd_and_hms(2026, 6, 2, 5, 59, 0).unwrap(),
+        8,
+        24,
+    ));
+    assert!(!is_within_operating_window(
+        Utc.with_ymd_and_hms(2026, 6, 2, 22, 0, 0).unwrap(),
+        8,
+        24,
+    ));
+}
+
+#[test]
+fn snapshot_keeps_the_last_duplicate_observation() {
+    let court = court();
+    let first = observation(&court);
+    let mut duplicate = first.clone();
+    duplicate.available_places = 3;
+    let observed_at = Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
+
+    let snapshot = build_snapshot(vec![(&court, vec![first, duplicate])], observed_at);
+
+    assert_eq!(snapshot.len(), 1);
+    assert_eq!(snapshot.values().next().unwrap().available_places, 3);
+}
+
+#[test]
+fn snapshot_excludes_observations_that_are_not_bookable() {
+    let court = court();
+    let mut blocked = observation(&court);
+    blocked.blocked_by_resource = true;
+    let observed_at = Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
+
+    let snapshot = build_snapshot(vec![(&court, vec![blocked])], observed_at);
+
+    assert!(snapshot.is_empty());
+}

@@ -1,0 +1,43 @@
+use chrono::{DateTime, Utc};
+use rusqlite::Row;
+use uuid::Uuid;
+
+use crate::domain::BookableSlot;
+
+use super::DbRepr;
+
+pub(super) struct BookableSlotRow {
+    court_id: String,
+    court_name: String,
+    starts_at: String,
+    ends_at: String,
+    available_places: u32,
+}
+
+impl TryFrom<&Row<'_>> for BookableSlotRow {
+    type Error = rusqlite::Error;
+
+    fn try_from(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            court_id: row.get("product_id")?,
+            court_name: row.get("product_name")?,
+            starts_at: row.get("start_at")?,
+            ends_at: row.get("end_at")?,
+            available_places: row.get("availability")?,
+        })
+    }
+}
+
+impl TryFrom<BookableSlotRow> for BookableSlot {
+    type Error = rusqlite::Error;
+
+    fn try_from(row: BookableSlotRow) -> rusqlite::Result<Self> {
+        Ok(Self {
+            court_id: Uuid::from_db(row.court_id)?,
+            court_name: row.court_name,
+            starts_at: DateTime::<Utc>::from_db(row.starts_at)?,
+            ends_at: DateTime::<Utc>::from_db(row.ends_at)?,
+            available_places: row.available_places,
+        })
+    }
+}

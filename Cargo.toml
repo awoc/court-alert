@@ -1,0 +1,26 @@
+[package]
+name = "court-alert"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.97"
+
+[dependencies]
+anyhow = "1.0.103"
+async-trait = "0.1.89"
+chrono = { version = "0.4.45", features = ["serde"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "cookies", "form", "rustls"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "time", "sync"] }
+toml = "1.1.2"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = { version = "1.23.4", features = ["v4", "serde"] }
+chrono-tz = "0.10.4"
+futures = "0.3.32"
+serenity = { version = "0.12.5", default-features = false, features = ["client", "gateway", "model", "rustls_backend"] }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+
+[dev-dependencies]
+tokio = { version = "1.52.3", features = ["test-util"] }
+wiremock = "0.6.5"

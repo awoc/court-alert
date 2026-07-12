@@ -1,0 +1,12 @@
+# Copy this file to config.toml, then replace products
+poll_interval_secs = 300
+lookahead_days = 7
+base_url = "https://kurse.zhs-muenchen.de"
+quiet_first_poll = true
+
+operating_window_start_hour = 8
+operating_window_end_hour = 24
+
+[[products]]
+id = "00000000-0000-0000-0000-000000000000"
+name = "Example court"
