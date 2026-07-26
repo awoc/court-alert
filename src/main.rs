@@ -3,14 +3,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::FormatTime;
+use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::util::SubscriberInitExt as _;
 
 use court_alert::config::{Config, Settings};
 use court_alert::monitor::Monitor;
-use court_alert::notify::{ChannelSink, DiscordNotifier};
+use court_alert::notify::{ChannelSink, DiscordErrorLayer, DiscordNotifier};
 use court_alert::ports::{AvailabilityChangeSink, SlotAvailabilitySource};
 use court_alert::providers::{self, ChatProvider};
 use court_alert::store::SqliteStore;
@@ -30,9 +32,32 @@ impl FormatTime for BerlinTime {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_tracing();
-
     let settings = Settings::from_env()?;
+    let monitoring_enabled = settings.discord_error_webhook.is_some();
+    init_tracing(settings.discord_error_webhook.clone())?;
+
+    let services = start(settings).await?;
+
+    let result = run(services).await;
+    if let Err(error) = &result {
+        error!(error = %format!("{error:#}"), "court-alert stopped");
+        if monitoring_enabled {
+            // Give the asynchronous monitoring-webhook worker time to flush a fatal error.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+    result
+}
+
+struct Services {
+    config: Config,
+    slot_source: Arc<dyn SlotAvailabilitySource>,
+    sinks: Vec<Box<dyn AvailabilityChangeSink>>,
+    chat_providers: Vec<Box<dyn ChatProvider>>,
+    store: Arc<SqliteStore>,
+}
+
+async fn start(settings: Settings) -> Result<Services> {
     let config = Config::load(&settings.config_path)?;
     let chat_providers = providers::build(&settings);
 
@@ -61,6 +86,24 @@ async fn main() -> Result<()> {
         Arc::new(ZhsSlotAvailabilitySource::new(auth));
     let store = Arc::new(SqliteStore::open(settings.db_path).await?);
 
+    Ok(Services {
+        config,
+        slot_source,
+        sinks,
+        chat_providers,
+        store,
+    })
+}
+
+async fn run(services: Services) -> Result<()> {
+    let Services {
+        config,
+        slot_source,
+        sinks,
+        chat_providers,
+        store,
+    } = services;
+
     if chat_providers.is_empty() {
         Monitor::new(config, slot_source, sinks, store).run().await
     } else {
@@ -68,11 +111,27 @@ async fn main() -> Result<()> {
     }
 }
 
-fn init_tracing() {
-    tracing_subscriber::fmt()
-        .with_timer(BerlinTime)
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+fn init_tracing(error_webhook: Option<reqwest::Url>) -> Result<()> {
+    let (error_layer, error_worker) = match error_webhook {
+        Some(url) => {
+            let (layer, worker) = DiscordErrorLayer::new(url)?;
+            (Some(layer), Some(worker))
+        }
+        None => (None, None),
+    };
+
+    tracing_subscriber::registry()
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with(tracing_subscriber::fmt::layer().with_timer(BerlinTime))
+        .with(error_layer)
         .init();
+
+    if let Some(worker) = error_worker {
+        tokio::spawn(worker.run());
+    } else {
+        info!("COURT_ALERT_DISCORD_ERROR_WEBHOOK not set — monitoring channel disabled");
+    }
+    Ok(())
 }
 
 async fn run_with_providers(

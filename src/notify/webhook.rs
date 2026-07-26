@@ -38,6 +38,7 @@ impl DiscordNotifier {
             .json(&Body { content })
             .send()
             .await
+            .map_err(reqwest::Error::without_url)
             .context("posting to Discord webhook")?;
         let status = resp.status();
         if !status.is_success() {
