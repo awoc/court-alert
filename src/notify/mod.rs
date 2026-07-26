@@ -1,6 +1,8 @@
+mod error_webhook;
 mod format;
 mod webhook;
 
+pub use error_webhook::DiscordErrorLayer;
 pub use webhook::DiscordNotifier;
 
 use anyhow::{Context, Result};

@@ -182,6 +182,7 @@ pub struct Settings {
     pub db_path: PathBuf,
     pub credentials: Credentials,
     pub discord_webhook: Option<reqwest::Url>,
+    pub discord_error_webhook: Option<reqwest::Url>,
     pub discord_bot: Option<DiscordSettings>,
 }
 
@@ -204,6 +205,7 @@ impl Settings {
                     .context("COURT_ALERT_PASSWORD environment variable not set")?,
             },
             discord_webhook: env_parsed("COURT_ALERT_DISCORD_WEBHOOK")?,
+            discord_error_webhook: env_parsed("COURT_ALERT_DISCORD_ERROR_WEBHOOK")?,
             discord_bot: discord_from_env()?,
         })
     }
