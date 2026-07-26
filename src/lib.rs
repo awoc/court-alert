@@ -1,3 +1,4 @@
+pub mod app;
 pub mod config;
 pub mod domain;
 pub mod monitor;
@@ -8,5 +9,5 @@ pub mod providers;
 pub mod store;
 pub mod subscriptions;
 mod text;
-mod time;
+pub mod time;
 pub mod zhs;

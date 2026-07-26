@@ -1,5 +1,9 @@
+use std::fmt;
+
 use chrono::{DateTime, Datelike, Days, NaiveDate, TimeZone, Timelike, Utc, Weekday};
 use chrono_tz::Europe::Berlin;
+use tracing_subscriber::fmt::format::Writer;
+use tracing_subscriber::fmt::time::FormatTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LocalSlotTime {
@@ -65,6 +69,17 @@ pub(crate) fn fmt_berlin_time(dt: DateTime<Utc>) -> String {
 
 pub(crate) fn fmt_hhmm(minute: u32) -> String {
     format!("{:02}:{:02}", minute / 60, minute % 60)
+}
+
+/// Stamps log lines with Berlin wall-clock time, matching the timezone every
+/// other rendered timestamp in the application uses.
+pub struct BerlinTime;
+
+impl FormatTime for BerlinTime {
+    fn format_time(&self, writer: &mut Writer<'_>) -> fmt::Result {
+        let now = Utc::now().with_timezone(&Berlin);
+        write!(writer, "{}", now.format("%Y-%m-%d %H:%M:%S%.3f %Z"))
+    }
 }
 
 #[cfg(test)]
