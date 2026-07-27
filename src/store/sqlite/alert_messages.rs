@@ -225,8 +225,11 @@ mod tests {
     }
 
     /// `AlertLine` carries no index, so rendering depends entirely on the
-    /// returned order. Insert the rows in reverse so that returning them in
-    /// insertion order would fail — the ordering cannot pass by luck.
+    /// returned order. Insert the rows in reverse to rule out an
+    /// insertion-order coincidence. Note that the schema's `WITHOUT ROWID`
+    /// clustering on `(message_id, line_index)` means this test alone cannot
+    /// detect a dropped `ORDER BY` — that contract is pinned by the port's
+    /// documentation, not by this test.
     #[tokio::test]
     async fn planned_lines_come_back_in_line_index_order() {
         let store = SqliteStore::open_in_memory().await.unwrap();
