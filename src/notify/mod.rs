@@ -1,3 +1,4 @@
+mod discord_http;
 mod error_webhook;
 mod format;
 mod webhook;

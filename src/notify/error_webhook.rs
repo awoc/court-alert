@@ -1,22 +1,22 @@
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::sync::mpsc;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context as LayerContext;
 
+use super::discord_http::{
+    HTTP_TIMEOUT, MAX_RATE_LIMIT_RETRIES, parse_retry_after, redact_discord_webhook_tokens,
+    retry_delay,
+};
+
 const APPLICATION_TARGET: &str = "court_alert";
 const DISCORD_MESSAGE_LIMIT: usize = 2_000;
 const ERROR_QUEUE_CAPACITY: usize = 256;
-const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
-const MAX_RATE_LIMIT_RETRIES: usize = 3;
-const DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(1);
-const MAX_RETRY_AFTER: Duration = Duration::from_secs(30);
 
 pub struct DiscordErrorLayer {
     tx: mpsc::Sender<String>,
@@ -128,11 +128,6 @@ impl DiscordErrorWorker {
             allowed_mentions: AllowedMentions<'a>,
         }
 
-        #[derive(Deserialize)]
-        struct RateLimitBody {
-            retry_after: Option<f64>,
-        }
-
         for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
             let response = self
                 .client
@@ -158,15 +153,7 @@ impl DiscordErrorWorker {
             }
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt < MAX_RATE_LIMIT_RETRIES
             {
-                let body_delay = serde_json::from_str::<RateLimitBody>(&body)
-                    .ok()
-                    .and_then(|body| body.retry_after)
-                    .and_then(duration_from_seconds);
-                let delay = header_delay
-                    .or(body_delay)
-                    .unwrap_or(DEFAULT_RETRY_AFTER)
-                    .min(MAX_RETRY_AFTER);
-                tokio::time::sleep(delay).await;
+                tokio::time::sleep(retry_delay(header_delay, &body)).await;
                 continue;
             }
 
@@ -198,46 +185,11 @@ fn batch_queued_messages(
     }
 }
 
-fn parse_retry_after(value: &str) -> Option<Duration> {
-    value.trim().parse().ok().and_then(duration_from_seconds)
-}
-
-fn duration_from_seconds(seconds: f64) -> Option<Duration> {
-    (seconds.is_finite() && seconds >= 0.0).then(|| Duration::from_secs_f64(seconds))
-}
-
 fn is_application_target(target: &str) -> bool {
     target == APPLICATION_TARGET
         || target
             .strip_prefix(APPLICATION_TARGET)
             .is_some_and(|suffix| suffix.starts_with("::"))
-}
-
-fn redact_discord_webhook_tokens(input: &str) -> String {
-    const MARKER: &str = "/api/webhooks/";
-    const REDACTED: &str = "[REDACTED]";
-
-    let mut output = input.to_string();
-    let mut search_from = 0;
-    while let Some(marker_offset) = output[search_from..].find(MARKER) {
-        let id_start = search_from + marker_offset + MARKER.len();
-        let Some(id_end_offset) = output[id_start..].find('/') else {
-            break;
-        };
-        let token_start = id_start + id_end_offset + 1;
-        let token_len = output[token_start..]
-            .chars()
-            .take_while(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
-            .map(char::len_utf8)
-            .sum::<usize>();
-        if token_len == 0 {
-            search_from = token_start;
-            continue;
-        }
-        output.replace_range(token_start..token_start + token_len, REDACTED);
-        search_from = token_start + REDACTED.len();
-    }
-    output
 }
 
 #[derive(Default)]
@@ -302,15 +254,6 @@ mod tests {
         assert!(warning.contains("**error:** request failed"));
         assert!(worker.rx.try_recv().unwrap().contains("provider failed"));
         assert!(worker.rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn redacts_discord_webhook_tokens() {
-        let input = "request failed for url (https://discord.com/api/webhooks/123/secret.Token-_)";
-        assert_eq!(
-            redact_discord_webhook_tokens(input),
-            "request failed for url (https://discord.com/api/webhooks/123/[REDACTED])"
-        );
     }
 
     #[test]
