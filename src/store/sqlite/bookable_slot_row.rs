@@ -19,11 +19,11 @@ impl TryFrom<&Row<'_>> for BookableSlotRow {
 
     fn try_from(row: &Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
-            court_id: row.get("product_id")?,
-            court_name: row.get("product_name")?,
-            starts_at: row.get("start_at")?,
-            ends_at: row.get("end_at")?,
-            available_places: row.get("availability")?,
+            court_id: row.get("court_id")?,
+            court_name: row.get("court_name")?,
+            starts_at: row.get("starts_at")?,
+            ends_at: row.get("ends_at")?,
+            available_places: row.get("available_places")?,
         })
     }
 }

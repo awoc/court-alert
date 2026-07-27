@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::params;
 use uuid::Uuid;
 
@@ -15,8 +15,8 @@ impl BookableSlotSnapshotRepository for SqliteStore {
         self.with_conn("load_bookable_slot_snapshot", |connection| {
             let mut statement = connection
                 .prepare(
-                    "SELECT product_id, product_name, start_at, end_at, availability
-                     FROM slot_state",
+                    "SELECT court_id, court_name, starts_at, ends_at, available_places
+                     FROM bookable_slots",
                 )
                 .context("preparing bookable-slot snapshot load")?;
             let rows = statement
@@ -38,13 +38,13 @@ impl BookableSlotSnapshotRepository for SqliteStore {
                 .transaction()
                 .context("starting bookable-slot snapshot transaction")?;
             transaction
-                .execute("DELETE FROM slot_state", [])
+                .execute("DELETE FROM bookable_slots", [])
                 .context("clearing bookable-slot snapshot")?;
             {
                 let mut statement = transaction
                     .prepare(
-                        "INSERT INTO slot_state
-                         (product_id, product_name, start_at, end_at, availability)
+                        "INSERT INTO bookable_slots
+                         (court_id, court_name, starts_at, ends_at, available_places)
                          VALUES (?1, ?2, ?3, ?4, ?5)",
                     )
                     .context("preparing bookable-slot insert")?;
@@ -89,8 +89,10 @@ impl DbRepr for Uuid {
 impl DbRepr for DateTime<Utc> {
     type Db = String;
 
+    /// Fixed-width UTC RFC 3339 with milliseconds, as the schema demands: it
+    /// sorts and compares as text, unlike the variable "+00:00" offset form.
     fn into_db(self) -> Result<Self::Db> {
-        Ok(self.to_rfc3339())
+        Ok(self.to_rfc3339_opts(SecondsFormat::Millis, true))
     }
 
     fn from_db(db: Self::Db) -> rusqlite::Result<Self> {

@@ -16,6 +16,17 @@ pub(super) fn build_snapshot(
         let mut bookable_count = 0;
 
         for observation in observations {
+            if observation.ends_at <= observation.starts_at {
+                warn!(
+                    court = %court.name(),
+                    court_id = %court.id(),
+                    start = %fmt_berlin_log(observation.starts_at),
+                    end = %fmt_berlin_log(observation.ends_at),
+                    "provider returned a slot that does not end after it starts; skipping"
+                );
+                continue;
+            }
+
             let Some(slot) = observation.into_bookable(observed_at) else {
                 continue;
             };
