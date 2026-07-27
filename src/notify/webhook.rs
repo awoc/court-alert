@@ -8,8 +8,6 @@ use tracing::debug;
 use crate::domain::AvailabilityChange;
 use crate::ports::AvailabilityChangeSink;
 
-use super::format::format_messages;
-
 pub struct DiscordNotifier {
     webhook_url: reqwest::Url,
     client: reqwest::Client,
@@ -52,19 +50,7 @@ impl DiscordNotifier {
 #[async_trait]
 impl AvailabilityChangeSink for DiscordNotifier {
     async fn publish(&self, changes: &[AvailabilityChange]) -> Result<()> {
-        if changes.is_empty() {
-            return Ok(());
-        }
-        let messages = format_messages(changes);
-        for (i, msg) in messages.iter().enumerate() {
-            debug!(
-                chunk = i + 1,
-                of = messages.len(),
-                bytes = msg.len(),
-                "discord: sending"
-            );
-            self.send(msg).await?;
-        }
+        let _ = changes;
         Ok(())
     }
 }
