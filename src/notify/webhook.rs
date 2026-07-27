@@ -177,6 +177,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(500))
+            .expect(1)
             .mount(&server)
             .await;
         let (notifier, store) = notifier(&server).await;
