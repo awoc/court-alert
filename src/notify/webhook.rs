@@ -2,12 +2,13 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use crate::domain::{AlertLine, AvailabilityChange};
 use crate::ports::{AlertMessageRepository, AvailabilityChangeSink};
+use crate::time::today_berlin;
 
 use super::discord_http::{
     HTTP_TIMEOUT, MAX_RATE_LIMIT_RETRIES, parse_retry_after, redact_discord_webhook_tokens,
@@ -242,6 +243,31 @@ impl DiscordNotifier {
             }
         }
     }
+
+    /// Housekeeping only, so it runs at most once per Berlin day: on SD-card
+    /// storage the write matters more than the freshness. Correctness comes
+    /// from running *after* `strike_removed`, not from the cadence.
+    async fn prune_daily(&self) {
+        let today = today_berlin();
+        if *self.last_pruned.lock().expect("prune guard poisoned") == Some(today) {
+            return;
+        }
+        match self.messages.prune_started(Utc::now()).await {
+            Ok(removed) => {
+                *self.last_pruned.lock().expect("prune guard poisoned") = Some(today);
+                if removed > 0 {
+                    debug!(
+                        removed,
+                        "discord: pruned alert messages whose slots all started"
+                    );
+                }
+            }
+            Err(error) => warn!(
+                error = %format!("{error:#}"),
+                "discord: pruning alert messages failed"
+            ),
+        }
+    }
 }
 
 #[async_trait]
@@ -252,8 +278,11 @@ impl AvailabilityChangeSink for DiscordNotifier {
         if changes.is_empty() {
             return Ok(());
         }
+        // Order matters: a slot that has already started when its removal is
+        // observed must be struck before pruning is allowed to drop its rows.
         self.strike_removed(changes).await;
         self.post_added(changes).await;
+        self.prune_daily().await;
         Ok(())
     }
 }
@@ -288,6 +317,19 @@ mod tests {
         (DiscordNotifier::new(url, store.clone()).unwrap(), store)
     }
 
+    /// Marks today's prune as already done, so `publish` skips `prune_daily`.
+    ///
+    /// `slot()` is pinned to 2026-06-02, which real wall-clock time has since
+    /// passed — deliberately, so the pruning tests get an already-started
+    /// slot for free. Tests that seed a row with `slot()` to exercise
+    /// strike/post/edit behaviour unrelated to pruning would otherwise have
+    /// that row swept out from under them by the very first `publish` call.
+    /// This opts such a test out of that housekeeping, exactly as `publish`
+    /// itself would on any day after the first.
+    fn disable_pruning_for_today(notifier: &DiscordNotifier) {
+        *notifier.last_pruned.lock().unwrap() = Some(crate::time::today_berlin());
+    }
+
     #[tokio::test]
     async fn posting_waits_for_the_message_id_and_records_the_lines() {
         let server = MockServer::start().await;
@@ -301,6 +343,7 @@ mod tests {
             .mount(&server)
             .await;
         let (notifier, store) = notifier(&server).await;
+        disable_pruning_for_today(&notifier);
         let added = slot("Court 2", 18);
 
         notifier
@@ -490,6 +533,7 @@ mod tests {
             .mount(&server)
             .await;
         let (notifier, store) = notifier(&server).await;
+        disable_pruning_for_today(&notifier);
         let gone = slot("Court 2", 18);
         seed(&store, "1408", &gone).await;
 
@@ -545,6 +589,7 @@ mod tests {
             .mount(&server)
             .await;
         let (notifier, store) = notifier(&server).await;
+        disable_pruning_for_today(&notifier);
         let gone = slot("Court 2", 18);
         seed(&store, "1408", &gone).await;
 
@@ -572,6 +617,7 @@ mod tests {
             .mount(&server)
             .await;
         let (notifier, store) = notifier(&server).await;
+        disable_pruning_for_today(&notifier);
         let gone = slot("Court 2", 18);
         seed(&store, "1408", &gone).await;
 
@@ -588,5 +634,58 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    /// The day-rollover case. A slot with no booking deadline stays bookable
+    /// past its own start time and only leaves the snapshot when the window
+    /// rolls at midnight, so its removal arrives when it has already started.
+    /// Pruning first would delete the rows before they could be struck.
+    #[tokio::test]
+    async fn an_already_started_slot_is_struck_before_pruning_can_drop_it() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/webhooks/123/token/messages/1408"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (notifier, store) = notifier(&server).await;
+        // 2026-06-02 18:00 UTC is long past by the time this test runs.
+        let started = slot("Court 2", 18);
+        seed(&store, "1408", &started).await;
+
+        notifier
+            .publish(&[AvailabilityChange::BecameUnbookable(started.clone())])
+            .await
+            .unwrap();
+
+        // The PATCH mock's expect(1) proves the edit happened. Pruning then
+        // removed the rows, because every slot in the message has started.
+        assert_eq!(
+            store.prune_started(Utc::now()).await.unwrap(),
+            0,
+            "publish already pruned the struck message"
+        );
+    }
+
+    #[tokio::test]
+    async fn pruning_runs_once_per_day() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "1408"
+            })))
+            .mount(&server)
+            .await;
+        let (notifier, _store) = notifier(&server).await;
+        let added = slot("Court 2", 18);
+        let changes = [AvailabilityChange::BecameBookable(added)];
+
+        notifier.publish(&changes).await.unwrap();
+        let after_first = *notifier.last_pruned.lock().unwrap();
+        notifier.publish(&changes).await.unwrap();
+
+        assert_eq!(after_first, Some(crate::time::today_berlin()));
+        assert_eq!(*notifier.last_pruned.lock().unwrap(), after_first);
     }
 }
