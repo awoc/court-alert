@@ -1,5 +1,6 @@
 mod bookable_slot_row;
 mod bookable_slot_snapshot;
+mod schema;
 mod subscription_row;
 mod subscriptions;
 
@@ -13,9 +14,18 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use tokio::task::spawn_blocking;
 
-fn init_schema(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../../../sql/schema.sql"))
-        .context("initializing schema")
+/// `journal_mode` is persisted in the database file, the rest apply per connection
+const PRAGMAS: &str = "
+    PRAGMA journal_mode = WAL;
+    PRAGMA synchronous = NORMAL;
+    PRAGMA foreign_keys = ON;
+    PRAGMA busy_timeout = 5000;
+";
+
+fn prepare(conn: &mut Connection) -> Result<()> {
+    conn.execute_batch(PRAGMAS)
+        .context("applying connection pragmas")?;
+    schema::ensure_current(conn)
 }
 
 pub struct SqliteStore {
@@ -50,9 +60,9 @@ impl SqliteStore {
                 .with_context(|| format!("creating DB directory {}", parent.display()))?;
         }
         let conn = spawn_blocking(move || -> Result<Connection> {
-            let conn = Connection::open(&path)
+            let mut conn = Connection::open(&path)
                 .with_context(|| format!("opening DB {}", path.display()))?;
-            init_schema(&conn)?;
+            prepare(&mut conn).with_context(|| format!("preparing DB {}", path.display()))?;
             Ok(conn)
         })
         .await
@@ -65,8 +75,8 @@ impl SqliteStore {
 impl SqliteStore {
     pub async fn open_in_memory() -> Result<Self> {
         let conn = spawn_blocking(|| -> Result<Connection> {
-            let conn = Connection::open_in_memory().context("opening in-memory DB")?;
-            init_schema(&conn)?;
+            let mut conn = Connection::open_in_memory().context("opening in-memory DB")?;
+            prepare(&mut conn).context("preparing in-memory DB")?;
             Ok(conn)
         })
         .await

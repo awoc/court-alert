@@ -3,6 +3,7 @@ use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use super::*;
 use crate::config::MonitoredCourt;
 use crate::domain::SlotObservation;
+use crate::store::SqliteStore;
 
 fn court() -> MonitoredCourt {
     toml::from_str(
@@ -80,6 +81,45 @@ fn snapshot_keeps_the_last_duplicate_observation() {
 
     assert_eq!(snapshot.len(), 1);
     assert_eq!(snapshot.values().next().unwrap().available_places, 3);
+}
+
+/// The store's `ends_at > starts_at` CHECK would otherwise abort persistence,
+/// and with it the whole tick, every poll the provider returned such a slot.
+#[test]
+fn snapshot_excludes_slots_that_do_not_end_after_they_start() {
+    let court = court();
+    let observed_at = Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
+
+    let mut inverted = observation(&court);
+    inverted.ends_at = inverted.starts_at - ChronoDuration::hours(1);
+    let mut empty_range = observation(&court);
+    empty_range.ends_at = empty_range.starts_at;
+
+    let snapshot = build_snapshot(vec![(&court, vec![inverted, empty_range])], observed_at);
+
+    assert!(snapshot.is_empty());
+}
+
+/// A malformed slot must not take the rest of the poll down with it.
+#[tokio::test]
+async fn a_malformed_slot_does_not_stop_the_others_from_persisting() {
+    let court = court();
+    let observed_at = Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
+
+    let good = observation(&court);
+    let mut malformed = observation(&court);
+    malformed.starts_at = good.starts_at + ChronoDuration::hours(2);
+    malformed.ends_at = malformed.starts_at - ChronoDuration::hours(1);
+
+    let snapshot = build_snapshot(vec![(&court, vec![good.clone(), malformed])], observed_at);
+    assert_eq!(snapshot.len(), 1);
+
+    let store = SqliteStore::open_in_memory().await.unwrap();
+    store
+        .replace_snapshot(snapshot.values().cloned().collect())
+        .await
+        .expect("a snapshot built from a malformed observation must still persist");
+    assert_eq!(store.load_snapshot().await.unwrap().len(), 1);
 }
 
 #[test]
