@@ -137,12 +137,35 @@ impl AlertMessageRepository for SqliteStore {
         .await
     }
 
-    async fn forget_message(&self, _message_id: &str) -> Result<()> {
-        todo!()
+    async fn forget_message(&self, message_id: &str) -> Result<()> {
+        let message_id = message_id.to_owned();
+        self.with_conn("forget_alert_message", move |connection| {
+            connection
+                .execute(
+                    "DELETE FROM alert_message_slots WHERE message_id = ?1",
+                    params![message_id],
+                )
+                .context("deleting alert-message rows")?;
+            Ok(())
+        })
+        .await
     }
 
-    async fn prune_started(&self, _now: DateTime<Utc>) -> Result<usize> {
-        todo!()
+    async fn prune_started(&self, now: DateTime<Utc>) -> Result<usize> {
+        let now = now.into_db()?;
+        self.with_conn("prune_started_alert_messages", move |connection| {
+            let removed = connection
+                .execute(
+                    "DELETE FROM alert_message_slots WHERE message_id IN (
+                         SELECT message_id FROM alert_message_slots
+                         GROUP BY message_id HAVING max(starts_at) <= ?1
+                     )",
+                    params![now],
+                )
+                .context("pruning started alert messages")?;
+            Ok(removed)
+        })
+        .await
     }
 }
 
@@ -288,5 +311,90 @@ mod tests {
             .unwrap();
 
         assert!(plans.is_empty());
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_message_removes_every_line() {
+        let store = SqliteStore::open_in_memory().await.unwrap();
+        let lines = vec![line("Court 1", 8), line("Court 2", 9)];
+        store.record_message("1408", &lines).await.unwrap();
+        store
+            .record_message("1409", &[line("Court 3", 10)])
+            .await
+            .unwrap();
+
+        store.forget_message("1408").await.unwrap();
+
+        assert!(
+            store
+                .plan_strikes(&[id_of(&lines[0])])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .plan_strikes(&[id_of(&lines[1])])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store.prune_started(far_future()).await.unwrap(),
+            1,
+            "1409 survived"
+        );
+    }
+
+    fn far_future() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2030, 1, 1, 0, 0, 0).unwrap()
+    }
+
+    #[tokio::test]
+    async fn pruning_drops_only_messages_whose_slots_have_all_started() {
+        let store = SqliteStore::open_in_memory().await.unwrap();
+        // Both slots at 08:00 and 09:00 on 2026-07-13.
+        store
+            .record_message("past", &[line("Court 1", 8), line("Court 2", 9)])
+            .await
+            .unwrap();
+        // One started, one still to come — the message must survive.
+        store
+            .record_message("mixed", &[line("Court 3", 8), line("Court 4", 20)])
+            .await
+            .unwrap();
+
+        // 10:00 on the same day: "past" is fully started, "mixed" is not.
+        let now = Utc.with_ymd_and_hms(2026, 7, 13, 10, 0, 0).unwrap();
+        let removed = store.prune_started(now).await.unwrap();
+
+        assert_eq!(removed, 2, "both lines of `past`, none of `mixed`");
+        assert_eq!(
+            store.prune_started(far_future()).await.unwrap(),
+            2,
+            "`mixed` is pruned once its later slot has started too"
+        );
+    }
+
+    #[tokio::test]
+    async fn pruning_an_empty_table_removes_nothing() {
+        let store = SqliteStore::open_in_memory().await.unwrap();
+        assert_eq!(store.prune_started(far_future()).await.unwrap(), 0);
+    }
+
+    /// A slot starting exactly at `now` has started. With a `<` comparison it
+    /// would survive, and since pruning runs once a day, survive until tomorrow.
+    #[tokio::test]
+    async fn a_slot_starting_exactly_now_counts_as_started() {
+        let store = SqliteStore::open_in_memory().await.unwrap();
+        let only = line("Court 1", 8);
+        store
+            .record_message("1408", std::slice::from_ref(&only))
+            .await
+            .unwrap();
+
+        let removed = store.prune_started(only.starts_at).await.unwrap();
+
+        assert_eq!(removed, 1);
     }
 }
