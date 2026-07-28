@@ -5,8 +5,9 @@ use anyhow::{Context as _, Result};
 use tracing::{info, warn};
 
 use crate::config::{Config, Settings};
+use crate::model::CourtCatalog;
 use crate::monitor::Monitor;
-use crate::notify::{ChannelSink, DiscordNotifier};
+use crate::notify::{ChannelSink, DiscordNotifier, SurfaceFilteredSink};
 use crate::ports::{AvailabilityChangeSink, SlotAvailabilitySource};
 use crate::providers::{self, ChatProvider};
 use crate::store::SqliteStore;
@@ -17,6 +18,7 @@ const PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct App {
     config: Config,
+    courts: Arc<CourtCatalog>,
     slot_source: Arc<dyn SlotAvailabilitySource>,
     sinks: Vec<Box<dyn AvailabilityChangeSink>>,
     chat_providers: Vec<Box<dyn ChatProvider>>,
@@ -26,19 +28,25 @@ pub struct App {
 impl App {
     pub async fn assemble(settings: Settings) -> Result<Self> {
         let config = Config::load(&settings.config_path)?;
+        let courts = Arc::new(config.catalog().clone());
         let chat_providers = providers::build(&settings);
 
         let store = Arc::new(SqliteStore::open(settings.db_path.clone()).await?);
 
         let mut sinks: Vec<Box<dyn AvailabilityChangeSink>> = Vec::new();
         match &settings.discord_webhook {
-            Some(url) => sinks.push(Box::new(DiscordNotifier::new(url.clone(), store.clone())?)),
+            Some(url) => sinks.push(SurfaceFilteredSink::wrap(
+                Box::new(DiscordNotifier::new(url.clone(), store.clone())?),
+                courts.clone(),
+                config.surface_filter(),
+            )),
             None => info!("COURT_ALERT_DISCORD_WEBHOOK not set — webhook notifier disabled"),
         }
         info!(
             courts = config.courts().len(),
             poll_interval_secs = config.poll_interval_secs(),
             lookahead_days = config.lookahead_days(),
+            surface_filter = %config.surface_filter(),
             webhook_notifiers = sinks.len(),
             chat_providers = chat_providers.len(),
             admins = chat_providers
@@ -56,6 +64,7 @@ impl App {
 
         Ok(Self {
             config,
+            courts,
             slot_source,
             sinks,
             chat_providers,
@@ -76,6 +85,7 @@ impl App {
     async fn run_with_providers(self) -> Result<()> {
         let Self {
             config,
+            courts,
             slot_source,
             mut sinks,
             chat_providers,
@@ -90,7 +100,8 @@ impl App {
             store.clone(),
             store.clone(),
             admins,
-            config.court_names(),
+            courts,
+            config.surface_filter(),
             Arc::new(BerlinClock),
         ));
         let dispatch = tokio::spawn(service.clone().dispatch_loop(rx));

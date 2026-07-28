@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::model::Court;
+use crate::model::{Court, CourtCatalog, CourtSurface, SurfaceFilter};
 
 const MAX_LOOKAHEAD_DAYS: i64 = 366;
 const DEFAULT_CONFIG_PATH: &str = "config.toml";
@@ -22,7 +22,8 @@ pub struct Config {
     quiet_first_poll: bool,
     operating_window_start_hour: u32,
     operating_window_end_hour: u32,
-    courts: Vec<Court>,
+    surface_filter: SurfaceFilter,
+    courts: CourtCatalog,
 }
 
 #[derive(Deserialize)]
@@ -36,6 +37,8 @@ struct ConfigFile {
     operating_window_start_hour: u32,
     #[serde(default = "default_window_end_hour")]
     operating_window_end_hour: u32,
+    #[serde(default)]
+    surface_filter: SurfaceFilter,
     #[serde(rename = "products")]
     courts: Vec<CourtEntry>,
 }
@@ -44,6 +47,8 @@ struct ConfigFile {
 struct CourtEntry {
     id: Uuid,
     name: String,
+    #[serde(default)]
+    surface: CourtSurface,
 }
 
 fn default_true() -> bool {
@@ -81,6 +86,7 @@ impl Config {
             quiet_first_poll: file.quiet_first_poll,
             operating_window_start_hour: file.operating_window_start_hour,
             operating_window_end_hour: file.operating_window_end_hour,
+            surface_filter: file.surface_filter,
             courts: validated_courts(file.courts)?,
         }
         .validate()
@@ -144,29 +150,43 @@ impl Config {
         self.operating_window_end_hour
     }
 
+    pub fn surface_filter(&self) -> SurfaceFilter {
+        self.surface_filter
+    }
+
     pub fn courts(&self) -> &[Court] {
+        self.courts.courts()
+    }
+
+    pub fn catalog(&self) -> &CourtCatalog {
         &self.courts
     }
 
     pub fn court_names(&self) -> Vec<String> {
-        self.courts
-            .iter()
-            .map(|court| court.name().to_owned())
-            .collect()
+        self.courts.names()
     }
 }
 
-fn validated_courts(entries: Vec<CourtEntry>) -> Result<Vec<Court>> {
+fn validated_courts(entries: Vec<CourtEntry>) -> Result<CourtCatalog> {
     anyhow::ensure!(!entries.is_empty(), "products must not be empty");
     let mut ids = HashSet::with_capacity(entries.len());
+    let mut numbers = HashSet::with_capacity(entries.len());
     let mut courts = Vec::with_capacity(entries.len());
     for entry in entries {
         let name = entry.name.trim().to_string();
         anyhow::ensure!(!name.is_empty(), "product {} has a blank name", entry.id);
         anyhow::ensure!(ids.insert(entry.id), "duplicate product id {}", entry.id);
-        courts.push(Court::new(entry.id, name));
+        let court = Court::new(entry.id, name, entry.surface);
+        if let Some(number) = court.number() {
+            anyhow::ensure!(
+                numbers.insert(number),
+                "duplicate court number {number} in product {:?}",
+                court.name()
+            );
+        }
+        courts.push(court);
     }
-    Ok(courts)
+    Ok(CourtCatalog::new(courts))
 }
 
 pub struct Credentials {
@@ -354,6 +374,55 @@ name = "Tennis Court 2"
         assert!(validated(&duplicate).is_err());
 
         assert!(validated(&SAMPLE.replace("Tennis Court 1", "   ")).is_err());
+    }
+
+    #[test]
+    fn validation_rejects_duplicate_court_numbers() {
+        assert!(
+            validated(&SAMPLE.replace("Tennis Court 2", "Tennis Court 1 - Synthetic")).is_err()
+        );
+    }
+
+    #[test]
+    fn products_are_clay_unless_they_say_otherwise() {
+        let cfg = Config::parse(SAMPLE).expect("parse");
+        assert_eq!(cfg.courts()[0].surface(), CourtSurface::Clay);
+
+        let configured = SAMPLE.replace(
+            "name = \"Tennis Court 2\"",
+            "name = \"Tennis Court 2\"\nsurface = \"synthetic\"",
+        );
+        let cfg = Config::parse(&configured).expect("parse");
+        assert_eq!(cfg.courts()[0].surface(), CourtSurface::Clay);
+        assert_eq!(cfg.courts()[1].surface(), CourtSurface::Synthetic);
+    }
+
+    #[test]
+    fn validation_rejects_an_unknown_product_surface() {
+        let configured = SAMPLE.replace(
+            "name = \"Tennis Court 2\"",
+            "name = \"Tennis Court 2\"\nsurface = \"grass\"",
+        );
+        assert!(validated(&configured).is_err());
+    }
+
+    #[test]
+    fn surface_filter_defaults_to_clay() {
+        let cfg = Config::parse(SAMPLE).expect("parse");
+        assert_eq!(cfg.surface_filter(), SurfaceFilter::CLAY);
+    }
+
+    #[test]
+    fn surface_filter_accepts_all_and_a_single_surface() {
+        for (raw, expected) in [
+            ("all", SurfaceFilter::All),
+            ("synthetic", SurfaceFilter::Only(CourtSurface::Synthetic)),
+        ] {
+            let cfg =
+                Config::parse(&format!("surface_filter = \"{raw}\"\n{SAMPLE}")).expect("parse");
+            assert_eq!(cfg.surface_filter(), expected);
+        }
+        assert!(validated(&format!("surface_filter = \"grass\"\n{SAMPLE}")).is_err());
     }
 
     #[test]

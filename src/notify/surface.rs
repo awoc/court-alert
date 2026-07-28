@@ -1,0 +1,174 @@
+use std::sync::Arc;
+
+use anyhow::Result;
+use async_trait::async_trait;
+
+use crate::model::{AvailabilityChange, CourtCatalog, SurfaceFilter};
+use crate::ports::AvailabilityChangeSink;
+
+pub struct SurfaceFilteredSink {
+    inner: Box<dyn AvailabilityChangeSink>,
+    catalog: Arc<CourtCatalog>,
+    filter: SurfaceFilter,
+}
+
+impl SurfaceFilteredSink {
+    pub fn wrap(
+        inner: Box<dyn AvailabilityChangeSink>,
+        catalog: Arc<CourtCatalog>,
+        filter: SurfaceFilter,
+    ) -> Box<dyn AvailabilityChangeSink> {
+        match filter {
+            SurfaceFilter::All => inner,
+            filter => Box::new(Self {
+                inner,
+                catalog,
+                filter,
+            }),
+        }
+    }
+}
+
+#[async_trait]
+impl AvailabilityChangeSink for SurfaceFilteredSink {
+    async fn publish(&self, changes: &[AvailabilityChange]) -> Result<()> {
+        let kept: Vec<AvailabilityChange> = changes
+            .iter()
+            .filter(|change| {
+                self.filter
+                    .allows(self.catalog.surface_of(change.slot().court_id))
+            })
+            .cloned()
+            .collect();
+        if kept.is_empty() {
+            return Ok(());
+        }
+        self.inner.publish(&kept).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{BookableSlot, Court, CourtSurface};
+    use chrono::{TimeZone, Utc};
+    use std::sync::Mutex;
+    use uuid::Uuid;
+
+    const CLAY_ID: Uuid = Uuid::from_u128(2);
+    const SYNTHETIC_ID: Uuid = Uuid::from_u128(19);
+
+    #[derive(Default)]
+    struct RecordingSink(Mutex<Vec<Vec<AvailabilityChange>>>);
+
+    #[async_trait]
+    impl AvailabilityChangeSink for Arc<RecordingSink> {
+        async fn publish(&self, changes: &[AvailabilityChange]) -> Result<()> {
+            self.0.lock().unwrap().push(changes.to_vec());
+            Ok(())
+        }
+    }
+
+    fn catalog() -> Arc<CourtCatalog> {
+        Arc::new(CourtCatalog::new(vec![
+            Court::new(CLAY_ID, "Court 2".into(), CourtSurface::Clay),
+            Court::new(
+                SYNTHETIC_ID,
+                "Court 19 - Synthetic".into(),
+                CourtSurface::Synthetic,
+            ),
+        ]))
+    }
+
+    fn slot(court_id: Uuid, court_name: &str) -> BookableSlot {
+        let starts_at = Utc.with_ymd_and_hms(2026, 6, 2, 18, 0, 0).unwrap();
+        BookableSlot {
+            court_id,
+            court_name: court_name.into(),
+            starts_at,
+            ends_at: starts_at + chrono::Duration::hours(1),
+            available_places: 1,
+        }
+    }
+
+    fn sink(filter: SurfaceFilter) -> (Box<dyn AvailabilityChangeSink>, Arc<RecordingSink>) {
+        let recorder = Arc::new(RecordingSink::default());
+        (
+            SurfaceFilteredSink::wrap(Box::new(recorder.clone()), catalog(), filter),
+            recorder,
+        )
+    }
+
+    fn published(recorder: &Arc<RecordingSink>) -> Vec<Vec<AvailabilityChange>> {
+        recorder.0.lock().unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn only_matching_surfaces_reach_the_inner_sink() {
+        let (sink, recorder) = sink(SurfaceFilter::CLAY);
+
+        sink.publish(&[
+            AvailabilityChange::BecameBookable(slot(CLAY_ID, "Court 2")),
+            AvailabilityChange::BecameBookable(slot(SYNTHETIC_ID, "Court 19 - Synthetic")),
+        ])
+        .await
+        .unwrap();
+
+        let batches = published(&recorder);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].len(), 1);
+        assert_eq!(batches[0][0].slot().court_name, "Court 2");
+    }
+
+    #[tokio::test]
+    async fn removals_are_filtered_the_same_way() {
+        let (sink, recorder) = sink(SurfaceFilter::CLAY);
+
+        sink.publish(&[AvailabilityChange::BecameUnbookable(slot(
+            SYNTHETIC_ID,
+            "Court 19 - Synthetic",
+        ))])
+        .await
+        .unwrap();
+
+        assert!(published(&recorder).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_batch_with_nothing_left_is_not_forwarded() {
+        let (sink, recorder) = sink(SurfaceFilter::Only(CourtSurface::Synthetic));
+
+        sink.publish(&[AvailabilityChange::BecameBookable(slot(CLAY_ID, "Court 2"))])
+            .await
+            .unwrap();
+
+        assert!(published(&recorder).is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_all_filter_forwards_everything_unchanged() {
+        let (sink, recorder) = sink(SurfaceFilter::All);
+        let changes = [
+            AvailabilityChange::BecameBookable(slot(CLAY_ID, "Court 2")),
+            AvailabilityChange::BecameBookable(slot(Uuid::nil(), "Retired court")),
+        ];
+
+        sink.publish(&changes).await.unwrap();
+
+        assert_eq!(published(&recorder), vec![changes.to_vec()]);
+    }
+
+    #[tokio::test]
+    async fn slots_of_unconfigured_courts_are_dropped() {
+        let (sink, recorder) = sink(SurfaceFilter::CLAY);
+
+        sink.publish(&[AvailabilityChange::BecameBookable(slot(
+            Uuid::nil(),
+            "Retired court",
+        ))])
+        .await
+        .unwrap();
+
+        assert!(published(&recorder).is_empty());
+    }
+}

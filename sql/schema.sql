@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     start_minute INTEGER NOT NULL CHECK (start_minute BETWEEN 0 AND 1440),
     end_minute   INTEGER NOT NULL CHECK (end_minute BETWEEN 0 AND 1440),
     courts       TEXT    CHECK (courts IS NULL OR (json_valid(courts) AND json_type(courts) = 'array')),
+    surface      TEXT    NOT NULL DEFAULT 'clay' CHECK (surface IN ('all', 'clay', 'synthetic')),
     created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                          CHECK (created_at IS strftime('%Y-%m-%dT%H:%M:%fZ', created_at)),
     -- Exactly one schedule kind: recurring weekday or single date.

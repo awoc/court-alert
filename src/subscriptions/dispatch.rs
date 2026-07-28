@@ -47,7 +47,7 @@ impl SubscriptionService {
         if subs.is_empty() {
             return;
         }
-        for (user, slots) in match_subscriptions(changes, &subs) {
+        for (user, slots) in match_subscriptions(changes, &subs, &self.courts) {
             let alert = AvailabilityAlert {
                 slots: slots.iter().map(Into::into).collect(),
             };
@@ -79,14 +79,15 @@ impl SubscriptionService {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testing::{service, service_with_store, subscribe_cmd, uref};
-    use crate::model::{AvailabilityChange, BookableSlot, Schedule, SubscriptionDraft, TimeRange};
+    use super::super::testing::{court_id, service, service_with_store, subscribe_cmd, uref};
+    use crate::model::{
+        AvailabilityChange, BookableSlot, Schedule, SubscriptionDraft, SurfaceFilter, TimeRange,
+    };
     use crate::ports::SubscriptionRepository;
     use crate::subscriptions::contract::{AvailabilityAlert, DirectMessageSender};
     use crate::time::today_berlin;
     use chrono::{TimeZone, Utc};
     use std::sync::{Arc, Mutex};
-    use uuid::Uuid;
 
     struct RecordingSender {
         sent: Mutex<Vec<(String, AvailabilityAlert)>>,
@@ -119,7 +120,7 @@ mod tests {
     fn bookable(name: &str) -> AvailabilityChange {
         let starts_at = Utc.with_ymd_and_hms(2026, 6, 2, 18, 0, 0).unwrap();
         AvailabilityChange::BecameBookable(BookableSlot {
-            court_id: Uuid::new_v4(),
+            court_id: court_id(name),
             court_name: name.into(),
             starts_at,
             ends_at: starts_at + chrono::Duration::hours(1),
@@ -194,6 +195,7 @@ mod tests {
                 schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
                 time_range: TimeRange::new(0, 24 * 60).unwrap(),
                 courts: None,
+                surface: SurfaceFilter::All,
             })
             .await
             .unwrap();
@@ -212,6 +214,7 @@ mod tests {
                 schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
                 time_range: TimeRange::new(0, 24 * 60).unwrap(),
                 courts: None,
+                surface: SurfaceFilter::All,
             })
             .await
             .unwrap();

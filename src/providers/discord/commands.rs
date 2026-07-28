@@ -56,9 +56,20 @@ fn build_subscribe_cmd() -> CreateCommand {
             CreateCommandOption::new(
                 CommandOptionType::String,
                 "courts",
-                "Courts (comma-separated, optional)",
+                "Court numbers (comma-separated, e.g. 2, 19)",
             )
             .max_length(500)
+            .required(false),
+        )
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::String,
+                "surface",
+                "Surface to watch; defaults to clay",
+            )
+            .add_string_choice("Clay", "clay")
+            .add_string_choice("Synthetic", "synthetic")
+            .add_string_choice("All", "all")
             .required(false),
         )
 }

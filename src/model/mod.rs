@@ -4,7 +4,7 @@ mod slot;
 mod subscription;
 
 pub use alert_message::{AlertLine, AlertMessage, StrikePlan};
-pub use court::Court;
+pub use court::{Court, CourtCatalog, CourtSurface, SurfaceFilter};
 pub use slot::{
     AvailabilityChange, BookableSlot, BookableSlotId, BookableSlotSnapshot, SlotObservation,
     diff_availability,

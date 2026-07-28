@@ -8,7 +8,7 @@
 use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = include_str!("../../../sql/schema.sql");
 
@@ -62,6 +62,8 @@ mod tests {
     const UPGRADE_TO_V1: &str = include_str!("../../../sql/migrations/0001_strict_schema.sql");
     const UPGRADE_TO_V2: &str =
         include_str!("../../../sql/migrations/0002_alert_message_slots.sql");
+    const UPGRADE_TO_V3: &str =
+        include_str!("../../../sql/migrations/0003_subscription_surface.sql");
 
     const LEGACY_SCHEMA: &str = "
         CREATE TABLE subscriptions (
@@ -106,6 +108,7 @@ mod tests {
     fn migrate_by_hand(conn: &mut Connection) {
         conn.execute_batch(UPGRADE_TO_V1).unwrap();
         conn.execute_batch(UPGRADE_TO_V2).unwrap();
+        conn.execute_batch(UPGRADE_TO_V3).unwrap();
         ensure_current(conn).unwrap();
     }
 
@@ -170,6 +173,7 @@ mod tests {
         conn.execute_batch(UPGRADE_TO_V1).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 1);
         conn.execute_batch(UPGRADE_TO_V2).unwrap();
+        conn.execute_batch(UPGRADE_TO_V3).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         assert!(table_sql(&conn, "bookable_slots").is_none());
 
@@ -198,6 +202,34 @@ mod tests {
         migrate_by_hand(&mut conn);
 
         assert!(conn.execute_batch(UPGRADE_TO_V2).is_err());
+    }
+
+    #[test]
+    fn third_migration_refuses_to_run_twice() {
+        let mut conn = legacy_database();
+        migrate_by_hand(&mut conn);
+
+        assert!(conn.execute_batch(UPGRADE_TO_V3).is_err());
+    }
+
+    #[test]
+    fn migration_gives_existing_subscriptions_the_surface_subscribe_would_pick() {
+        let mut conn = legacy_database();
+        migrate_by_hand(&mut conn);
+
+        let mut statement = conn
+            .prepare("SELECT courts IS NULL, surface FROM subscriptions ORDER BY id")
+            .unwrap();
+        let rows: Vec<(bool, String)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(
+            rows,
+            vec![(false, "all".to_string()), (true, "clay".to_string())]
+        );
     }
 
     /// The migration file repeats the subscriptions definition from
@@ -251,6 +283,9 @@ mod tests {
             // courts is not a JSON array
             "INSERT INTO subscriptions (provider, user_id, weekday, start_minute, end_minute, courts)
              VALUES ('discord', '12345', 2, 1080, 1320, 'Court 2')",
+            // surface outside the known domain
+            "INSERT INTO subscriptions (provider, user_id, weekday, start_minute, end_minute, surface)
+             VALUES ('discord', '12345', 2, 1080, 1320, 'grass')",
             // timestamp that is not canonical UTC RFC 3339
             "INSERT INTO bookable_slots
              VALUES ('123e4567-e89b-12d3-a456-426614174000', 'Court 1',

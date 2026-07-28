@@ -155,7 +155,8 @@ mod tests {
             store.clone(),
             store,
             HashSet::new(),
-            Vec::new(),
+            Arc::new(crate::model::CourtCatalog::default()),
+            crate::model::SurfaceFilter::All,
             Arc::new(BerlinClock),
         ));
         let (signals, barrier) = readiness(2);
