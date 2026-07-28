@@ -2,13 +2,14 @@ use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 
 use super::*;
 
-use crate::model::{Court, SlotObservation};
+use crate::model::{Court, CourtSurface, SlotObservation};
 use crate::store::SqliteStore;
 
 fn court() -> Court {
     Court::new(
         uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
         "Court 1".to_owned(),
+        CourtSurface::Clay,
     )
 }
 

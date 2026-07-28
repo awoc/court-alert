@@ -11,7 +11,7 @@ use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, NaiveDate, Utc};
 
-use crate::model::ProviderUserRef;
+use crate::model::{CourtCatalog, ProviderUserRef, SurfaceFilter};
 use crate::ports::{BookableSlotSnapshotRepository, SubscriptionRepository};
 use contract::DirectMessageSender;
 
@@ -36,7 +36,8 @@ pub struct SubscriptionService {
     slot_snapshots: Arc<dyn BookableSlotSnapshotRepository>,
     senders: RwLock<HashMap<String, Arc<dyn DirectMessageSender>>>,
     admins: HashSet<ProviderUserRef>,
-    known_courts: Vec<String>,
+    courts: Arc<CourtCatalog>,
+    default_surface: SurfaceFilter,
     clock: Arc<dyn Clock>,
 }
 
@@ -45,7 +46,8 @@ impl SubscriptionService {
         store: Arc<dyn SubscriptionRepository>,
         slot_snapshots: Arc<dyn BookableSlotSnapshotRepository>,
         admins: HashSet<ProviderUserRef>,
-        known_courts: Vec<String>,
+        courts: Arc<CourtCatalog>,
+        default_surface: SurfaceFilter,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
@@ -53,7 +55,8 @@ impl SubscriptionService {
             slot_snapshots,
             senders: RwLock::new(HashMap::new()),
             admins,
-            known_courts,
+            courts,
+            default_surface,
             clock,
         }
     }

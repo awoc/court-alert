@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{NaiveDate, Weekday};
 use rusqlite::Row;
 
-use crate::model::{ProviderUserRef, Schedule, Subscription, TimeRange};
+use crate::model::{ProviderUserRef, Schedule, Subscription, SurfaceFilter, TimeRange};
 
 use super::DbRepr;
 
@@ -15,6 +15,7 @@ pub(super) struct SubscriptionRow {
     start_minute: u32,
     end_minute: u32,
     courts: Option<String>,
+    surface: String,
 }
 
 impl TryFrom<&Row<'_>> for SubscriptionRow {
@@ -30,6 +31,7 @@ impl TryFrom<&Row<'_>> for SubscriptionRow {
             start_minute: row.get("start_minute")?,
             end_minute: row.get("end_minute")?,
             courts: row.get("courts")?,
+            surface: row.get("surface")?,
         })
     }
 }
@@ -53,6 +55,7 @@ impl TryFrom<SubscriptionRow> for Subscription {
             schedule: Schedule::from_db((row.weekday, row.on_date))?,
             time_range,
             courts: Option::<Vec<String>>::from_db(row.courts)?,
+            surface: SurfaceFilter::from_db(row.surface)?,
         })
     }
 }
@@ -89,6 +92,19 @@ impl DbRepr for Schedule {
                 "subscription row has neither or both of weekday/on_date".into(),
             )),
         }
+    }
+}
+
+impl DbRepr for SurfaceFilter {
+    type Db = String;
+
+    fn into_db(self) -> Result<Self::Db> {
+        Ok(self.to_string())
+    }
+
+    fn from_db(db: Self::Db) -> rusqlite::Result<Self> {
+        db.parse()
+            .map_err(|error| conversion_error(format!("invalid stored surface {db:?}: {error}")))
     }
 }
 

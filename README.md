@@ -11,6 +11,10 @@
    - `lookahead_days` — booking horizon to query.
    - `quiet_first_poll` — suppress alerts for slots already open when an empty database is initialized.
    - `operating_window_start_hour` / `operating_window_end_hour` — Berlin-local half-open polling window.
+   - `surface_filter` — `clay` (default), `synthetic` or `all`. Restricts what the webhook channel posts, and is the default for new subscriptions.
+   - `surface` on each `[[products]]` entry — `clay` (default) or `synthetic`.
+
+   Every court is polled whatever the filter says, so subscribers can still ask for a surface the channel does not carry.
 
    `config.toml` is intentionally ignored by Git. Set `COURT_ALERT_CONFIG_PATH` to use a configuration file at another path.
 
@@ -22,7 +26,7 @@
    | `COURT_ALERT_PASSWORD`              | Yes      | ZHS account password.                                                                              |
    | `COURT_ALERT_CONFIG_PATH`           | No       | Path to the TOML configuration file. Defaults to `config.toml`.                                    |
    | `COURT_ALERT_DB_PATH`               | No       | Path to the SQLite database. Defaults to `data/court-alert.db`.                                    |
-   | `COURT_ALERT_DISCORD_WEBHOOK`       | No       | Discord webhook URL that receives all availability changes.                                        |
+   | `COURT_ALERT_DISCORD_WEBHOOK`       | No       | Discord webhook URL that receives availability changes on the configured surfaces.                 |
    | `COURT_ALERT_DISCORD_ERROR_WEBHOOK` | No       | Discord monitoring-channel webhook that receives errors from background operations.                |
    | `COURT_ALERT_DISCORD_BOT_TOKEN`     | No       | Enables the Discord bot, slash commands, and DM subscription alerts.                               |
    | `COURT_ALERT_DISCORD_GUILD_ID`      | No       | Numeric Discord guild ID. With the bot enabled, commands are registered immediately in this guild. |

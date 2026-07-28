@@ -3,7 +3,10 @@ use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, Utc, Weekday};
 
-use crate::model::{BookableSlot, BookableSlotSnapshot, ProviderUserRef, Schedule};
+use crate::model::{
+    BookableSlot, BookableSlotSnapshot, Court, CourtCatalog, CourtSurface, ProviderUserRef,
+    Schedule, SurfaceFilter,
+};
 use crate::ports::BookableSlotSnapshotRepository;
 use crate::store::SqliteStore;
 use crate::subscriptions::contract::SubscriptionCommand;
@@ -18,8 +21,24 @@ pub(super) fn uref(id: &str) -> ProviderUserRef {
     }
 }
 
-fn known_courts() -> Vec<String> {
-    vec!["Court 2".into(), "Court 5".into()]
+pub(super) const SYNTHETIC_COURT: &str = "Court 19 - Synthetic";
+
+pub(super) fn catalog() -> Arc<CourtCatalog> {
+    Arc::new(CourtCatalog::new(vec![
+        Court::new(Uuid::from_u128(2), "Court 2".into(), CourtSurface::Clay),
+        Court::new(Uuid::from_u128(5), "Court 5".into(), CourtSurface::Clay),
+        Court::new(
+            Uuid::from_u128(19),
+            SYNTHETIC_COURT.into(),
+            CourtSurface::Synthetic,
+        ),
+    ]))
+}
+
+pub(super) fn court_id(name: &str) -> Uuid {
+    catalog()
+        .find_by_name(name)
+        .map_or_else(Uuid::new_v4, Court::id)
 }
 
 pub(super) struct FixedClock(pub(super) DateTime<Utc>);
@@ -47,13 +66,26 @@ fn build(
         store.clone(),
         store,
         admins,
-        known_courts(),
+        catalog(),
+        SurfaceFilter::All,
         clock,
     ))
 }
 
 pub(super) async fn service() -> Arc<SubscriptionService> {
     build(store().await, HashSet::new(), Arc::new(BerlinClock))
+}
+
+pub(super) async fn service_defaulting_to_clay() -> Arc<SubscriptionService> {
+    let store = store().await;
+    Arc::new(SubscriptionService::new(
+        store.clone(),
+        store,
+        HashSet::new(),
+        catalog(),
+        SurfaceFilter::CLAY,
+        Arc::new(BerlinClock),
+    ))
 }
 
 pub(super) async fn service_with_clock(today: NaiveDate) -> Arc<SubscriptionService> {
@@ -88,6 +120,7 @@ pub(super) fn subscribe_cmd(from: u32, to: u32) -> SubscriptionCommand {
         start_minute: from,
         end_minute: to,
         courts: None,
+        surface: None,
     }
 }
 
@@ -97,12 +130,13 @@ pub(super) fn date_subscribe_cmd(date: NaiveDate, from: u32, to: u32) -> Subscri
         start_minute: from,
         end_minute: to,
         courts: None,
+        surface: None,
     }
 }
 
 pub(super) fn open_slot(court: &str, starts_at: DateTime<Utc>) -> BookableSlot {
     BookableSlot {
-        court_id: Uuid::new_v4(),
+        court_id: court_id(court),
         court_name: court.into(),
         starts_at,
         ends_at: starts_at + chrono::Duration::hours(1),
@@ -120,7 +154,8 @@ pub(super) async fn service_with_slots(
         store.clone(),
         store,
         HashSet::new(),
-        known_courts(),
+        catalog(),
+        SurfaceFilter::All,
         Arc::new(FixedClock(now)),
     ))
 }
@@ -143,7 +178,8 @@ pub(super) async fn service_with_failing_slot_snapshot() -> Arc<SubscriptionServ
         store().await,
         Arc::new(FailingSlotSnapshotRepository),
         HashSet::new(),
-        known_courts(),
+        catalog(),
+        SurfaceFilter::All,
         Arc::new(BerlinClock),
     ))
 }

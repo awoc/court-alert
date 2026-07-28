@@ -9,7 +9,7 @@ use crate::ports::SubscriptionRepository;
 use super::{DbRepr, SqliteStore, SubscriptionRow};
 
 const SUB_COLUMNS: &str =
-    "id, provider, user_id, weekday, on_date, start_minute, end_minute, courts";
+    "id, provider, user_id, weekday, on_date, start_minute, end_minute, courts, surface";
 
 fn map_subscription(row: &Row<'_>) -> rusqlite::Result<Subscription> {
     Subscription::try_from(SubscriptionRow::try_from(row)?)
@@ -21,10 +21,11 @@ impl SubscriptionRepository for SqliteStore {
         self.with_conn("insert", move |conn| {
             let (weekday, on_date) = sub.schedule.into_db()?;
             let courts_json = sub.courts.into_db()?;
+            let surface = sub.surface.into_db()?;
             conn.execute(
                 "INSERT INTO subscriptions
-                 (provider, user_id, weekday, on_date, start_minute, end_minute, courts)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 (provider, user_id, weekday, on_date, start_minute, end_minute, courts, surface)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     sub.user.provider,
                     sub.user.user_id,
@@ -33,6 +34,7 @@ impl SubscriptionRepository for SqliteStore {
                     sub.time_range.start_minute(),
                     sub.time_range.end_minute(),
                     courts_json,
+                    surface,
                 ],
             )
             .context("inserting subscription")?;
@@ -133,7 +135,7 @@ impl SubscriptionRepository for SqliteStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Schedule, TimeRange};
+    use crate::model::{CourtSurface, Schedule, SurfaceFilter, TimeRange};
     use chrono::{NaiveDate, Weekday};
 
     fn uref(id: &str) -> ProviderUserRef {
@@ -157,6 +159,7 @@ mod tests {
             schedule: Schedule::Weekday(weekday),
             time_range: range(18 * 60, 22 * 60),
             courts: None,
+            surface: SurfaceFilter::CLAY,
         }
     }
 
@@ -174,6 +177,36 @@ mod tests {
         assert_eq!(subs[0].schedule, Schedule::Weekday(Weekday::Tue));
         assert_eq!(subs[0].time_range, range(1080, 1320));
         assert!(subs[0].courts.is_none());
+        assert_eq!(subs[0].surface, SurfaceFilter::CLAY);
+    }
+
+    #[tokio::test]
+    async fn surface_filter_roundtrips() {
+        let store = SqliteStore::open_in_memory().await.unwrap();
+        for surface in [
+            SurfaceFilter::All,
+            SurfaceFilter::CLAY,
+            SurfaceFilter::Only(CourtSurface::Synthetic),
+        ] {
+            let mut sub = sample(Weekday::Tue);
+            sub.surface = surface;
+            store.add(sub).await.unwrap();
+        }
+        let stored: Vec<SurfaceFilter> = store
+            .list_all(query_date())
+            .await
+            .unwrap()
+            .iter()
+            .map(|sub| sub.surface)
+            .collect();
+        assert_eq!(
+            stored,
+            vec![
+                SurfaceFilter::All,
+                SurfaceFilter::CLAY,
+                SurfaceFilter::Only(CourtSurface::Synthetic)
+            ]
+        );
     }
 
     #[tokio::test]
@@ -251,6 +284,7 @@ mod tests {
             schedule: Schedule::Date(date),
             time_range: range(18 * 60, 22 * 60),
             courts: None,
+            surface: SurfaceFilter::CLAY,
         }
     }
 

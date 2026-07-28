@@ -1,4 +1,4 @@
-use crate::model::{Schedule, TimeRange};
+use crate::model::{Schedule, SurfaceFilter, TimeRange};
 use crate::subscriptions::contract::{AvailabilityAlert, SubscriptionResult, SubscriptionSummary};
 use crate::text::{DISCORD_CHUNK_BUDGET, chunk_lines, fmt_slot_line};
 use crate::time::fmt_hhmm;
@@ -15,7 +15,7 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<String> {
                 s.id,
                 schedule_label(s.schedule),
                 time_range_label(s.time_range),
-                courts_label(s.courts.as_deref()),
+                scope_label(s.courts.as_deref(), s.surface),
             )];
             if !open_slots.is_empty() {
                 lines.push(String::new());
@@ -49,6 +49,14 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<String> {
             format!("Unknown court(s): {}.", unknown.join(", ")),
             format!("Available courts: {}.", available.join(", ")),
         ],
+        SubscriptionResult::SurfaceExcludesCourts { courts, surface } => vec![format!(
+            "{} not on {surface}, so `surface: {surface}` would never match. \
+             Drop the surface option or pick other courts.",
+            match courts.len() {
+                1 => format!("{} is", courts[0]),
+                _ => format!("{} are", courts.join(", ")),
+            },
+        )],
         SubscriptionResult::AllSubscriptions(all) if all.is_empty() => {
             vec!["No reminders exist.".to_string()]
         }
@@ -72,12 +80,14 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<String> {
 pub(super) fn render_help() -> Vec<String> {
     let lines = [
         "**ZHS court reminders — commands:**",
-        "`/subscribe day from to [courts]` — get a DM when a matching court becomes free",
+        "`/subscribe day from to [courts] [surface]` — get a DM when a matching court becomes free",
         "• `day`: weekday for every week (e.g. `Thu`), or a date for one day \
          (e.g. `23.06.2026`; year optional)",
         "• `from`/`to`: time window as HH:MM, Berlin time (e.g. `18:00`, `20:00`)",
-        "• `courts`: optional comma-separated court names (e.g. `Court 2, Court 5`); \
-         omit for all courts",
+        "• `courts`: optional comma-separated court numbers (e.g. `2, 19`); \
+         omit to watch a whole surface",
+        "• `surface`: `clay`, `synthetic` or `all`; defaults to clay, or to the \
+         courts you named",
         "`/list` — show your reminders",
         "`/unsubscribe id` — delete a reminder by its ID",
         "`/listall` — show all reminders (admin only)",
@@ -95,7 +105,7 @@ fn summary_line(s: &SubscriptionSummary) -> String {
         s.id,
         schedule_label(s.schedule),
         time_range_label(s.time_range),
-        courts_label(s.courts.as_deref()),
+        scope_label(s.courts.as_deref(), s.surface),
     )
 }
 
@@ -107,10 +117,12 @@ pub(super) fn render_alert(alert: &AvailabilityAlert) -> Vec<String> {
     chunk_lines(&lines, DISCORD_CHUNK_BUDGET)
 }
 
-fn courts_label(courts: Option<&[String]>) -> String {
-    courts
-        .map(|v| v.join(", "))
-        .unwrap_or_else(|| "all courts".to_string())
+fn scope_label(courts: Option<&[String]>, surface: SurfaceFilter) -> String {
+    match (courts, surface) {
+        (Some(courts), _) => courts.join(", "),
+        (None, SurfaceFilter::All) => "all courts".to_string(),
+        (None, SurfaceFilter::Only(surface)) => format!("all {surface} courts"),
+    }
 }
 
 fn time_range_label(range: TimeRange) -> String {
@@ -141,6 +153,7 @@ mod tests {
             schedule: Schedule::Weekday(Weekday::Tue),
             time_range: TimeRange::new(18 * 60, 20 * 60).unwrap(),
             courts: None,
+            surface: SurfaceFilter::All,
         }
     }
 
@@ -219,6 +232,36 @@ mod tests {
         );
         assert!(reply_text(&SubscriptionResult::NotFound { id: 3 }).contains("#3"));
         assert!(reply_text(&SubscriptionResult::InvalidTimeRange).contains("'to'"));
+    }
+
+    #[test]
+    fn renders_the_surface_a_subscription_watches() {
+        let mut s = summary();
+        s.surface = SurfaceFilter::CLAY;
+        assert!(reply_text(&subscribed(s.clone())).contains("all clay courts"));
+
+        s.surface = SurfaceFilter::Only(crate::model::CourtSurface::Synthetic);
+        assert!(reply_text(&subscribed(s)).contains("all synthetic courts"));
+    }
+
+    #[test]
+    fn named_courts_are_shown_instead_of_a_surface() {
+        let mut s = summary();
+        s.courts = Some(vec!["Court 19 - Synthetic".into()]);
+        s.surface = SurfaceFilter::All;
+        let text = reply_text(&subscribed(s));
+        assert!(text.contains("Court 19 - Synthetic"));
+        assert!(!text.contains("all courts"));
+    }
+
+    #[test]
+    fn renders_a_surface_that_excludes_the_named_courts() {
+        let text = reply_text(&SubscriptionResult::SurfaceExcludesCourts {
+            courts: vec!["Court 19 - Synthetic".into()],
+            surface: SurfaceFilter::CLAY,
+        });
+        assert!(text.contains("Court 19 - Synthetic is not on clay"));
+        assert!(text.contains("surface: clay"));
     }
 
     #[test]

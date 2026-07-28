@@ -1,9 +1,11 @@
 mod discord_http;
 mod error_webhook;
 mod format;
+mod surface;
 mod webhook;
 
 pub use error_webhook::DiscordErrorLayer;
+pub use surface::SurfaceFilteredSink;
 pub use webhook::DiscordNotifier;
 
 use anyhow::{Context, Result};

@@ -7,6 +7,14 @@ quiet_first_poll = true
 operating_window_start_hour = 8
 operating_window_end_hour = 24
 
+surface_filter = "clay"
+
 [[products]]
 id = "00000000-0000-0000-0000-000000000000"
-name = "Example court"
+name = "Example court 1"
+surface = "clay"
+
+[[products]]
+id = "00000000-0000-0000-0000-000000000001"
+name = "Example court 2 - Synthetic"
+surface = "synthetic"
