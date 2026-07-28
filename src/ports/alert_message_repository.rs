@@ -31,7 +31,11 @@ pub trait AlertMessageRepository: Send + Sync {
     /// Drops all rows of a message that no longer exists in Discord.
     async fn forget_message(&self, message_id: &str) -> Result<()>;
 
-    /// Drops messages whose slots have all started — nothing about them can
-    /// change again. Returns the number of rows removed.
-    async fn prune_started(&self, now: DateTime<Utc>) -> Result<usize>;
+    /// Drops messages whose slots have all ended — the first moment nothing
+    /// about them can change again. Returns the number of rows removed.
+    ///
+    /// Retention runs to `ends_at` rather than `starts_at` because a slot with
+    /// no booking deadline stays bookable after it has started: its removal can
+    /// arrive mid-slot, and the row has to still be there to be struck.
+    async fn prune_ended(&self, now: DateTime<Utc>) -> Result<usize>;
 }

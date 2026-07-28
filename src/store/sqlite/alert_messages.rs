@@ -151,18 +151,18 @@ impl AlertMessageRepository for SqliteStore {
         .await
     }
 
-    async fn prune_started(&self, now: DateTime<Utc>) -> Result<usize> {
+    async fn prune_ended(&self, now: DateTime<Utc>) -> Result<usize> {
         let now = now.into_db()?;
-        self.with_conn("prune_started_alert_messages", move |connection| {
+        self.with_conn("prune_ended_alert_messages", move |connection| {
             let removed = connection
                 .execute(
                     "DELETE FROM alert_message_slots WHERE message_id IN (
                          SELECT message_id FROM alert_message_slots
-                         GROUP BY message_id HAVING max(starts_at) <= ?1
+                         GROUP BY message_id HAVING max(ends_at) <= ?1
                      )",
                     params![now],
                 )
-                .context("pruning started alert messages")?;
+                .context("pruning ended alert messages")?;
             Ok(removed)
         })
         .await
@@ -340,7 +340,7 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(
-            store.prune_started(far_future()).await.unwrap(),
+            store.prune_ended(far_future()).await.unwrap(),
             1,
             "1409 survived"
         );
@@ -350,42 +350,12 @@ mod tests {
         Utc.with_ymd_and_hms(2030, 1, 1, 0, 0, 0).unwrap()
     }
 
+    /// The retention rule. A slot with no booking deadline stays bookable after
+    /// its own start time, so its removal can arrive mid-slot and must still
+    /// find a row to strike. Past `ends_at` it cannot be bookable at all, which
+    /// is the first moment nothing about the message can change again.
     #[tokio::test]
-    async fn pruning_drops_only_messages_whose_slots_have_all_started() {
-        let store = SqliteStore::open_in_memory().await.unwrap();
-        // Both slots at 08:00 and 09:00 on 2026-07-13.
-        store
-            .record_message("past", &[line("Court 1", 8), line("Court 2", 9)])
-            .await
-            .unwrap();
-        // One started, one still to come — the message must survive.
-        store
-            .record_message("mixed", &[line("Court 3", 8), line("Court 4", 20)])
-            .await
-            .unwrap();
-
-        // 10:00 on the same day: "past" is fully started, "mixed" is not.
-        let now = Utc.with_ymd_and_hms(2026, 7, 13, 10, 0, 0).unwrap();
-        let removed = store.prune_started(now).await.unwrap();
-
-        assert_eq!(removed, 2, "both lines of `past`, none of `mixed`");
-        assert_eq!(
-            store.prune_started(far_future()).await.unwrap(),
-            2,
-            "`mixed` is pruned once its later slot has started too"
-        );
-    }
-
-    #[tokio::test]
-    async fn pruning_an_empty_table_removes_nothing() {
-        let store = SqliteStore::open_in_memory().await.unwrap();
-        assert_eq!(store.prune_started(far_future()).await.unwrap(), 0);
-    }
-
-    /// A slot starting exactly at `now` has started. With a `<` comparison it
-    /// would survive, and since pruning runs once a day, survive until tomorrow.
-    #[tokio::test]
-    async fn a_slot_starting_exactly_now_counts_as_started() {
+    async fn a_slot_that_has_started_but_not_ended_keeps_its_rows() {
         let store = SqliteStore::open_in_memory().await.unwrap();
         let only = line("Court 1", 8);
         store
@@ -393,7 +363,59 @@ mod tests {
             .await
             .unwrap();
 
-        let removed = store.prune_started(only.starts_at).await.unwrap();
+        let mid_slot = only.starts_at + Duration::minutes(20);
+        assert_eq!(
+            store.prune_ended(mid_slot).await.unwrap(),
+            0,
+            "the slot is still bookable, so its removal is still strikeable"
+        );
+        assert_eq!(store.prune_ended(only.ends_at).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn pruning_drops_only_messages_whose_slots_have_all_ended() {
+        let store = SqliteStore::open_in_memory().await.unwrap();
+        // Slots 08:00–09:00 and 09:00–10:00 on 2026-07-13.
+        store
+            .record_message("past", &[line("Court 1", 8), line("Court 2", 9)])
+            .await
+            .unwrap();
+        // One over, one still to come — the message must survive.
+        store
+            .record_message("mixed", &[line("Court 3", 8), line("Court 4", 20)])
+            .await
+            .unwrap();
+
+        // 10:00 on the same day: "past" is fully over, "mixed" is not.
+        let now = Utc.with_ymd_and_hms(2026, 7, 13, 10, 0, 0).unwrap();
+        let removed = store.prune_ended(now).await.unwrap();
+
+        assert_eq!(removed, 2, "both lines of `past`, none of `mixed`");
+        assert_eq!(
+            store.prune_ended(far_future()).await.unwrap(),
+            2,
+            "`mixed` is pruned once its later slot is over too"
+        );
+    }
+
+    #[tokio::test]
+    async fn pruning_an_empty_table_removes_nothing() {
+        let store = SqliteStore::open_in_memory().await.unwrap();
+        assert_eq!(store.prune_ended(far_future()).await.unwrap(), 0);
+    }
+
+    /// A slot ending exactly at `now` is over. With a `<` comparison it would
+    /// survive, and since pruning runs once a day, survive until tomorrow.
+    #[tokio::test]
+    async fn a_slot_ending_exactly_now_counts_as_over() {
+        let store = SqliteStore::open_in_memory().await.unwrap();
+        let only = line("Court 1", 8);
+        store
+            .record_message("1408", std::slice::from_ref(&only))
+            .await
+            .unwrap();
+
+        let removed = store.prune_ended(only.ends_at).await.unwrap();
 
         assert_eq!(removed, 1);
     }

@@ -246,19 +246,21 @@ impl DiscordNotifier {
 
     /// Housekeeping only, so it runs at most once per Berlin day: on SD-card
     /// storage the write matters more than the freshness. Correctness comes
-    /// from running *after* `strike_removed`, not from the cadence.
+    /// from running between `strike_removed` and `post_added`, not from the
+    /// cadence — a quiet day with no changes at all prunes nothing, which only
+    /// costs a few rows that outlive their slots.
     async fn prune_daily(&self) {
         let today = today_berlin();
         if *self.last_pruned.lock().expect("prune guard poisoned") == Some(today) {
             return;
         }
-        match self.messages.prune_started(Utc::now()).await {
+        match self.messages.prune_ended(Utc::now()).await {
             Ok(removed) => {
                 *self.last_pruned.lock().expect("prune guard poisoned") = Some(today);
                 if removed > 0 {
                     debug!(
                         removed,
-                        "discord: pruned alert messages whose slots all started"
+                        "discord: pruned alert messages whose slots all ended"
                     );
                 }
             }
@@ -278,11 +280,13 @@ impl AvailabilityChangeSink for DiscordNotifier {
         if changes.is_empty() {
             return Ok(());
         }
-        // Order matters: a slot that has already started when its removal is
-        // observed must be struck before pruning is allowed to drop its rows.
+        // Order matters at both ends. Striking comes first, so a slot whose
+        // removal arrives after its last line ended is struck before pruning
+        // can drop its rows; posting comes last, so pruning can never delete
+        // rows this very call recorded.
         self.strike_removed(changes).await;
-        self.post_added(changes).await;
         self.prune_daily().await;
+        self.post_added(changes).await;
         Ok(())
     }
 }
@@ -343,7 +347,6 @@ mod tests {
             .mount(&server)
             .await;
         let (notifier, store) = notifier(&server).await;
-        disable_pruning_for_today(&notifier);
         let added = slot("Court 2", 18);
 
         notifier
@@ -357,6 +360,45 @@ mod tests {
             .unwrap();
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].message.id, "1408", "the id came from ?wait=true");
+    }
+
+    /// `slot()` is in the past, so its rows are prunable the moment they are
+    /// written. Pruning therefore has to run *before* posting: a slot with no
+    /// booking deadline can be announced after it has started, and a `publish`
+    /// that deleted the rows it had just recorded would leave that alert live
+    /// in the channel with no way to ever strike it.
+    #[tokio::test]
+    async fn publish_never_prunes_the_rows_it_just_recorded() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "1408"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (notifier, store) = notifier(&server).await;
+        let added = slot("Court 2", 18);
+
+        notifier
+            .publish(&[AvailabilityChange::BecameBookable(added.clone())])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store
+                .plan_strikes(&[BookableSlotId::from(&added)])
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "pruning ran before the post, not after it"
+        );
+        assert_eq!(
+            *notifier.last_pruned.lock().unwrap(),
+            Some(crate::time::today_berlin()),
+            "pruning did run — the rows survived on merit, not by being skipped"
+        );
     }
 
     #[tokio::test]
@@ -410,6 +452,9 @@ mod tests {
             .mount(&server)
             .await;
         let (notifier, store) = notifier(&server).await;
+        // Without this the row is pruned during `publish` regardless of whether
+        // the strike was committed, and the assertion below proves nothing.
+        disable_pruning_for_today(&notifier);
         let gone = slot("Court 2", 18);
         seed(&store, "1408", &gone).await;
 
@@ -502,6 +547,7 @@ mod tests {
             .mount(&server)
             .await;
         let (notifier, store) = notifier(&server).await;
+        disable_pruning_for_today(&notifier);
         let gone = slot("Court 2", 18);
         seed(&store, "1408", &gone).await;
 
@@ -558,9 +604,13 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
             .respond_with(ResponseTemplate::new(404).set_body_json(unknown_message_body()))
+            .expect(1)
             .mount(&server)
             .await;
         let (notifier, store) = notifier(&server).await;
+        // Otherwise pruning drops the row during `publish` and the assertion
+        // below holds whether or not the 10008 arm forgot anything.
+        disable_pruning_for_today(&notifier);
         let gone = slot("Court 2", 18);
         seed(&store, "1408", &gone).await;
 
@@ -660,9 +710,9 @@ mod tests {
             .unwrap();
 
         // The PATCH mock's expect(1) proves the edit happened. Pruning then
-        // removed the rows, because every slot in the message has started.
+        // removed the rows, because every slot in the message has ended.
         assert_eq!(
-            store.prune_started(Utc::now()).await.unwrap(),
+            store.prune_ended(Utc::now()).await.unwrap(),
             0,
             "publish already pruned the struck message"
         );
