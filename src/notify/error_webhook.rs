@@ -10,8 +10,7 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context as LayerContext;
 
 use super::discord_http::{
-    HTTP_TIMEOUT, MAX_RATE_LIMIT_RETRIES, parse_retry_after, redact_discord_webhook_tokens,
-    retry_delay,
+    HTTP_TIMEOUT, redact_discord_webhook_tokens, send_with_rate_limit_retry,
 };
 
 const APPLICATION_TARGET: &str = "court_alert";
@@ -128,39 +127,22 @@ impl DiscordErrorWorker {
             allowed_mentions: AllowedMentions<'a>,
         }
 
-        for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
-            let response = self
-                .client
-                .post(self.webhook_url.clone())
-                .json(&Body {
+        let (status, body) = send_with_rate_limit_retry(
+            || {
+                self.client.post(self.webhook_url.clone()).json(&Body {
                     content,
                     allowed_mentions: AllowedMentions { parse: [] },
                 })
-                .send()
-                .await
-                .map_err(reqwest::Error::without_url)
-                .context("posting error to Discord monitoring webhook")?;
-            let status = response.status();
-            let header_delay = response
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|value| value.to_str().ok())
-                .and_then(parse_retry_after);
-            let body = response.text().await.unwrap_or_default();
+            },
+            "posting error to Discord monitoring webhook",
+        )
+        .await?;
 
-            if status.is_success() {
-                return Ok(());
-            }
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt < MAX_RATE_LIMIT_RETRIES
-            {
-                tokio::time::sleep(retry_delay(header_delay, &body)).await;
-                continue;
-            }
-
-            let body = redact_discord_webhook_tokens(&body);
-            anyhow::bail!("Discord monitoring webhook returned {status}: {body}");
+        if status.is_success() {
+            return Ok(());
         }
-        unreachable!("rate-limit retry loop always returns or fails")
+        let body = redact_discord_webhook_tokens(&body);
+        anyhow::bail!("Discord monitoring webhook returned {status}: {body}")
     }
 }
 

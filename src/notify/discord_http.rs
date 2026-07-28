@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use anyhow::{Context, Result};
 use serde::Deserialize;
 
 pub(super) const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -40,6 +41,43 @@ pub(super) fn retry_delay(header: Option<Duration>, body: &str) -> Duration {
         .min(MAX_RETRY_AFTER)
 }
 
+/// Sends a request, resending it while Discord answers 429, and returns the
+/// final status and body for the caller to interpret — a 404 means different
+/// things to a POST and to a PATCH, so only the rate-limit handling is shared.
+///
+/// `request` is called afresh per attempt because a `RequestBuilder` cannot be
+/// cloned once it carries a body. Only the response is retried, never a
+/// transport error: a timeout leaves us unable to say whether Discord acted on
+/// the request, and resending a POST on that would double-alert the channel.
+pub(super) async fn send_with_rate_limit_retry(
+    request: impl Fn() -> reqwest::RequestBuilder,
+    context: &'static str,
+) -> Result<(reqwest::StatusCode, String)> {
+    let mut attempt = 0;
+    loop {
+        let response = request()
+            .send()
+            .await
+            // Carries the webhook URL, token and all, into any log line.
+            .map_err(reqwest::Error::without_url)
+            .context(context)?;
+        let status = response.status();
+        let header_delay = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(parse_retry_after);
+        let body = response.text().await.unwrap_or_default();
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt < MAX_RATE_LIMIT_RETRIES {
+            attempt += 1;
+            tokio::time::sleep(retry_delay(header_delay, &body)).await;
+            continue;
+        }
+        return Ok((status, body));
+    }
+}
+
 pub(super) fn redact_discord_webhook_tokens(input: &str) -> String {
     const MARKER: &str = "/api/webhooks/";
     const REDACTED: &str = "[REDACTED]";
@@ -71,12 +109,30 @@ pub(super) fn redact_discord_webhook_tokens(input: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Asserted on the whole string rather than with `contains`: the point of
+    /// this function is that nothing of the token survives, so a regression
+    /// that swallowed the trailing text or left a token suffix behind has to
+    /// fail here.
     #[test]
     fn redacts_discord_webhook_tokens_in_error_bodies() {
         let input = "posting to https://discord.com/api/webhooks/123/abcDEF-_. failed";
-        let redacted = redact_discord_webhook_tokens(input);
-        assert!(redacted.contains("/api/webhooks/123/[REDACTED]"));
-        assert!(!redacted.contains("abcDEF"));
+        assert_eq!(
+            redact_discord_webhook_tokens(input),
+            "posting to https://discord.com/api/webhooks/123/[REDACTED] failed"
+        );
+    }
+
+    /// The scan resumes *after* the replacement, so a second URL later in the
+    /// same message is redacted too — a batched error report carries several.
+    #[test]
+    fn redacts_every_token_in_a_message() {
+        let input = "https://discord.com/api/webhooks/1/first and \
+                     https://discord.com/api/webhooks/2/second";
+        assert_eq!(
+            redact_discord_webhook_tokens(input),
+            "https://discord.com/api/webhooks/1/[REDACTED] and \
+             https://discord.com/api/webhooks/2/[REDACTED]"
+        );
     }
 
     #[test]

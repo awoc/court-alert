@@ -11,8 +11,7 @@ use crate::ports::{AlertMessageRepository, AvailabilityChangeSink};
 use crate::time::today_berlin;
 
 use super::discord_http::{
-    HTTP_TIMEOUT, MAX_RATE_LIMIT_RETRIES, parse_retry_after, redact_discord_webhook_tokens,
-    retry_delay,
+    HTTP_TIMEOUT, redact_discord_webhook_tokens, send_with_rate_limit_retry,
 };
 use super::format::{added_slots, chunk_slots, removed_slot_ids, render};
 
@@ -69,16 +68,11 @@ impl DiscordNotifier {
         let mut url = self.webhook_url.clone();
         url.query_pairs_mut().append_pair("wait", "true");
 
-        let response = self
-            .client
-            .post(url)
-            .json(&Body { content })
-            .send()
-            .await
-            .map_err(reqwest::Error::without_url)
-            .context("posting to Discord webhook")?;
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let (status, body) = send_with_rate_limit_retry(
+            || self.client.post(url.clone()).json(&Body { content }),
+            "posting to Discord webhook",
+        )
+        .await?;
         if !status.is_success() {
             let body = redact_discord_webhook_tokens(&body);
             anyhow::bail!("Discord webhook returned {status}: {body}");
@@ -139,46 +133,28 @@ impl DiscordNotifier {
         }
 
         let url = self.edit_url(message_id)?;
-        for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
-            let response = self
-                .client
-                .patch(url.clone())
-                .json(&Body { content })
-                .send()
-                .await
-                .map_err(reqwest::Error::without_url)
-                .context("editing a Discord webhook message")?;
-            let status = response.status();
-            let header_delay = response
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|value| value.to_str().ok())
-                .and_then(parse_retry_after);
-            let body = response.text().await.unwrap_or_default();
+        let (status, body) = send_with_rate_limit_retry(
+            || self.client.patch(url.clone()).json(&Body { content }),
+            "editing a Discord webhook message",
+        )
+        .await?;
 
-            if status.is_success() {
-                return Ok(EditOutcome::Edited);
-            }
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt < MAX_RATE_LIMIT_RETRIES
-            {
-                tokio::time::sleep(retry_delay(header_delay, &body)).await;
-                continue;
-            }
-            if status == reqwest::StatusCode::NOT_FOUND {
-                let code = serde_json::from_str::<DiscordError>(&body)
-                    .ok()
-                    .and_then(|error| error.code);
-                // Anything we cannot positively identify as "Unknown Message"
-                // is treated as the conservative case and keeps its rows.
-                if code == Some(DISCORD_UNKNOWN_MESSAGE) {
-                    return Ok(EditOutcome::Gone);
-                }
-            }
-
-            let body = redact_discord_webhook_tokens(&body);
-            anyhow::bail!("Discord webhook returned {status}: {body}");
+        if status.is_success() {
+            return Ok(EditOutcome::Edited);
         }
-        unreachable!("rate-limit retry loop always returns or fails")
+        if status == reqwest::StatusCode::NOT_FOUND {
+            let code = serde_json::from_str::<DiscordError>(&body)
+                .ok()
+                .and_then(|error| error.code);
+            // Anything we cannot positively identify as "Unknown Message" is
+            // treated as the conservative case and keeps its rows.
+            if code == Some(DISCORD_UNKNOWN_MESSAGE) {
+                return Ok(EditOutcome::Gone);
+            }
+        }
+
+        let body = redact_discord_webhook_tokens(&body);
+        anyhow::bail!("Discord webhook returned {status}: {body}")
     }
 
     async fn strike_removed(&self, changes: &[AvailabilityChange]) {
@@ -524,23 +500,72 @@ mod tests {
             .unwrap();
     }
 
-    #[derive(Clone, Default)]
-    struct RateLimitOnce(Arc<AtomicUsize>);
+    /// Answers the first request with a 429 that asks for an immediate retry,
+    /// and every later one with `then`.
+    #[derive(Clone)]
+    struct RateLimitOnce {
+        calls: Arc<AtomicUsize>,
+        then: ResponseTemplate,
+    }
+
+    impl RateLimitOnce {
+        fn then(body: serde_json::Value) -> Self {
+            Self {
+                calls: Arc::default(),
+                then: ResponseTemplate::new(200).set_body_json(body),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
 
     impl Respond for RateLimitOnce {
         fn respond(&self, _request: &Request) -> ResponseTemplate {
-            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
                 ResponseTemplate::new(429).set_body_json(serde_json::json!({ "retry_after": 0.0 }))
             } else {
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({}))
+                self.then.clone()
             }
         }
+    }
+
+    /// A 429 is the one failure a POST can safely retry: Discord answers it
+    /// before creating anything, so there is no duplicate alert to fear. Giving
+    /// up instead loses the alert *and* its rows, leaving slots that can never
+    /// be struck. Rollovers issue edits and posts back to back against one
+    /// webhook, which is exactly when Discord rate-limits.
+    #[tokio::test]
+    async fn a_rate_limited_post_is_retried_and_then_recorded() {
+        let server = MockServer::start().await;
+        let responder = RateLimitOnce::then(serde_json::json!({ "id": "1408" }));
+        Mock::given(method("POST"))
+            .respond_with(responder.clone())
+            .expect(2)
+            .mount(&server)
+            .await;
+        let (notifier, store) = notifier(&server).await;
+        let added = slot("Court 2", 18);
+
+        notifier
+            .publish(&[AvailabilityChange::BecameBookable(added.clone())])
+            .await
+            .unwrap();
+
+        assert_eq!(responder.calls(), 2, "one 429, then a retry");
+        let plans = store
+            .plan_strikes(&[BookableSlotId::from(&added)])
+            .await
+            .unwrap();
+        assert_eq!(plans.len(), 1, "the retried post was recorded");
+        assert_eq!(plans[0].message.id, "1408");
     }
 
     #[tokio::test]
     async fn a_rate_limited_edit_is_retried_and_then_committed() {
         let server = MockServer::start().await;
-        let responder = RateLimitOnce::default();
+        let responder = RateLimitOnce::then(serde_json::json!({}));
         Mock::given(method("PATCH"))
             .respond_with(responder.clone())
             .expect(2)
@@ -556,11 +581,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            responder.0.load(Ordering::SeqCst),
-            2,
-            "one 429, then a retry"
-        );
+        assert_eq!(responder.calls(), 2, "one 429, then a retry");
         assert!(
             store
                 .plan_strikes(&[BookableSlotId::from(&gone)])
