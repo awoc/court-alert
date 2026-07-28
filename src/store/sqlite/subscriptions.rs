@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use chrono::NaiveDate;
 use rusqlite::{Row, params};
 
-use crate::domain::{ProviderUserRef, Subscription, SubscriptionDraft};
+use crate::model::{ProviderUserRef, Subscription, SubscriptionDraft};
 use crate::ports::SubscriptionRepository;
 
 use super::{DbRepr, SqliteStore, SubscriptionRow};
@@ -133,7 +133,7 @@ impl SubscriptionRepository for SqliteStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Schedule, TimeRange};
+    use crate::model::{Schedule, TimeRange};
     use chrono::{NaiveDate, Weekday};
 
     fn uref(id: &str) -> ProviderUserRef {

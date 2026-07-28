@@ -8,7 +8,7 @@ use serenity::all::{
 use serenity::async_trait;
 use tracing::{error, info};
 
-use crate::domain::ProviderUserRef;
+use crate::model::ProviderUserRef;
 use crate::providers::ReadySignal;
 use crate::subscriptions::SubscriptionService;
 use crate::text::{DISCORD_CHUNK_BUDGET, chunk_lines};

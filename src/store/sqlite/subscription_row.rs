@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{NaiveDate, Weekday};
 use rusqlite::Row;
 
-use crate::domain::{ProviderUserRef, Schedule, Subscription, TimeRange};
+use crate::model::{ProviderUserRef, Schedule, Subscription, TimeRange};
 
 use super::DbRepr;
 

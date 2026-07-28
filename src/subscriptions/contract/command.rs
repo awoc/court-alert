@@ -1,4 +1,4 @@
-use crate::domain::Schedule;
+use crate::model::Schedule;
 
 use super::{AvailableSlotSummary, OwnedSubscriptionSummary, SubscriptionSummary};
 

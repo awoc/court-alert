@@ -7,7 +7,7 @@ use serenity::all::{GatewayIntents, GuildId, Http, UserId};
 use serenity::async_trait;
 
 use crate::config::DiscordSettings;
-use crate::domain::ProviderUserRef;
+use crate::model::ProviderUserRef;
 use crate::providers::{ChatProvider, ReadySignal};
 use crate::subscriptions::SubscriptionService;
 use crate::subscriptions::contract::{AvailabilityAlert, DirectMessageSender};

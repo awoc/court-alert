@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, Utc, Weekday};
 
-use crate::domain::{BookableSlot, BookableSlotSnapshot, ProviderUserRef, Schedule};
+use crate::model::{BookableSlot, BookableSlotSnapshot, ProviderUserRef, Schedule};
 use crate::ports::BookableSlotSnapshotRepository;
 use crate::store::SqliteStore;
 use crate::subscriptions::contract::SubscriptionCommand;

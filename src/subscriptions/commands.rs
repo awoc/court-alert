@@ -1,7 +1,7 @@
 use anyhow::Result;
 use tracing::warn;
 
-use crate::domain::{
+use crate::model::{
     BookableSlot, ProviderUserRef, Schedule, Subscription, SubscriptionDraft, TimeRange,
 };
 use crate::subscriptions::contract::{
@@ -147,7 +147,7 @@ mod tests {
         admin_uref, date_subscribe_cmd, open_slot, service, service_with_admin, service_with_clock,
         service_with_failing_slot_snapshot, service_with_slots, subscribe_cmd, uref,
     };
-    use crate::domain::{Schedule, SubscriptionDraft, TimeRange};
+    use crate::model::{Schedule, SubscriptionDraft, TimeRange};
     use crate::ports::SubscriptionRepository;
     use crate::subscriptions::contract::{SubscriptionCommand, SubscriptionResult};
     use chrono::Weekday;

@@ -28,9 +28,11 @@ impl App {
         let config = Config::load(&settings.config_path)?;
         let chat_providers = providers::build(&settings);
 
+        let store = Arc::new(SqliteStore::open(settings.db_path.clone()).await?);
+
         let mut sinks: Vec<Box<dyn AvailabilityChangeSink>> = Vec::new();
         match &settings.discord_webhook {
-            Some(url) => sinks.push(Box::new(DiscordNotifier::new(url.clone())?)),
+            Some(url) => sinks.push(Box::new(DiscordNotifier::new(url.clone(), store.clone())?)),
             None => info!("COURT_ALERT_DISCORD_WEBHOOK not set — webhook notifier disabled"),
         }
         info!(
@@ -51,7 +53,6 @@ impl App {
         let auth = Auth::new(config.base_url().to_owned(), settings.credentials)?;
         let slot_source: Arc<dyn SlotAvailabilitySource> =
             Arc::new(ZhsSlotAvailabilitySource::new(auth));
-        let store = Arc::new(SqliteStore::open(settings.db_path).await?);
 
         Ok(Self {
             config,

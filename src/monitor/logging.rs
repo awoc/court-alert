@@ -1,6 +1,6 @@
 use tracing::info;
 
-use crate::domain::AvailabilityChange;
+use crate::model::AvailabilityChange;
 use crate::time::fmt_berlin_log;
 
 pub(super) fn log_changes(changes: &[AvailabilityChange], total_bookable: usize) {

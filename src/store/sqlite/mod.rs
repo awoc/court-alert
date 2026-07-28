@@ -1,9 +1,12 @@
+mod alert_message_row;
+mod alert_messages;
 mod bookable_slot_row;
 mod bookable_slot_snapshot;
 mod schema;
 mod subscription_row;
 mod subscriptions;
 
+use alert_message_row::AlertMessageRow;
 use bookable_slot_row::BookableSlotRow;
 use subscription_row::SubscriptionRow;
 

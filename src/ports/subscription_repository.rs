@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::NaiveDate;
 
-use crate::domain::{ProviderUserRef, Subscription, SubscriptionDraft};
+use crate::model::{ProviderUserRef, Subscription, SubscriptionDraft};
 
 #[async_trait]
 pub trait SubscriptionRepository: Send + Sync {

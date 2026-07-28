@@ -1,6 +1,6 @@
 pub mod app;
 pub mod config;
-pub mod domain;
+pub mod model;
 pub mod monitor;
 pub mod notify;
 pub mod parsing;

@@ -11,7 +11,7 @@ use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, NaiveDate, Utc};
 
-use crate::domain::ProviderUserRef;
+use crate::model::ProviderUserRef;
 use crate::ports::{BookableSlotSnapshotRepository, SubscriptionRepository};
 use contract::DirectMessageSender;
 

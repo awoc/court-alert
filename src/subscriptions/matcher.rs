@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::domain::{
+use crate::model::{
     AvailabilityChange, BookableSlot, BookableSlotId, ProviderUserRef, Schedule, Subscription,
 };
 use crate::time::local_slot_time;
@@ -58,7 +58,7 @@ mod tests {
     use chrono::{NaiveDate, TimeZone, Utc, Weekday};
     use uuid::Uuid;
 
-    use crate::domain::TimeRange;
+    use crate::model::TimeRange;
 
     fn uref(id: &str) -> ProviderUserRef {
         ProviderUserRef {

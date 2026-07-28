@@ -1,4 +1,4 @@
-use crate::domain::{Schedule, TimeRange};
+use crate::model::{Schedule, TimeRange};
 use crate::subscriptions::contract::{AvailabilityAlert, SubscriptionResult, SubscriptionSummary};
 use crate::text::{DISCORD_CHUNK_BUDGET, chunk_lines, fmt_slot_line};
 use crate::time::fmt_hhmm;
@@ -131,7 +131,7 @@ fn schedule_label(schedule: Schedule) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::ProviderUserRef;
+    use crate::model::ProviderUserRef;
     use crate::subscriptions::contract::{AvailableSlotSummary, OwnedSubscriptionSummary};
     use chrono::{TimeZone, Utc, Weekday};
 

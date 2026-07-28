@@ -8,7 +8,7 @@
 use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = include_str!("../../../sql/schema.sql");
 
@@ -20,8 +20,8 @@ pub(super) fn ensure_current(conn: &mut Connection) -> Result<()> {
     if version < SCHEMA_VERSION && !is_empty(conn)? {
         bail!(
             "database is at schema version {version}, but this build needs {SCHEMA_VERSION}; \
-             apply the files in sql/migrations above {version} first, e.g. \
-             `sqlite3 -bail <database> < sql/migrations/0001_strict_schema.sql`"
+             apply the files in sql/migrations above {version} first, in order, with \
+             `sqlite3 -bail <database> < sql/migrations/<file>.sql`"
         );
     }
 
@@ -60,6 +60,8 @@ mod tests {
     use super::*;
 
     const UPGRADE_TO_V1: &str = include_str!("../../../sql/migrations/0001_strict_schema.sql");
+    const UPGRADE_TO_V2: &str =
+        include_str!("../../../sql/migrations/0002_alert_message_slots.sql");
 
     const LEGACY_SCHEMA: &str = "
         CREATE TABLE subscriptions (
@@ -99,10 +101,11 @@ mod tests {
         conn
     }
 
-    /// The full manual upgrade: run the migration file by hand, then start the
-    /// app, which creates whatever the migration deliberately left out.
+    /// The full manual upgrade: run the migration files by hand, in order, then
+    /// start the app, which creates whatever the migrations deliberately left out.
     fn migrate_by_hand(conn: &mut Connection) {
         conn.execute_batch(UPGRADE_TO_V1).unwrap();
+        conn.execute_batch(UPGRADE_TO_V2).unwrap();
         ensure_current(conn).unwrap();
     }
 
@@ -155,15 +158,18 @@ mod tests {
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         assert!(is_strict(&conn, "subscriptions"));
         assert!(is_strict(&conn, "bookable_slots"));
+        assert!(is_strict(&conn, "alert_message_slots"));
     }
 
-    /// The migration drops the snapshot cache without recreating it, and stamps
+    /// The migrations drop the snapshot cache without recreating it, and stamp
     /// the version, so a hand-run migration leaves the app nothing to upgrade.
     /// Startup has to create the missing table anyway.
     #[test]
     fn hand_migrated_database_still_gets_the_snapshot_table() {
         let mut conn = legacy_database();
         conn.execute_batch(UPGRADE_TO_V1).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 1);
+        conn.execute_batch(UPGRADE_TO_V2).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         assert!(table_sql(&conn, "bookable_slots").is_none());
 
@@ -184,6 +190,14 @@ mod tests {
             .query_row("SELECT count(*) FROM subscriptions", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 2, "subscriptions were touched by the aborted run");
+    }
+
+    #[test]
+    fn second_migration_refuses_to_run_twice() {
+        let mut conn = legacy_database();
+        migrate_by_hand(&mut conn);
+
+        assert!(conn.execute_batch(UPGRADE_TO_V2).is_err());
     }
 
     /// The migration file repeats the subscriptions definition from
@@ -245,6 +259,14 @@ mod tests {
             "INSERT INTO bookable_slots
              VALUES ('123e4567-e89b-12d3-a456-426614174000', 'Court 1',
                      '2026-07-13T09:00:00.000Z', '2026-07-13T08:00:00.000Z', 2)",
+            // struck outside the 0/1 domain
+            "INSERT INTO alert_message_slots
+             VALUES ('1408', 0, '123e4567-e89b-12d3-a456-426614174000', 'Court 1',
+                     '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z', 2)",
+            // timestamp that is not canonical UTC RFC 3339
+            "INSERT INTO alert_message_slots
+             VALUES ('1408', 0, '123e4567-e89b-12d3-a456-426614174000', 'Court 1',
+                     '2026-07-13T08:00:00+00:00', '2026-07-13T09:00:00.000Z', 0)",
         ];
         for statement in rejected {
             assert!(

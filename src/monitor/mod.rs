@@ -8,7 +8,7 @@ use futures::{StreamExt, TryStreamExt, stream};
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
-use crate::domain::{AvailabilityChange, BookableSlotSnapshot, diff_availability};
+use crate::model::{AvailabilityChange, BookableSlotSnapshot, diff_availability};
 use crate::ports::{
     AvailabilityChangeSink, BookableSlotSnapshotRepository, SlotAvailabilitySource,
 };
