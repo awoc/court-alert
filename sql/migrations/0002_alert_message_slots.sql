@@ -7,7 +7,6 @@ BEGIN;
 CREATE TEMP TABLE migration_guard (expected_version INTEGER CHECK (expected_version = 1));
 INSERT INTO migration_guard SELECT user_version FROM pragma_user_version;
 
--- Purely additive: nothing existing is read or rewritten.
 CREATE TABLE alert_message_slots (
     message_id TEXT    NOT NULL CHECK (message_id <> ''),
     line_index INTEGER NOT NULL CHECK (line_index >= 0),

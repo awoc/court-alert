@@ -15,12 +15,9 @@ use super::discord_http::{
 };
 use super::format::{added_slots, chunk_slots, removed_slot_ids, render};
 
-/// Discord's "Unknown Message" error. The only 404 that means *this message*
-/// is gone — 10015 ("Unknown Webhook") shares the status but means the
-/// credential is wrong, and every tracked row is still valid.
+// Other Discord 404 codes do not prove that the tracked message is gone.
 const DISCORD_UNKNOWN_MESSAGE: i64 = 10008;
 
-/// What a PATCH told us about the message we tried to edit.
 enum EditOutcome {
     Edited,
     Gone,
@@ -30,8 +27,7 @@ pub struct DiscordNotifier {
     webhook_url: reqwest::Url,
     client: reqwest::Client,
     messages: Arc<dyn AlertMessageRepository>,
-    /// Berlin date of the last prune. Pruning is a housekeeping delete; running
-    /// it once a day rather than once a tick keeps SD-card writes down.
+    // Avoid repeated cleanup writes on SD-card storage.
     last_pruned: Mutex<Option<NaiveDate>>,
 }
 
@@ -40,9 +36,7 @@ impl DiscordNotifier {
         mut webhook_url: reqwest::Url,
         messages: Arc<dyn AlertMessageRepository>,
     ) -> Result<Self> {
-        // A URL pasted with a trailing slash ends in an empty path segment, and
-        // `edit_url` would append after it: `.../token//messages/{id}`. Dropping
-        // it once here keeps both the POST and the PATCH addressing the webhook.
+        // Avoid producing `.../token//messages/{id}` in `edit_url`.
         webhook_url
             .path_segments_mut()
             .map_err(|()| anyhow!("Discord webhook URL cannot be a base"))?
@@ -59,8 +53,6 @@ impl DiscordNotifier {
         })
     }
 
-    /// Posts a message and returns the id Discord assigned it. `?wait=true` is
-    /// what makes Discord answer with the created message instead of `204`.
     async fn post(&self, content: &str) -> Result<String> {
         #[derive(Serialize)]
         struct Body<'a> {
@@ -73,6 +65,7 @@ impl DiscordNotifier {
         }
 
         let mut url = self.webhook_url.clone();
+        // Discord only returns the created message ID when `wait=true`.
         url.query_pairs_mut().append_pair("wait", "true");
 
         let (status, body) = send_with_rate_limit_retry(
@@ -117,9 +110,6 @@ impl DiscordNotifier {
         }
     }
 
-    /// The webhook URL plus `messages/{id}`. Built through `path_segments_mut`
-    /// rather than string concatenation: the POST URL carries `?wait=true`, and
-    /// appending a path to a URL with a query would corrupt it.
     fn edit_url(&self, message_id: &str) -> Result<reqwest::Url> {
         let mut url = self.webhook_url.clone();
         url.path_segments_mut()
@@ -153,8 +143,6 @@ impl DiscordNotifier {
             let code = serde_json::from_str::<DiscordError>(&body)
                 .ok()
                 .and_then(|error| error.code);
-            // Anything we cannot positively identify as "Unknown Message" is
-            // treated as the conservative case and keeps its rows.
             if code == Some(DISCORD_UNKNOWN_MESSAGE) {
                 return Ok(EditOutcome::Gone);
             }
@@ -187,8 +175,6 @@ impl DiscordNotifier {
             return;
         }
 
-        // Sequential on purpose: a Pi 2 gains nothing from concurrent edits, and
-        // Discord rate-limits per webhook anyway.
         for plan in plans {
             let message_id = plan.message.id;
             match self.edit(&message_id, &render(&plan.message.lines)).await {
@@ -227,11 +213,6 @@ impl DiscordNotifier {
         }
     }
 
-    /// Housekeeping only, so it runs at most once per Berlin day: on SD-card
-    /// storage the write matters more than the freshness. Correctness comes
-    /// from running between `strike_removed` and `post_added`, not from the
-    /// cadence — a quiet day with no changes at all prunes nothing, which only
-    /// costs a few rows that outlive their slots.
     async fn prune_daily(&self) {
         let today = today_berlin();
         if *self.last_pruned.lock().expect("prune guard poisoned") == Some(today) {
@@ -257,16 +238,12 @@ impl DiscordNotifier {
 
 #[async_trait]
 impl AvailabilityChangeSink for DiscordNotifier {
-    /// Best-effort by design: every failure is logged and skipped rather than
-    /// propagated, so one bad message never aborts a poll tick.
+    // Notification failures are logged per message rather than failing the poll tick.
     async fn publish(&self, changes: &[AvailabilityChange]) -> Result<()> {
         if changes.is_empty() {
             return Ok(());
         }
-        // Order matters at both ends. Striking comes first, so a slot whose
-        // removal arrives after its last line ended is struck before pruning
-        // can drop its rows; posting comes last, so pruning can never delete
-        // rows this very call recorded.
+        // Strike before pruning can drop old rows; prune before recording new rows.
         self.strike_removed(changes).await;
         self.prune_daily().await;
         self.post_added(changes).await;
@@ -304,15 +281,6 @@ mod tests {
         (DiscordNotifier::new(url, store.clone()).unwrap(), store)
     }
 
-    /// Marks today's prune as already done, so `publish` skips `prune_daily`.
-    ///
-    /// `slot()` is pinned to 2026-06-02, which real wall-clock time has since
-    /// passed — deliberately, so the pruning tests get an already-started
-    /// slot for free. Tests that seed a row with `slot()` to exercise
-    /// strike/post/edit behaviour unrelated to pruning would otherwise have
-    /// that row swept out from under them by the very first `publish` call.
-    /// This opts such a test out of that housekeeping, exactly as `publish`
-    /// itself would on any day after the first.
     fn disable_pruning_for_today(notifier: &DiscordNotifier) {
         *notifier.last_pruned.lock().unwrap() = Some(crate::time::today_berlin());
     }
@@ -345,11 +313,6 @@ mod tests {
         assert_eq!(plans[0].message.id, "1408", "the id came from ?wait=true");
     }
 
-    /// `slot()` is in the past, so its rows are prunable the moment they are
-    /// written. Pruning therefore has to run *before* posting: a slot with no
-    /// booking deadline can be announced after it has started, and a `publish`
-    /// that deleted the rows it had just recorded would leave that alert live
-    /// in the channel with no way to ever strike it.
     #[tokio::test]
     async fn publish_never_prunes_the_rows_it_just_recorded() {
         let server = MockServer::start().await;
@@ -417,7 +380,6 @@ mod tests {
         serde_json::json!({ "message": "Unknown Webhook", "code": 10015 })
     }
 
-    /// Records one message holding `slot`, without going through the network.
     async fn seed(store: &Arc<SqliteStore>, message_id: &str, slot: &BookableSlot) {
         store
             .record_message(message_id, &[AlertLine::from(slot)])
@@ -435,8 +397,6 @@ mod tests {
             .mount(&server)
             .await;
         let (notifier, store) = notifier(&server).await;
-        // Without this the row is pruned during `publish` regardless of whether
-        // the strike was committed, and the assertion below proves nothing.
         disable_pruning_for_today(&notifier);
         let gone = slot("Court 2", 18);
         seed(&store, "1408", &gone).await;
@@ -456,10 +416,6 @@ mod tests {
         );
     }
 
-    /// The whole point of the feature: the edited message must actually carry
-    /// the strikethrough. Every other test here only proves a PATCH happened.
-    /// The mock matches on the body, so a request without `~~` does not match,
-    /// falls through to wiremock's 404, and fails this mock's `expect(1)`.
     #[tokio::test]
     async fn the_edit_body_contains_the_struck_line() {
         let server = MockServer::start().await;
@@ -481,7 +437,6 @@ mod tests {
             .unwrap();
     }
 
-    /// A message keeps its live lines when only one of them is struck.
     #[tokio::test]
     async fn only_the_removed_line_is_struck() {
         let server = MockServer::start().await;
@@ -507,8 +462,6 @@ mod tests {
             .unwrap();
     }
 
-    /// Answers the first request with a 429 that asks for an immediate retry,
-    /// and every later one with `then`.
     #[derive(Clone)]
     struct RateLimitOnce {
         calls: Arc<AtomicUsize>,
@@ -538,11 +491,6 @@ mod tests {
         }
     }
 
-    /// A 429 is the one failure a POST can safely retry: Discord answers it
-    /// before creating anything, so there is no duplicate alert to fear. Giving
-    /// up instead loses the alert *and* its rows, leaving slots that can never
-    /// be struck. Rollovers issue edits and posts back to back against one
-    /// webhook, which is exactly when Discord rate-limits.
     #[tokio::test]
     async fn a_rate_limited_post_is_retried_and_then_recorded() {
         let server = MockServer::start().await;
@@ -569,11 +517,6 @@ mod tests {
         assert_eq!(plans[0].message.id, "1408");
     }
 
-    /// A webhook URL pasted with a trailing slash is still the same webhook.
-    /// `path_segments_mut` appends *after* the empty final segment, so an
-    /// un-normalised URL addresses `.../token//messages/1408`, which Discord
-    /// answers with a 404 that is not code 10008: every edit fails while posts
-    /// keep working, so nothing is ever struck and nothing looks wrong.
     #[tokio::test]
     async fn a_trailing_slash_in_the_webhook_url_still_addresses_the_message() {
         let server = MockServer::start().await;
@@ -664,8 +607,6 @@ mod tests {
             .mount(&server)
             .await;
         let (notifier, store) = notifier(&server).await;
-        // Otherwise pruning drops the row during `publish` and the assertion
-        // below holds whether or not the 10008 arm forgot anything.
         disable_pruning_for_today(&notifier);
         let gone = slot("Court 2", 18);
         seed(&store, "1408", &gone).await;
@@ -685,8 +626,6 @@ mod tests {
         );
     }
 
-    /// A rotated webhook 404s every edit. Deleting rows on that would turn a
-    /// config typo into permanent data loss, so only code 10008 forgets.
     #[tokio::test]
     async fn an_unknown_webhook_does_not_delete_anything() {
         let server = MockServer::start().await;
@@ -742,10 +681,6 @@ mod tests {
         );
     }
 
-    /// The day-rollover case. A slot with no booking deadline stays bookable
-    /// past its own start time and only leaves the snapshot when the window
-    /// rolls at midnight, so its removal arrives when it has already started.
-    /// Pruning first would delete the rows before they could be struck.
     #[tokio::test]
     async fn an_already_started_slot_is_struck_before_pruning_can_drop_it() {
         let server = MockServer::start().await;
@@ -756,7 +691,6 @@ mod tests {
             .mount(&server)
             .await;
         let (notifier, store) = notifier(&server).await;
-        // 2026-06-02 18:00 UTC is long past by the time this test runs.
         let started = slot("Court 2", 18);
         seed(&store, "1408", &started).await;
 
@@ -765,8 +699,6 @@ mod tests {
             .await
             .unwrap();
 
-        // The PATCH mock's expect(1) proves the edit happened. Pruning then
-        // removed the rows, because every slot in the message has ended.
         assert_eq!(
             store.prune_ended(Utc::now()).await.unwrap(),
             0,

@@ -40,9 +40,6 @@ struct ConfigFile {
     courts: Vec<CourtEntry>,
 }
 
-/// A court as the config file spells it. Kept separate from [`Court`] so the
-/// model type carries no serde derive and cannot be constructed unvalidated:
-/// entries are trimmed and checked in `validated_courts` on the way through.
 #[derive(Deserialize)]
 struct CourtEntry {
     id: Uuid,
@@ -159,9 +156,6 @@ impl Config {
     }
 }
 
-/// Trims each name and rejects blanks and duplicate ids, then hands back model
-/// types. This is the only place a [`Court`] is built, so every one in the
-/// program has a non-blank name and a unique id.
 fn validated_courts(entries: Vec<CourtEntry>) -> Result<Vec<Court>> {
     anyhow::ensure!(!entries.is_empty(), "products must not be empty");
     let mut ids = HashSet::with_capacity(entries.len());

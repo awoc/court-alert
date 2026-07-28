@@ -8,34 +8,18 @@ use crate::model::{AlertLine, BookableSlotId, StrikePlan};
 /// bookable can be struck through in the message that announced it.
 #[async_trait]
 pub trait AlertMessageRepository: Send + Sync {
-    /// Records the lines of a freshly posted message. `line_index` is the
-    /// position in `lines`, which must be the order they were rendered in.
     async fn record_message(&self, message_id: &str, lines: &[AlertLine]) -> Result<()>;
 
-    /// Returns a plan for each message holding an unstruck line for one of
-    /// `slots`. Read-only: nothing is persisted until `commit_strikes`.
-    ///
-    /// Every plan's `message.lines` is ordered by `line_index` ascending.
-    /// `AlertLine` carries no index, so rendering relies entirely on this.
-    ///
-    /// A single slot can appear unstruck in more than one message — a slot
-    /// whose edit failed and which later became bookable again is announced
-    /// afresh. Every such message is returned, which is how the stale one is
-    /// repaired.
+    /// Builds plans without persisting them. Lines are ordered by their stored
+    /// index, and every message containing a requested slot is returned.
     async fn plan_strikes(&self, slots: &[BookableSlotId]) -> Result<Vec<StrikePlan>>;
 
-    /// Persists the planned strikes, after the channel confirmed the edit.
-    /// Called with a plan's `message.id` and its `newly_struck`.
+    /// Persists strikes after the corresponding message edit succeeds.
     async fn commit_strikes(&self, message_id: &str, lines: &[u32]) -> Result<()>;
 
-    /// Drops all rows of a message that no longer exists in the channel.
     async fn forget_message(&self, message_id: &str) -> Result<()>;
 
-    /// Drops messages whose slots have all ended — the first moment nothing
-    /// about them can change again. Returns the number of rows removed.
-    ///
-    /// Retention runs to `ends_at` rather than `starts_at` because a slot with
-    /// no booking deadline stays bookable after it has started: its removal can
-    /// arrive mid-slot, and the row has to still be there to be struck.
+    /// Retains a message until all its slots have ended, since a started slot
+    /// may still be bookable and need to be struck later.
     async fn prune_ended(&self, now: DateTime<Utc>) -> Result<usize>;
 }

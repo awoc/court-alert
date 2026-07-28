@@ -50,8 +50,6 @@ impl AlertMessageRepository for SqliteStore {
     async fn plan_strikes(&self, slots: &[BookableSlotId]) -> Result<Vec<StrikePlan>> {
         let slots = slots.to_vec();
         self.with_conn("plan_alert_message_strikes", move |connection| {
-            // Which message holds each slot, and at which line. A slot can be
-            // unstruck in several messages; every one of them is repaired.
             let mut planned: BTreeMap<String, Vec<u32>> = BTreeMap::new();
             {
                 let mut find = connection
@@ -171,8 +169,6 @@ impl AlertMessageRepository for SqliteStore {
 
 #[cfg(test)]
 impl SqliteStore {
-    /// Inserts a single line at an explicit index, so tests can write rows in
-    /// an order other than ascending `line_index`.
     async fn record_message_line(
         &self,
         message_id: &str,
@@ -247,12 +243,6 @@ mod tests {
         assert!(again.is_empty(), "a struck line is never planned again");
     }
 
-    /// `AlertLine` carries no index, so rendering depends entirely on the
-    /// returned order. Insert the rows in reverse to rule out an
-    /// insertion-order coincidence. Note that the schema's `WITHOUT ROWID`
-    /// clustering on `(message_id, line_index)` means this test alone cannot
-    /// detect a dropped `ORDER BY` — that contract is pinned by the port's
-    /// documentation, not by this test.
     #[tokio::test]
     async fn planned_lines_come_back_in_line_index_order() {
         let store = SqliteStore::open_in_memory().await.unwrap();
@@ -279,8 +269,6 @@ mod tests {
     async fn a_slot_unstruck_in_two_messages_is_planned_in_both() {
         let store = SqliteStore::open_in_memory().await.unwrap();
         let first = line("Court 1", 8);
-        // `std::slice::from_ref`, not `&[first.clone()]` — clippy's
-        // `cloned_ref_to_slice_refs` is on by default and `-D warnings` is a gate.
         store
             .record_message("1408", std::slice::from_ref(&first))
             .await
@@ -350,10 +338,6 @@ mod tests {
         Utc.with_ymd_and_hms(2030, 1, 1, 0, 0, 0).unwrap()
     }
 
-    /// The retention rule. A slot with no booking deadline stays bookable after
-    /// its own start time, so its removal can arrive mid-slot and must still
-    /// find a row to strike. Past `ends_at` it cannot be bookable at all, which
-    /// is the first moment nothing about the message can change again.
     #[tokio::test]
     async fn a_slot_that_has_started_but_not_ended_keeps_its_rows() {
         let store = SqliteStore::open_in_memory().await.unwrap();
@@ -375,18 +359,15 @@ mod tests {
     #[tokio::test]
     async fn pruning_drops_only_messages_whose_slots_have_all_ended() {
         let store = SqliteStore::open_in_memory().await.unwrap();
-        // Slots 08:00–09:00 and 09:00–10:00 on 2026-07-13.
         store
             .record_message("past", &[line("Court 1", 8), line("Court 2", 9)])
             .await
             .unwrap();
-        // One over, one still to come — the message must survive.
         store
             .record_message("mixed", &[line("Court 3", 8), line("Court 4", 20)])
             .await
             .unwrap();
 
-        // 10:00 on the same day: "past" is fully over, "mixed" is not.
         let now = Utc.with_ymd_and_hms(2026, 7, 13, 10, 0, 0).unwrap();
         let removed = store.prune_ended(now).await.unwrap();
 
@@ -404,8 +385,6 @@ mod tests {
         assert_eq!(store.prune_ended(far_future()).await.unwrap(), 0);
     }
 
-    /// A slot ending exactly at `now` is over. With a `<` comparison it would
-    /// survive, and since pruning runs once a day, survive until tomorrow.
     #[tokio::test]
     async fn a_slot_ending_exactly_now_counts_as_over() {
         let store = SqliteStore::open_in_memory().await.unwrap();

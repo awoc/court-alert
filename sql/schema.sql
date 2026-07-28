@@ -31,10 +31,7 @@ CREATE TABLE IF NOT EXISTS bookable_slots (
     CHECK (ends_at > starts_at)
 ) STRICT, WITHOUT ROWID;
 
--- Slot lines announced to the general alert webhook, retained so a slot that
--- stops being bookable can be struck through in place instead of re-announced.
--- Outlives `bookable_slots`: a row must survive its slot becoming unbookable,
--- because a struck line stays visible until every slot in its message started.
+-- Posted alert lines retained after a slot becomes unbookable so its message can be edited.
 CREATE TABLE IF NOT EXISTS alert_message_slots (
     message_id TEXT    NOT NULL CHECK (message_id <> ''),
     line_index INTEGER NOT NULL CHECK (line_index >= 0),
@@ -47,6 +44,5 @@ CREATE TABLE IF NOT EXISTS alert_message_slots (
     CHECK (ends_at > starts_at)
 ) STRICT, WITHOUT ROWID;
 
--- Only unstruck lines are ever looked up by slot.
 CREATE INDEX IF NOT EXISTS alert_message_slots_slot_idx
     ON alert_message_slots (court_id, starts_at) WHERE struck = 0;

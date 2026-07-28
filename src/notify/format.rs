@@ -1,13 +1,8 @@
 use crate::model::{AlertLine, AvailabilityChange, BookableSlot, BookableSlotId};
 use crate::text::{DISCORD_CHUNK_BUDGET, fmt_slot_line};
 
-/// Characters a strikethrough adds to a line: `~~` on each side. Chunking
-/// budgets every line at its struck width so that a message which later has
-/// every line struck still fits inside Discord's limit.
 const STRIKE_MARKUP_CHARS: usize = 4;
 
-/// Discord's `~~` does not span newlines, so each struck line carries its own
-/// pair. Never wrap the whole message in one.
 pub(super) fn render_line(line: &AlertLine) -> String {
     let text = fmt_slot_line(&line.court_name, line.starts_at, line.ends_at);
     if line.struck {
@@ -21,9 +16,6 @@ pub(super) fn render(lines: &[AlertLine]) -> String {
     lines.iter().map(render_line).collect::<Vec<_>>().join("\n")
 }
 
-/// Packs slots into messages, budgeting each line at its *struck* width so a
-/// fully struck message still fits. Never splits a line, so one slot is always
-/// one line is always one stored row.
 pub(super) fn chunk_slots(slots: &[&BookableSlot]) -> Vec<Vec<AlertLine>> {
     let mut chunks = Vec::new();
     let mut current: Vec<AlertLine> = Vec::new();
@@ -31,6 +23,7 @@ pub(super) fn chunk_slots(slots: &[&BookableSlot]) -> Vec<Vec<AlertLine>> {
 
     for slot in slots {
         let line = AlertLine::from(*slot);
+        // Reserve room for adding strike markers in a later edit.
         let cost = render_line(&line).chars().count() + STRIKE_MARKUP_CHARS;
         let separator = usize::from(!current.is_empty());
         if !current.is_empty() && current_chars + separator + cost > DISCORD_CHUNK_BUDGET {
@@ -148,8 +141,6 @@ mod tests {
         assert!(chunk_slots(&[]).is_empty());
     }
 
-    /// The reason chunking budgets the struck width: an unstruck message packed
-    /// to the budget would overflow Discord's limit once every line is struck.
     #[test]
     fn a_fully_struck_chunk_stays_within_discords_limit() {
         let slots: Vec<_> = (0..500)

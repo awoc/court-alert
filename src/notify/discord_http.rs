@@ -1,6 +1,3 @@
-//! HTTP details shared by the two Discord webhook clients: rate-limit backoff
-//! and keeping the webhook token out of logs.
-
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -15,16 +12,10 @@ pub(super) fn parse_retry_after(value: &str) -> Option<Duration> {
     value.trim().parse().ok().and_then(duration_from_seconds)
 }
 
-/// Rejects negative, NaN, infinite, and — unlike a bare `is_finite()` guard —
-/// finite values too large for a `Duration`. `Duration::from_secs_f64` panics
-/// on those, and the value comes from a `Retry-After` header we do not control.
 pub(super) fn duration_from_seconds(seconds: f64) -> Option<Duration> {
     Duration::try_from_secs_f64(seconds).ok()
 }
 
-/// How long to wait before a rate-limited retry. Discord sends the delay in a
-/// `Retry-After` header and again in the JSON body; the header wins, and both
-/// are capped so a hostile or buggy value cannot stall a poll tick.
 pub(super) fn retry_delay(header: Option<Duration>, body: &str) -> Duration {
     #[derive(Deserialize)]
     struct RateLimitBody {
@@ -41,14 +32,8 @@ pub(super) fn retry_delay(header: Option<Duration>, body: &str) -> Duration {
         .min(MAX_RETRY_AFTER)
 }
 
-/// Sends a request, resending it while Discord answers 429, and returns the
-/// final status and body for the caller to interpret — a 404 means different
-/// things to a POST and to a PATCH, so only the rate-limit handling is shared.
-///
-/// `request` is called afresh per attempt because a `RequestBuilder` cannot be
-/// cloned once it carries a body. Only the response is retried, never a
-/// transport error: a timeout leaves us unable to say whether Discord acted on
-/// the request, and resending a POST on that would double-alert the channel.
+/// Retries explicit rate-limit responses only. Retrying a transport error could
+/// duplicate a POST that Discord accepted before the response was lost.
 pub(super) async fn send_with_rate_limit_retry(
     request: impl Fn() -> reqwest::RequestBuilder,
     context: &'static str,
@@ -58,7 +43,7 @@ pub(super) async fn send_with_rate_limit_retry(
         let response = request()
             .send()
             .await
-            // Carries the webhook URL, token and all, into any log line.
+            // Keep the webhook token out of errors that may be logged.
             .map_err(reqwest::Error::without_url)
             .context(context)?;
         let status = response.status();
@@ -109,10 +94,6 @@ pub(super) fn redact_discord_webhook_tokens(input: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Asserted on the whole string rather than with `contains`: the point of
-    /// this function is that nothing of the token survives, so a regression
-    /// that swallowed the trailing text or left a token suffix behind has to
-    /// fail here.
     #[test]
     fn redacts_discord_webhook_tokens_in_error_bodies() {
         let input = "posting to https://discord.com/api/webhooks/123/abcDEF-_. failed";
@@ -122,8 +103,6 @@ mod tests {
         );
     }
 
-    /// The scan resumes *after* the replacement, so a second URL later in the
-    /// same message is redacted too — a batched error report carries several.
     #[test]
     fn redacts_every_token_in_a_message() {
         let input = "https://discord.com/api/webhooks/1/first and \
@@ -167,9 +146,6 @@ mod tests {
         assert!(parse_retry_after("soon").is_none());
     }
 
-    /// `1e300` is finite and positive, so an `is_finite() && >= 0.0` guard lets
-    /// it through — and `Duration::from_secs_f64` then panics on it. The cap in
-    /// `retry_delay` cannot help, because it applies after the conversion.
     #[test]
     fn a_finite_but_enormous_delay_is_rejected_rather_than_panicking() {
         assert!(duration_from_seconds(1e300).is_none());

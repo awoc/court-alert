@@ -3,11 +3,8 @@ use uuid::Uuid;
 
 use super::BookableSlot;
 
-/// One announced slot: a single line of a posted alert message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlertLine {
-    /// Identifies the slot this line announced. Not rendered — it is what
-    /// `record_message` writes and `plan_strikes` matches on.
     pub court_id: Uuid,
     pub court_name: String,
     pub starts_at: DateTime<Utc>,
@@ -15,17 +12,12 @@ pub struct AlertLine {
     pub struck: bool,
 }
 
-/// A posted alert message we can still edit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlertMessage {
     pub id: String,
-    /// Always in ascending `line_index` order — rendering depends on it.
     pub lines: Vec<AlertLine>,
 }
 
-/// A message with proposed strikes already applied to `message.lines`, plus the
-/// `line_index` values that were flipped to produce it. Only `plan_strikes`
-/// produces one, which is why `newly_struck` does not live on `AlertMessage`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StrikePlan {
     pub message: AlertMessage,
