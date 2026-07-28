@@ -1,21 +1,18 @@
 use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 
 use super::*;
-use crate::config::MonitoredCourt;
-use crate::model::SlotObservation;
+
+use crate::model::{Court, SlotObservation};
 use crate::store::SqliteStore;
 
-fn court() -> MonitoredCourt {
-    toml::from_str(
-        r#"
-            id = "00000000-0000-0000-0000-000000000001"
-            name = "Court 1"
-        "#,
+fn court() -> Court {
+    Court::new(
+        uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
+        "Court 1".to_owned(),
     )
-    .unwrap()
 }
 
-fn observation(court: &MonitoredCourt) -> SlotObservation {
+fn observation(court: &Court) -> SlotObservation {
     let starts_at = Utc.with_ymd_and_hms(2026, 6, 2, 8, 0, 0).unwrap();
     SlotObservation {
         court_id: court.id(),

@@ -24,11 +24,11 @@ pub trait AlertMessageRepository: Send + Sync {
     /// repaired.
     async fn plan_strikes(&self, slots: &[BookableSlotId]) -> Result<Vec<StrikePlan>>;
 
-    /// Persists the planned strikes, after Discord confirmed the edit. Called
-    /// with a plan's `message.id` and its `newly_struck`.
+    /// Persists the planned strikes, after the channel confirmed the edit.
+    /// Called with a plan's `message.id` and its `newly_struck`.
     async fn commit_strikes(&self, message_id: &str, lines: &[u32]) -> Result<()>;
 
-    /// Drops all rows of a message that no longer exists in Discord.
+    /// Drops all rows of a message that no longer exists in the channel.
     async fn forget_message(&self, message_id: &str) -> Result<()>;
 
     /// Drops messages whose slots have all ended — the first moment nothing

@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use super::BookableSlot;
 
-/// One announced slot: a single line of a Discord alert message.
+/// One announced slot: a single line of a posted alert message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlertLine {
     /// Identifies the slot this line announced. Not rendered — it is what

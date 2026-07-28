@@ -1,12 +1,11 @@
 use chrono::{DateTime, Utc};
 use tracing::{debug, warn};
 
-use crate::config::MonitoredCourt;
-use crate::model::{BookableSlotId, BookableSlotSnapshot, SlotObservation};
+use crate::model::{BookableSlotId, BookableSlotSnapshot, Court, SlotObservation};
 use crate::time::fmt_berlin_log;
 
 pub(super) fn build_snapshot(
-    fetched: Vec<(&MonitoredCourt, Vec<SlotObservation>)>,
+    fetched: Vec<(&Court, Vec<SlotObservation>)>,
     observed_at: DateTime<Utc>,
 ) -> BookableSlotSnapshot {
     let mut snapshot = BookableSlotSnapshot::new();

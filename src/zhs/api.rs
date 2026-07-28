@@ -4,8 +4,7 @@ use chrono::{DateTime, Utc};
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::config::MonitoredCourt;
-use crate::model::SlotObservation;
+use crate::model::{Court, SlotObservation};
 use crate::ports::SlotAvailabilitySource;
 
 use super::auth::Auth;
@@ -32,7 +31,7 @@ impl ZhsSlotAvailabilitySource {
 impl SlotAvailabilitySource for ZhsSlotAvailabilitySource {
     async fn fetch(
         &self,
-        court: &MonitoredCourt,
+        court: &Court,
         starts_at: DateTime<Utc>,
         ends_at: DateTime<Utc>,
     ) -> Result<Vec<SlotObservation>> {

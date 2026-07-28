@@ -1,8 +1,10 @@
 mod alert_message;
+mod court;
 mod slot;
 mod subscription;
 
 pub use alert_message::{AlertLine, AlertMessage, StrikePlan};
+pub use court::Court;
 pub use slot::{
     AvailabilityChange, BookableSlot, BookableSlotId, BookableSlotSnapshot, SlotObservation,
     diff_availability,

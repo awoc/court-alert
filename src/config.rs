@@ -6,6 +6,8 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::model::Court;
+
 const MAX_LOOKAHEAD_DAYS: i64 = 366;
 const DEFAULT_CONFIG_PATH: &str = "config.toml";
 const DEFAULT_DB_PATH: &str = "data/court-alert.db";
@@ -20,7 +22,7 @@ pub struct Config {
     quiet_first_poll: bool,
     operating_window_start_hour: u32,
     operating_window_end_hour: u32,
-    courts: Vec<MonitoredCourt>,
+    courts: Vec<Court>,
 }
 
 #[derive(Deserialize)]
@@ -35,7 +37,16 @@ struct ConfigFile {
     #[serde(default = "default_window_end_hour")]
     operating_window_end_hour: u32,
     #[serde(rename = "products")]
-    courts: Vec<MonitoredCourt>,
+    courts: Vec<CourtEntry>,
+}
+
+/// A court as the config file spells it. Kept separate from [`Court`] so the
+/// model type carries no serde derive and cannot be constructed unvalidated:
+/// entries are trimmed and checked in `validated_courts` on the way through.
+#[derive(Deserialize)]
+struct CourtEntry {
+    id: Uuid,
+    name: String,
 }
 
 fn default_true() -> bool {
@@ -48,12 +59,6 @@ fn default_window_start_hour() -> u32 {
 
 fn default_window_end_hour() -> u32 {
     DEFAULT_WINDOW_END_HOUR
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct MonitoredCourt {
-    id: Uuid,
-    name: String,
 }
 
 impl Config {
@@ -79,7 +84,7 @@ impl Config {
             quiet_first_poll: file.quiet_first_poll,
             operating_window_start_hour: file.operating_window_start_hour,
             operating_window_end_hour: file.operating_window_end_hour,
-            courts: file.courts,
+            courts: validated_courts(file.courts)?,
         }
         .validate()
     }
@@ -115,17 +120,6 @@ impl Config {
         );
         self.base_url = url.as_str().trim_end_matches('/').to_string();
 
-        anyhow::ensure!(!self.courts.is_empty(), "products must not be empty");
-        let mut ids = HashSet::with_capacity(self.courts.len());
-        for court in &mut self.courts {
-            court.name = court.name.trim().to_string();
-            anyhow::ensure!(
-                !court.name.is_empty(),
-                "product {} has a blank name",
-                court.id
-            );
-            anyhow::ensure!(ids.insert(court.id), "duplicate product id {}", court.id);
-        }
         Ok(self)
     }
 
@@ -153,23 +147,32 @@ impl Config {
         self.operating_window_end_hour
     }
 
-    pub fn courts(&self) -> &[MonitoredCourt] {
+    pub fn courts(&self) -> &[Court] {
         &self.courts
     }
 
     pub fn court_names(&self) -> Vec<String> {
-        self.courts.iter().map(|court| court.name.clone()).collect()
+        self.courts
+            .iter()
+            .map(|court| court.name().to_owned())
+            .collect()
     }
 }
 
-impl MonitoredCourt {
-    pub fn id(&self) -> Uuid {
-        self.id
+/// Trims each name and rejects blanks and duplicate ids, then hands back model
+/// types. This is the only place a [`Court`] is built, so every one in the
+/// program has a non-blank name and a unique id.
+fn validated_courts(entries: Vec<CourtEntry>) -> Result<Vec<Court>> {
+    anyhow::ensure!(!entries.is_empty(), "products must not be empty");
+    let mut ids = HashSet::with_capacity(entries.len());
+    let mut courts = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let name = entry.name.trim().to_string();
+        anyhow::ensure!(!name.is_empty(), "product {} has a blank name", entry.id);
+        anyhow::ensure!(ids.insert(entry.id), "duplicate product id {}", entry.id);
+        courts.push(Court::new(entry.id, name));
     }
-
-    pub fn name(&self) -> &str {
-        &self.name
-    }
+    Ok(courts)
 }
 
 pub struct Credentials {
