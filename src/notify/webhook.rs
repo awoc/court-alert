@@ -6,7 +6,7 @@ use chrono::{NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use crate::domain::{AlertLine, AvailabilityChange};
+use crate::model::{AlertLine, AvailabilityChange};
 use crate::ports::{AlertMessageRepository, AvailabilityChangeSink};
 use crate::time::today_berlin;
 
@@ -277,7 +277,7 @@ impl AvailabilityChangeSink for DiscordNotifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{BookableSlot, BookableSlotId};
+    use crate::model::{BookableSlot, BookableSlotId};
     use crate::store::SqliteStore;
     use chrono::{TimeZone, Utc};
     use std::sync::atomic::{AtomicUsize, Ordering};

@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-use crate::domain::{AlertLine, BookableSlotId, StrikePlan};
+use crate::model::{AlertLine, BookableSlotId, StrikePlan};
 
 /// Tracks which alert message announced which slot, so a slot that stops being
 /// bookable can be struck through in the message that announced it.

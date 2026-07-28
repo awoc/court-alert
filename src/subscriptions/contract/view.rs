@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use crate::domain::{BookableSlot, ProviderUserRef, Schedule, Subscription, TimeRange};
+use crate::model::{BookableSlot, ProviderUserRef, Schedule, Subscription, TimeRange};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubscriptionSummary {

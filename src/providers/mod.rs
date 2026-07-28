@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use tokio::sync::watch;
 
 use crate::config::Settings;
-use crate::domain::ProviderUserRef;
+use crate::model::ProviderUserRef;
 use crate::subscriptions::SubscriptionService;
 
 #[async_trait]

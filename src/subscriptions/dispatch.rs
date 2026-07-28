@@ -1,7 +1,7 @@
 use tokio::sync::mpsc::Receiver;
 use tracing::warn;
 
-use crate::domain::AvailabilityChange;
+use crate::model::AvailabilityChange;
 use crate::subscriptions::contract::AvailabilityAlert;
 
 use super::SubscriptionService;
@@ -80,7 +80,7 @@ impl SubscriptionService {
 #[cfg(test)]
 mod tests {
     use super::super::testing::{service, service_with_store, subscribe_cmd, uref};
-    use crate::domain::{AvailabilityChange, BookableSlot, Schedule, SubscriptionDraft, TimeRange};
+    use crate::model::{AvailabilityChange, BookableSlot, Schedule, SubscriptionDraft, TimeRange};
     use crate::ports::SubscriptionRepository;
     use crate::subscriptions::contract::{AvailabilityAlert, DirectMessageSender};
     use crate::time::today_berlin;

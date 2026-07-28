@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::domain::AvailabilityChange;
+use crate::model::AvailabilityChange;
 
 #[async_trait]
 pub trait AvailabilityChangeSink: Send + Sync {

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::domain::{BookableSlot, BookableSlotSnapshot};
+use crate::model::{BookableSlot, BookableSlotSnapshot};
 
 #[async_trait]
 pub trait BookableSlotSnapshotRepository: Send + Sync {

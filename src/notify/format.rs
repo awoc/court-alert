@@ -1,4 +1,4 @@
-use crate::domain::{AlertLine, AvailabilityChange, BookableSlot, BookableSlotId};
+use crate::model::{AlertLine, AvailabilityChange, BookableSlot, BookableSlotId};
 use crate::text::{DISCORD_CHUNK_BUDGET, fmt_slot_line};
 
 /// Characters a strikethrough adds to a line: `~~` on each side. Chunking

@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rusqlite::params;
 
-use crate::domain::{AlertLine, AlertMessage, BookableSlotId, StrikePlan};
+use crate::model::{AlertLine, AlertMessage, BookableSlotId, StrikePlan};
 use crate::ports::AlertMessageRepository;
 
 use super::{AlertMessageRow, DbRepr, SqliteStore};

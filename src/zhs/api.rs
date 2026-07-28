@@ -5,7 +5,7 @@ use tracing::debug;
 use uuid::Uuid;
 
 use crate::config::MonitoredCourt;
-use crate::domain::SlotObservation;
+use crate::model::SlotObservation;
 use crate::ports::SlotAvailabilitySource;
 
 use super::auth::Auth;

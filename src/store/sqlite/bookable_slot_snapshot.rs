@@ -4,7 +4,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::params;
 use uuid::Uuid;
 
-use crate::domain::{BookableSlot, BookableSlotId, BookableSlotSnapshot};
+use crate::model::{BookableSlot, BookableSlotId, BookableSlotSnapshot};
 use crate::ports::BookableSlotSnapshotRepository;
 
 use super::{BookableSlotRow, DbRepr, SqliteStore};

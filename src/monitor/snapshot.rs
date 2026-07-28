@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use tracing::{debug, warn};
 
 use crate::config::MonitoredCourt;
-use crate::domain::{BookableSlotId, BookableSlotSnapshot, SlotObservation};
+use crate::model::{BookableSlotId, BookableSlotSnapshot, SlotObservation};
 use crate::time::fmt_berlin_log;
 
 pub(super) fn build_snapshot(

@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::Row;
 use uuid::Uuid;
 
-use crate::domain::BookableSlot;
+use crate::model::BookableSlot;
 
 use super::DbRepr;
 

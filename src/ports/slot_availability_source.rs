@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::config::MonitoredCourt;
-use crate::domain::SlotObservation;
+use crate::model::SlotObservation;
 
 #[async_trait]
 pub trait SlotAvailabilitySource: Send + Sync {

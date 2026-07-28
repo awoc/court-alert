@@ -9,7 +9,7 @@ pub use webhook::DiscordNotifier;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
-use crate::domain::AvailabilityChange;
+use crate::model::AvailabilityChange;
 use crate::ports::AvailabilityChangeSink;
 
 pub struct ChannelSink(tokio::sync::mpsc::Sender<Vec<AvailabilityChange>>);

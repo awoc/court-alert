@@ -2,7 +2,7 @@ use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 
 use super::*;
 use crate::config::MonitoredCourt;
-use crate::domain::SlotObservation;
+use crate::model::SlotObservation;
 use crate::store::SqliteStore;
 
 fn court() -> MonitoredCourt {

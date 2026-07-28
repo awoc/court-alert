@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use chrono::{Datelike, NaiveDate, Weekday};
 
-use crate::domain::Schedule;
+use crate::model::Schedule;
 
 pub fn parse_schedule(s: &str, today: NaiveDate) -> Result<Schedule> {
     let s = s.trim();
