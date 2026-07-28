@@ -37,9 +37,16 @@ pub struct DiscordNotifier {
 
 impl DiscordNotifier {
     pub fn new(
-        webhook_url: reqwest::Url,
+        mut webhook_url: reqwest::Url,
         messages: Arc<dyn AlertMessageRepository>,
     ) -> Result<Self> {
+        // A URL pasted with a trailing slash ends in an empty path segment, and
+        // `edit_url` would append after it: `.../token//messages/{id}`. Dropping
+        // it once here keeps both the POST and the PATCH addressing the webhook.
+        webhook_url
+            .path_segments_mut()
+            .map_err(|()| anyhow!("Discord webhook URL cannot be a base"))?
+            .pop_if_empty();
         let client = reqwest::Client::builder()
             .timeout(HTTP_TIMEOUT)
             .build()
@@ -560,6 +567,34 @@ mod tests {
             .unwrap();
         assert_eq!(plans.len(), 1, "the retried post was recorded");
         assert_eq!(plans[0].message.id, "1408");
+    }
+
+    /// A webhook URL pasted with a trailing slash is still the same webhook.
+    /// `path_segments_mut` appends *after* the empty final segment, so an
+    /// un-normalised URL addresses `.../token//messages/1408`, which Discord
+    /// answers with a 404 that is not code 10008: every edit fails while posts
+    /// keep working, so nothing is ever struck and nothing looks wrong.
+    #[tokio::test]
+    async fn a_trailing_slash_in_the_webhook_url_still_addresses_the_message() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/webhooks/123/token/messages/1408"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let store = Arc::new(SqliteStore::open_in_memory().await.unwrap());
+        let url = format!("{}/api/webhooks/123/token/", server.uri())
+            .parse()
+            .unwrap();
+        let notifier = DiscordNotifier::new(url, store.clone()).unwrap();
+        let gone = slot("Court 2", 18);
+        seed(&store, "1408", &gone).await;
+
+        notifier
+            .publish(&[AvailabilityChange::BecameUnbookable(gone)])
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
