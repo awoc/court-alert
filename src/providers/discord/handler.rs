@@ -5,7 +5,7 @@ use anyhow::{Context as _, Result};
 use serenity::all::{
     ButtonStyle, CommandInteraction, ComponentInteraction, Context, CreateActionRow, CreateButton,
     CreateInteractionResponse, CreateInteractionResponseFollowup, CreateInteractionResponseMessage,
-    EventHandler, GuildId, Interaction, Message, Ready, UserId,
+    EventHandler, GuildId, Interaction, InteractionContext, Message, Ready, UserId,
 };
 use serenity::async_trait;
 use tracing::{error, info, warn};
@@ -95,7 +95,7 @@ impl Handler {
 }
 
 async fn reply(ctx: &Context, cmd: &CommandInteraction, messages: &[ReplyMessage]) -> Result<()> {
-    let ephemeral = hides_from_others(cmd.guild_id);
+    let ephemeral = hides_from_others(cmd.context);
     let first = messages
         .first()
         .context("cannot send an empty interaction response")?;
@@ -132,7 +132,7 @@ async fn replace_message(
         .create_response(&ctx.http, response)
         .await
         .context("updating the message the component belongs to")?;
-    let ephemeral = hides_from_others(component.guild_id);
+    let ephemeral = hides_from_others(component.context);
     send_followups(&messages[1..], ephemeral, |f| {
         component.create_followup(&ctx.http, f)
     })
@@ -146,7 +146,7 @@ async fn answer_stale_button(ctx: &Context, component: &ComponentInteraction) ->
     let response = CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
             .content("This button no longer works. Run `/list` to get a fresh one.")
-            .ephemeral(hides_from_others(component.guild_id)),
+            .ephemeral(hides_from_others(component.context)),
     );
     component
         .create_response(&ctx.http, response)
@@ -188,8 +188,8 @@ fn followup(message: &ReplyMessage, ephemeral: bool) -> CreateInteractionRespons
         .ephemeral(ephemeral)
 }
 
-fn hides_from_others(guild_id: Option<GuildId>) -> bool {
-    guild_id.is_some()
+fn hides_from_others(context: Option<InteractionContext>) -> bool {
+    context != Some(InteractionContext::BotDm)
 }
 
 fn components(message: &ReplyMessage) -> Vec<CreateActionRow> {
@@ -200,4 +200,32 @@ fn components(message: &ReplyMessage) -> Vec<CreateActionRow> {
                 .style(ButtonStyle::Danger),
         ])]
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_dm_with_the_bot_is_private_enough_to_show_a_reply_openly() {
+        assert!(!hides_from_others(Some(InteractionContext::BotDm)));
+    }
+
+    #[test]
+    fn replies_anywhere_others_can_read_along_stay_hidden() {
+        for context in [
+            InteractionContext::Guild,
+            InteractionContext::PrivateChannel,
+        ] {
+            assert!(
+                hides_from_others(Some(context)),
+                "{context:?} must not be answered in the open"
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_context_is_treated_as_public() {
+        assert!(hides_from_others(None));
+    }
 }
