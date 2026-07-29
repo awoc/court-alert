@@ -83,6 +83,15 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
     text_messages(lines)
 }
 
+pub(super) fn render_button_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
+    match reply {
+        SubscriptionResult::NotFound { id } => render_text(&format!(
+            "Reminder #{id} is already gone. Run `/list` for the current ones."
+        )),
+        reply => render_reply(reply),
+    }
+}
+
 pub(super) fn render_text(message: &str) -> Vec<ReplyMessage> {
     text_messages(vec![message.to_string()])
 }
@@ -350,6 +359,32 @@ mod tests {
         );
         assert!(reply_text(&SubscriptionResult::NotFound { id: 3 }).contains("#3"));
         assert!(reply_text(&SubscriptionResult::InvalidTimeRange).contains("'to'"));
+    }
+
+    #[test]
+    fn a_button_that_finds_nothing_reports_a_reminder_already_gone() {
+        let text = join(&render_button_reply(&SubscriptionResult::NotFound {
+            id: 3,
+        }));
+
+        assert!(text.contains("#3"), "the reminder is not named: {text}");
+        assert!(text.contains("already gone"), "reads as an error: {text}");
+        // The slash command keeps its own wording, where a bad id is possible.
+        assert!(reply_text(&SubscriptionResult::NotFound { id: 3 }).contains("belongs to you"));
+    }
+
+    #[test]
+    fn a_button_renders_every_other_outcome_like_the_command_does() {
+        for reply in [
+            SubscriptionResult::Unsubscribed { id: 3 },
+            SubscriptionResult::NotAuthorized,
+            SubscriptionResult::SubscriptionList(summaries(3)),
+        ] {
+            assert_eq!(
+                join(&render_button_reply(&reply)),
+                join(&render_reply(&reply))
+            );
+        }
     }
 
     #[test]

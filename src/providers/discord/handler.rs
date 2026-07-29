@@ -13,12 +13,12 @@ use tracing::{error, info, warn};
 use crate::model::ProviderUserRef;
 use crate::providers::ReadySignal;
 use crate::subscriptions::SubscriptionService;
-use crate::subscriptions::contract::SubscriptionCommand;
+use crate::subscriptions::contract::{SubscriptionCommand, SubscriptionResult};
 
 use super::PROVIDER_NAME;
 use super::commands::register_commands;
 use super::parse::{parse_component, parse_interaction, unsubscribe_custom_id};
-use super::render::{ReplyMessage, render_help, render_reply, render_text};
+use super::render::{ReplyMessage, render_button_reply, render_help, render_reply, render_text};
 
 pub(super) struct Handler {
     pub(super) service: Arc<SubscriptionService>,
@@ -51,7 +51,7 @@ impl Handler {
             render_help()
         } else {
             match parse_interaction(cmd) {
-                Ok(command) => self.run(cmd.user.id, command).await,
+                Ok(command) => self.run(cmd.user.id, command, render_reply).await,
                 Err(e) => render_text(&format!("Error: {e:#}")),
             }
         };
@@ -73,19 +73,26 @@ impl Handler {
                 return;
             }
         };
-        let messages = self.run(component.user.id, command).await;
+        let messages = self
+            .run(component.user.id, command, render_button_reply)
+            .await;
         if let Err(e) = replace_message(ctx, component, &messages).await {
             error!(error = %format!("{e:#}"), "failed to update interaction message");
         }
     }
 
-    async fn run(&self, user_id: UserId, command: SubscriptionCommand) -> Vec<ReplyMessage> {
+    async fn run(
+        &self,
+        user_id: UserId,
+        command: SubscriptionCommand,
+        render: impl Fn(&SubscriptionResult) -> Vec<ReplyMessage> + Send,
+    ) -> Vec<ReplyMessage> {
         let user = ProviderUserRef {
             provider: PROVIDER_NAME.to_string(),
             user_id: user_id.get().to_string(),
         };
         match self.service.handle(&user, command).await {
-            Ok(reply) => render_reply(&reply),
+            Ok(reply) => render(&reply),
             Err(e) => {
                 error!(error = %format!("{e:#}"), "command handling failed");
                 render_text("Error: something went wrong internally, please try again later.")
@@ -141,12 +148,13 @@ async fn replace_message(
 }
 
 /// A button whose id we no longer understand — after a rename of the wire
-/// format, say. Answering keeps the click from failing visibly.
+/// format, say. Replacing the message it sits on both answers the click and
+/// retires the button, so it cannot be clicked into the same dead end again.
 async fn answer_stale_button(ctx: &Context, component: &ComponentInteraction) -> Result<()> {
-    let response = CreateInteractionResponse::Message(
+    let response = CreateInteractionResponse::UpdateMessage(
         CreateInteractionResponseMessage::new()
             .content("This button no longer works. Run `/list` to get a fresh one.")
-            .ephemeral(hides_from_others(component.context)),
+            .components(Vec::new()),
     );
     component
         .create_response(&ctx.http, response)
@@ -227,5 +235,30 @@ mod tests {
     #[test]
     fn a_missing_context_is_treated_as_public() {
         assert!(hides_from_others(None));
+    }
+
+    #[test]
+    fn a_message_without_a_reminder_id_carries_no_button() {
+        let message = ReplyMessage {
+            content: "**Your reminders:**".to_string(),
+            unsubscribe_id: None,
+        };
+        assert!(components(&message).is_empty());
+    }
+
+    #[test]
+    fn a_listed_reminder_carries_a_button_naming_it() {
+        let message = ReplyMessage {
+            content: "#7 – Tue".to_string(),
+            unsubscribe_id: Some(7),
+        };
+        let rows = components(&message);
+        assert_eq!(rows.len(), 1);
+        // The id has to survive the round trip, or the click cannot be routed.
+        let command = parse_component(&unsubscribe_custom_id(7)).unwrap();
+        assert!(matches!(
+            command,
+            SubscriptionCommand::Unsubscribe { id: 7 }
+        ));
     }
 }
