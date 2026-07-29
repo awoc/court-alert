@@ -11,6 +11,20 @@ const MAX_COURTS: usize = 20;
 const MAX_COURT_NAME_CHARS: usize = 100;
 const MAX_COURT_FILTER_CHARS: usize = 500;
 
+const UNSUBSCRIBE_PREFIX: &str = "unsubscribe:";
+
+pub(super) fn unsubscribe_custom_id(id: i64) -> String {
+    format!("{UNSUBSCRIBE_PREFIX}{id}")
+}
+
+pub(super) fn parse_component(custom_id: &str) -> Result<SubscriptionCommand> {
+    let id = custom_id
+        .strip_prefix(UNSUBSCRIBE_PREFIX)
+        .and_then(|id| id.parse().ok())
+        .with_context(|| format!("unknown component id: {custom_id:?}"))?;
+    Ok(SubscriptionCommand::Unsubscribe { id })
+}
+
 pub(super) fn parse_interaction(cmd: &CommandInteraction) -> Result<SubscriptionCommand> {
     match cmd.data.name.as_str() {
         "subscribe" => {
@@ -102,6 +116,25 @@ fn get_integer_opt(cmd: &CommandInteraction, name: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unsubscribe_button_click_round_trips_its_reminder_id() {
+        let command = parse_component(&unsubscribe_custom_id(7)).unwrap();
+        assert!(matches!(
+            command,
+            SubscriptionCommand::Unsubscribe { id: 7 }
+        ));
+    }
+
+    #[test]
+    fn unknown_component_ids_are_rejected() {
+        for custom_id in ["", "unsubscribe:", "unsubscribe:abc", "resubscribe:7", "7"] {
+            assert!(
+                parse_component(custom_id).is_err(),
+                "expected {custom_id:?} to be rejected"
+            );
+        }
+    }
 
     #[test]
     fn court_filter_is_trimmed_and_empty_names_are_ignored() {

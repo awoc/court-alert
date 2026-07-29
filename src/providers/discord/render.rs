@@ -1,10 +1,33 @@
 use crate::model::{Schedule, SurfaceFilter, TimeRange};
-use crate::subscriptions::contract::{AvailabilityAlert, SubscriptionResult, SubscriptionSummary};
+use crate::subscriptions::contract::{
+    AvailabilityAlert, OwnedSubscriptionSummary, SubscriptionResult, SubscriptionSummary,
+};
 use crate::text::{DISCORD_CHUNK_BUDGET, chunk_lines, fmt_slot_line};
 use crate::time::fmt_hhmm;
 
-pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<String> {
+const MAX_UNSUBSCRIBE_BUTTONS: usize = 20;
+
+pub(super) struct ReplyMessage {
+    pub(super) content: String,
+    pub(super) unsubscribe_id: Option<i64>,
+}
+
+pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
     let lines = match reply {
+        SubscriptionResult::SubscriptionList(subs) if !subs.is_empty() => {
+            return reminder_messages(
+                "**Your reminders:**",
+                subs.iter().map(|s| (summary_line(s), s.id)).collect(),
+            );
+        }
+        SubscriptionResult::AllSubscriptions(all) if !all.is_empty() => {
+            return reminder_messages(
+                "**All reminders:**",
+                all.iter()
+                    .map(|a| (owned_summary_line(a), a.summary.id))
+                    .collect(),
+            );
+        }
         SubscriptionResult::Subscribed {
             summary: s,
             open_slots,
@@ -28,13 +51,8 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<String> {
             }
             lines
         }
-        SubscriptionResult::SubscriptionList(subs) if subs.is_empty() => {
+        SubscriptionResult::SubscriptionList(_) => {
             vec!["No reminders yet. Create one with `/subscribe`.".to_string()]
-        }
-        SubscriptionResult::SubscriptionList(subs) => {
-            let mut lines = vec!["**Your reminders:**".to_string()];
-            lines.extend(subs.iter().map(summary_line));
-            lines
         }
         SubscriptionResult::Unsubscribed { id } => vec![format!("Reminder #{id} deleted.")],
         SubscriptionResult::NotFound { id } => {
@@ -57,27 +75,60 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<String> {
                 _ => format!("{} are", courts.join(", ")),
             },
         )],
-        SubscriptionResult::AllSubscriptions(all) if all.is_empty() => {
+        SubscriptionResult::AllSubscriptions(_) => {
             vec!["No reminders exist.".to_string()]
-        }
-        SubscriptionResult::AllSubscriptions(all) => {
-            let mut lines = vec!["**All reminders:**".to_string()];
-            lines.extend(all.iter().map(|a| {
-                format!(
-                    "{} – <@{}> ({})",
-                    summary_line(&a.summary),
-                    a.user.user_id,
-                    a.user.provider
-                )
-            }));
-            lines
         }
         SubscriptionResult::NotAuthorized => vec!["This command is for admins only.".to_string()],
     };
-    chunk_lines(&lines, DISCORD_CHUNK_BUDGET)
+    text_messages(lines)
 }
 
-pub(super) fn render_help() -> Vec<String> {
+pub(super) fn render_button_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
+    match reply {
+        SubscriptionResult::NotFound { id } => render_text(&format!(
+            "Reminder #{id} is already gone. Run `/list` for the current ones."
+        )),
+        reply => render_reply(reply),
+    }
+}
+
+pub(super) fn render_text(message: &str) -> Vec<ReplyMessage> {
+    text_messages(vec![message.to_string()])
+}
+
+fn text_messages(lines: Vec<String>) -> Vec<ReplyMessage> {
+    chunk_lines(&lines, DISCORD_CHUNK_BUDGET)
+        .into_iter()
+        .map(|content| ReplyMessage {
+            content,
+            unsubscribe_id: None,
+        })
+        .collect()
+}
+
+fn reminder_messages(header: &str, entries: Vec<(String, i64)>) -> Vec<ReplyMessage> {
+    let mut messages = text_messages(vec![header.to_string()]);
+    let (with_button, rest) = entries.split_at(entries.len().min(MAX_UNSUBSCRIBE_BUTTONS));
+    for (line, id) in with_button {
+        let mut chunks = text_messages(vec![line.clone()]);
+        // An overlong line is split; the button belongs below its last chunk.
+        if let Some(last) = chunks.last_mut() {
+            last.unsubscribe_id = Some(*id);
+        }
+        messages.extend(chunks);
+    }
+    if !rest.is_empty() {
+        let mut lines = vec![format!(
+            "Only the first {MAX_UNSUBSCRIBE_BUTTONS} reminders come with a button; \
+             delete the rest with `/unsubscribe id`:"
+        )];
+        lines.extend(rest.iter().map(|(line, _)| line.clone()));
+        messages.extend(text_messages(lines));
+    }
+    messages
+}
+
+pub(super) fn render_help() -> Vec<ReplyMessage> {
     let lines = [
         "**ZHS court reminders — commands:**",
         "`/subscribe day from to [courts] [surface]` — get a DM when a matching court becomes free",
@@ -88,7 +139,7 @@ pub(super) fn render_help() -> Vec<String> {
          omit to watch a whole surface",
         "• `surface`: `clay`, `synthetic` or `all`; defaults to clay, or to the \
          courts you named",
-        "`/list` — show your reminders",
+        "`/list` — show your reminders, each with a button to delete it",
         "`/unsubscribe id` — delete a reminder by its ID",
         "`/listall` — show all reminders (admin only)",
         "`/help` — show this overview",
@@ -96,7 +147,7 @@ pub(super) fn render_help() -> Vec<String> {
     .into_iter()
     .map(str::to_string)
     .collect::<Vec<_>>();
-    chunk_lines(&lines, DISCORD_CHUNK_BUDGET)
+    text_messages(lines)
 }
 
 fn summary_line(s: &SubscriptionSummary) -> String {
@@ -106,6 +157,15 @@ fn summary_line(s: &SubscriptionSummary) -> String {
         schedule_label(s.schedule),
         time_range_label(s.time_range),
         scope_label(s.courts.as_deref(), s.surface),
+    )
+}
+
+fn owned_summary_line(owned: &OwnedSubscriptionSummary) -> String {
+    format!(
+        "{} – <@{}> ({})",
+        summary_line(&owned.summary),
+        owned.user.user_id,
+        owned.user.provider
     )
 }
 
@@ -167,7 +227,28 @@ mod tests {
     }
 
     fn reply_text(reply: &SubscriptionResult) -> String {
-        render_reply(reply).join("\n")
+        join(&render_reply(reply))
+    }
+
+    fn join(messages: &[ReplyMessage]) -> String {
+        messages
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn buttons(messages: &[ReplyMessage]) -> Vec<i64> {
+        messages.iter().filter_map(|m| m.unsubscribe_id).collect()
+    }
+
+    fn summaries(count: usize) -> Vec<SubscriptionSummary> {
+        (0..count)
+            .map(|i| SubscriptionSummary {
+                id: i as i64 + 1,
+                ..summary()
+            })
+            .collect()
     }
 
     fn subscribed(summary: SubscriptionSummary) -> SubscriptionResult {
@@ -225,6 +306,52 @@ mod tests {
     }
 
     #[test]
+    fn every_listed_reminder_gets_its_own_message_with_an_unsubscribe_button() {
+        let messages = render_reply(&SubscriptionResult::SubscriptionList(summaries(3)));
+
+        assert_eq!(messages.len(), 4); // header + one per reminder
+        assert_eq!(messages[0].content, "**Your reminders:**");
+        assert_eq!(messages[0].unsubscribe_id, None); // the header has no button
+        for (message, id) in messages[1..].iter().zip(1..=3) {
+            assert!(message.content.starts_with(&format!("#{id} – ")));
+            assert_eq!(message.unsubscribe_id, Some(id));
+        }
+    }
+
+    #[test]
+    fn listed_reminders_beyond_the_button_limit_stay_plain_text() {
+        let over_limit = MAX_UNSUBSCRIBE_BUTTONS + 2;
+        let messages = render_reply(&SubscriptionResult::SubscriptionList(summaries(over_limit)));
+
+        let ids: Vec<i64> = (1..=MAX_UNSUBSCRIBE_BUTTONS as i64).collect();
+        assert_eq!(buttons(&messages), ids);
+        let text = join(&messages);
+        assert!(text.contains("/unsubscribe id"));
+        for id in ids.len() + 1..=over_limit {
+            assert!(
+                text.contains(&format!("#{id} – ")),
+                "reminder #{id} missing"
+            );
+        }
+    }
+
+    #[test]
+    fn an_overlong_reminder_keeps_its_button_below_the_last_chunk() {
+        let mut s = summary();
+        s.courts = Some(vec!["ä".repeat(DISCORD_CHUNK_BUDGET + 1)]);
+        let messages = render_reply(&SubscriptionResult::SubscriptionList(vec![s]));
+
+        assert!(messages.len() > 2);
+        assert_eq!(buttons(&messages), vec![7]);
+        assert_eq!(messages.last().unwrap().unsubscribe_id, Some(7));
+        assert!(
+            messages
+                .iter()
+                .all(|m| m.content.chars().count() <= DISCORD_CHUNK_BUDGET)
+        );
+    }
+
+    #[test]
     fn renders_unsubscribe_outcomes() {
         assert_eq!(
             reply_text(&SubscriptionResult::Unsubscribed { id: 3 }),
@@ -232,6 +359,32 @@ mod tests {
         );
         assert!(reply_text(&SubscriptionResult::NotFound { id: 3 }).contains("#3"));
         assert!(reply_text(&SubscriptionResult::InvalidTimeRange).contains("'to'"));
+    }
+
+    #[test]
+    fn a_button_that_finds_nothing_reports_a_reminder_already_gone() {
+        let text = join(&render_button_reply(&SubscriptionResult::NotFound {
+            id: 3,
+        }));
+
+        assert!(text.contains("#3"), "the reminder is not named: {text}");
+        assert!(text.contains("already gone"), "reads as an error: {text}");
+        // The slash command keeps its own wording, where a bad id is possible.
+        assert!(reply_text(&SubscriptionResult::NotFound { id: 3 }).contains("belongs to you"));
+    }
+
+    #[test]
+    fn a_button_renders_every_other_outcome_like_the_command_does() {
+        for reply in [
+            SubscriptionResult::Unsubscribed { id: 3 },
+            SubscriptionResult::NotAuthorized,
+            SubscriptionResult::SubscriptionList(summaries(3)),
+        ] {
+            assert_eq!(
+                join(&render_button_reply(&reply)),
+                join(&render_reply(&reply))
+            );
+        }
     }
 
     #[test]
@@ -336,10 +489,12 @@ mod tests {
             },
             summary: summary(),
         }]);
-        let text = reply_text(&reply);
+        let messages = render_reply(&reply);
+        let text = join(&messages);
         assert!(text.contains("42")); // owner id shown
         assert!(text.contains("#7")); // subscription id
         assert!(text.contains("Tue")); // schedule label
+        assert_eq!(buttons(&messages), vec![7]); // admins unsubscribe by button too
     }
 
     #[test]
@@ -350,7 +505,7 @@ mod tests {
 
     #[test]
     fn help_explains_every_command() {
-        let text = render_help().join("\n");
+        let text = join(&render_help());
         for cmd in ["/subscribe", "/list", "/unsubscribe", "/listall", "/help"] {
             assert!(text.contains(cmd), "help is missing {cmd}");
         }
@@ -360,12 +515,12 @@ mod tests {
 
     #[test]
     fn subscription_lists_are_paginated_within_discord_limit() {
-        let replies = render_reply(&SubscriptionResult::SubscriptionList(vec![summary(); 500]));
+        let replies = render_reply(&SubscriptionResult::SubscriptionList(summaries(500)));
         assert!(replies.len() > 1);
         assert!(
             replies
                 .iter()
-                .all(|reply| reply.chars().count() <= DISCORD_CHUNK_BUDGET)
+                .all(|reply| reply.content.chars().count() <= DISCORD_CHUNK_BUDGET)
         );
     }
 
@@ -378,7 +533,7 @@ mod tests {
         assert!(
             replies
                 .iter()
-                .all(|reply| reply.chars().count() <= DISCORD_CHUNK_BUDGET)
+                .all(|reply| reply.content.chars().count() <= DISCORD_CHUNK_BUDGET)
         );
     }
 }
