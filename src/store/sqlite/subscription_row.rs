@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{NaiveDate, Weekday};
 use rusqlite::Row;
 
-use crate::model::{ProviderUserRef, Schedule, Subscription, SurfaceFilter, TimeRange};
+use crate::model::{CourtFilter, ProviderUserRef, Schedule, Subscription, TimeRange};
 
 use super::DbRepr;
 
@@ -55,7 +55,7 @@ impl TryFrom<SubscriptionRow> for Subscription {
             schedule: Schedule::from_db((row.weekday, row.on_date))?,
             time_range,
             courts: Option::<Vec<String>>::from_db(row.courts)?,
-            surface: SurfaceFilter::from_db(row.surface)?,
+            filter: CourtFilter::from_db(row.surface)?,
         })
     }
 }
@@ -95,16 +95,23 @@ impl DbRepr for Schedule {
     }
 }
 
-impl DbRepr for SurfaceFilter {
+impl DbRepr for CourtFilter {
     type Db = String;
 
+    /// The column still spells `Any` as `'all'` and admits only the tennis
+    /// vocabulary; widening it is migration 0005's job, alongside the rename to
+    /// `court_filter`.
     fn into_db(self) -> Result<Self::Db> {
-        Ok(self.to_string())
+        Ok(match self {
+            Self::Any => "all".to_string(),
+            filter => filter.to_string(),
+        })
     }
 
     fn from_db(db: Self::Db) -> rusqlite::Result<Self> {
-        db.parse()
-            .map_err(|error| conversion_error(format!("invalid stored surface {db:?}: {error}")))
+        db.parse().map_err(|error| {
+            conversion_error(format!("invalid stored court filter {db:?}: {error}"))
+        })
     }
 }
 

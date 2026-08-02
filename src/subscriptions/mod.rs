@@ -11,7 +11,7 @@ use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, NaiveDate, Utc};
 
-use crate::model::{CourtCatalog, ProviderUserRef, SurfaceFilter};
+use crate::model::{CourtFilter, ProviderUserRef, Sport, VenueRegistry};
 use crate::ports::{BookableSlotSnapshotRepository, SubscriptionRepository};
 use contract::DirectMessageSender;
 
@@ -36,8 +36,8 @@ pub struct SubscriptionService {
     slot_snapshots: Arc<dyn BookableSlotSnapshotRepository>,
     senders: RwLock<HashMap<String, Arc<dyn DirectMessageSender>>>,
     admins: HashSet<ProviderUserRef>,
-    courts: Arc<CourtCatalog>,
-    default_surface: SurfaceFilter,
+    registry: Arc<RwLock<VenueRegistry>>,
+    default_surface: CourtFilter,
     clock: Arc<dyn Clock>,
 }
 
@@ -46,8 +46,8 @@ impl SubscriptionService {
         store: Arc<dyn SubscriptionRepository>,
         slot_snapshots: Arc<dyn BookableSlotSnapshotRepository>,
         admins: HashSet<ProviderUserRef>,
-        courts: Arc<CourtCatalog>,
-        default_surface: SurfaceFilter,
+        registry: Arc<RwLock<VenueRegistry>>,
+        default_surface: CourtFilter,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
@@ -55,7 +55,7 @@ impl SubscriptionService {
             slot_snapshots,
             senders: RwLock::new(HashMap::new()),
             admins,
-            courts,
+            registry,
             default_surface,
             clock,
         }
@@ -63,6 +63,25 @@ impl SubscriptionService {
 
     fn is_admin(&self, user: &ProviderUserRef) -> bool {
         self.admins.contains(user)
+    }
+
+    /// The court catalogs `/subscribe` operates over.
+    ///
+    /// Cloned out of the registry so the guard is released before the caller
+    /// does anything slow. With a single tennis venue this is exactly today's
+    /// catalog; the per-subscription venue scoping arrives with `/padel`.
+    fn tennis_catalogs(&self) -> Vec<(crate::model::VenueId, Arc<crate::model::CourtCatalog>)> {
+        self.registry
+            .read()
+            .expect("venue registry poisoned")
+            .catalogs_for_sport(Sport::Tennis)
+    }
+
+    fn court_names(&self) -> Vec<String> {
+        self.tennis_catalogs()
+            .iter()
+            .flat_map(|(_, catalog)| catalog.names())
+            .collect()
     }
 
     pub fn register_sender(&self, provider: &str, sender: Arc<dyn DirectMessageSender>) {

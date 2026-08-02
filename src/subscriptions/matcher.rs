@@ -1,15 +1,15 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::model::{
-    AvailabilityChange, BookableSlot, BookableSlotId, CourtCatalog, ProviderUserRef, Schedule,
-    Subscription,
+    AvailabilityChange, BookableSlot, BookableSlotId, ProviderUserRef, Schedule, Subscription,
+    VenueRegistry,
 };
 use crate::time::local_slot_time;
 
 pub(super) fn slot_matches(
     sub: &Subscription,
     slot: &BookableSlot,
-    catalog: &CourtCatalog,
+    registry: &VenueRegistry,
 ) -> bool {
     let local = local_slot_time(slot.starts_at);
     let matches_schedule = match &sub.schedule {
@@ -19,7 +19,10 @@ pub(super) fn slot_matches(
     if !matches_schedule || !sub.time_range.contains(local.minute_of_day) {
         return false;
     }
-    if !sub.surface.allows(catalog.surface_of(slot.court_id)) {
+    // The attributes come from the slot's own venue: two clubs may both have a
+    // "Court 1", and only the venue tells them apart.
+    let attributes = registry.attributes_of(&slot.venue_id, slot.court_id);
+    if !sub.filter.allows(attributes.as_ref()) {
         return false;
     }
     match &sub.courts {
@@ -34,7 +37,7 @@ pub(super) fn slot_matches(
 pub fn match_subscriptions(
     changes: &[AvailabilityChange],
     subs: &[Subscription],
-    catalog: &CourtCatalog,
+    registry: &VenueRegistry,
 ) -> HashMap<ProviderUserRef, Vec<BookableSlot>> {
     let mut out: HashMap<ProviderUserRef, Vec<BookableSlot>> = HashMap::new();
     let mut seen: HashMap<ProviderUserRef, HashSet<BookableSlotId>> = HashMap::new();
@@ -45,7 +48,7 @@ pub fn match_subscriptions(
             AvailabilityChange::BecameUnbookable(_) => continue,
         };
         for sub in subs {
-            if !slot_matches(sub, slot, catalog) {
+            if !slot_matches(sub, slot, registry) {
                 continue;
             }
             let slot_key = BookableSlotId::from(slot);
@@ -66,14 +69,15 @@ mod tests {
     use super::*;
     use chrono::{NaiveDate, TimeZone, Utc, Weekday};
 
-    use super::super::testing::{SYNTHETIC_COURT, catalog, court_id, uref};
-    use crate::model::{CourtSurface, SurfaceFilter, TimeRange};
+    use super::super::testing::{SYNTHETIC_COURT, court_id, registry, uref, venue_id};
+    use crate::model::{CourtFilter, CourtSurface, TimeRange};
 
     fn slot(name: &str, hour_utc: u32, minute_utc: u32) -> BookableSlot {
         let starts_at = Utc
             .with_ymd_and_hms(2026, 6, 2, hour_utc, minute_utc, 0)
             .unwrap();
         BookableSlot {
+            venue_id: venue_id(),
             court_id: court_id(name),
             court_name: name.into(),
             starts_at,
@@ -95,7 +99,7 @@ mod tests {
             schedule: Schedule::Weekday(weekday),
             time_range: TimeRange::new(from, to).unwrap(),
             courts: courts.map(|v| v.into_iter().map(String::from).collect()),
-            surface: SurfaceFilter::All,
+            filter: CourtFilter::Any,
         }
     }
 
@@ -106,7 +110,7 @@ mod tests {
             schedule: Schedule::Date(date),
             time_range: TimeRange::new(from, to).unwrap(),
             courts: None,
-            surface: SurfaceFilter::All,
+            filter: CourtFilter::Any,
         }
     }
 
@@ -114,7 +118,9 @@ mod tests {
         changes: &[AvailabilityChange],
         subs: &[Subscription],
     ) -> HashMap<ProviderUserRef, Vec<BookableSlot>> {
-        super::match_subscriptions(changes, subs, &catalog())
+        let registry = registry();
+        let registry = registry.read().unwrap();
+        super::match_subscriptions(changes, subs, &registry)
     }
 
     #[test]
@@ -123,15 +129,15 @@ mod tests {
     }
 
     #[test]
-    fn a_surface_filter_excludes_courts_of_other_surfaces() {
+    fn a_court_filter_excludes_courts_of_other_surfaces() {
         let changes = vec![
             AvailabilityChange::BecameBookable(slot("Court 2", 18, 0)),
             AvailabilityChange::BecameBookable(slot(SYNTHETIC_COURT, 18, 0)),
         ];
         let mut clay = sub("1", Weekday::Tue, 18 * 60, 22 * 60, None);
-        clay.surface = SurfaceFilter::CLAY;
+        clay.filter = CourtFilter::CLAY;
         let mut synthetic = sub("2", Weekday::Tue, 18 * 60, 22 * 60, None);
-        synthetic.surface = SurfaceFilter::Only(CourtSurface::Synthetic);
+        synthetic.filter = CourtFilter::Surface(CourtSurface::Synthetic);
 
         let m = match_subscriptions(&changes, &[clay, synthetic]);
 
@@ -142,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn the_all_filter_keeps_every_surface() {
+    fn the_any_filter_keeps_every_surface() {
         let changes = vec![
             AvailabilityChange::BecameBookable(slot("Court 2", 18, 0)),
             AvailabilityChange::BecameBookable(slot(SYNTHETIC_COURT, 18, 0)),
@@ -152,14 +158,14 @@ mod tests {
     }
 
     #[test]
-    fn a_surface_filter_excludes_unconfigured_courts() {
+    fn a_court_filter_excludes_unconfigured_courts() {
         let changes = vec![AvailabilityChange::BecameBookable(slot(
             "Retired court",
             18,
             0,
         ))];
         let mut clay = sub("1", Weekday::Tue, 18 * 60, 22 * 60, None);
-        clay.surface = SurfaceFilter::CLAY;
+        clay.filter = CourtFilter::CLAY;
         assert!(match_subscriptions(&changes, &[clay]).is_empty());
     }
 

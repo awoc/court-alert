@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -8,7 +8,10 @@ use futures::{StreamExt, TryStreamExt, stream};
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
-use crate::model::{AvailabilityChange, BookableSlotSnapshot, diff_availability};
+use crate::model::{
+    AvailabilityChange, BookableSlotSnapshot, Court, OperatingWindow, Venue, VenueRegistry,
+    diff_availability,
+};
 use crate::ports::{
     AvailabilityChangeSink, BookableSlotSnapshotRepository, SlotAvailabilitySource,
 };
@@ -26,6 +29,7 @@ const MAX_CONCURRENT_COURT_FETCHES: usize = 4;
 
 pub struct Monitor {
     config: Config,
+    registry: Arc<RwLock<VenueRegistry>>,
     source: Arc<dyn SlotAvailabilitySource>,
     sinks: Vec<Box<dyn AvailabilityChangeSink>>,
     snapshots: Arc<dyn BookableSlotSnapshotRepository>,
@@ -34,12 +38,14 @@ pub struct Monitor {
 impl Monitor {
     pub fn new(
         config: Config,
+        registry: Arc<RwLock<VenueRegistry>>,
         source: Arc<dyn SlotAvailabilitySource>,
         sinks: Vec<Box<dyn AvailabilityChangeSink>>,
         snapshots: Arc<dyn BookableSlotSnapshotRepository>,
     ) -> Self {
         Self {
             config,
+            registry,
             source,
             sinks,
             snapshots,
@@ -74,14 +80,11 @@ impl Monitor {
     }
 
     async fn tick(&self, state: &mut MonitorState) -> Result<()> {
-        if !is_within_operating_window(
-            Utc::now(),
-            self.config.operating_window_start_hour(),
-            self.config.operating_window_end_hour(),
-        ) {
+        let window = self.config.operating_window();
+        if !is_within_operating_window(Utc::now(), window) {
             debug!(
-                start_hour = self.config.operating_window_start_hour(),
-                end_hour = self.config.operating_window_end_hour(),
+                start_hour = window.start_hour,
+                end_hour = window.end_hour,
                 "outside Berlin operating window; skipping monitor tick"
             );
             return Ok(());
@@ -133,29 +136,29 @@ impl Monitor {
     }
 
     async fn fetch_snapshot(&self) -> Result<BookableSlotSnapshot> {
-        let (starts_at, ends_at) = utc_day_window(self.config.lookahead_days());
+        let targets = self.poll_targets();
         debug!(
-            window_start = %starts_at,
-            window_end = %ends_at,
-            courts = self.config.courts().len(),
+            venues = self.config.venues().len(),
+            courts = targets.len(),
             "querying slot availability"
         );
 
         let source = self.source.as_ref();
-        let fetched = stream::iter(self.config.courts())
-            .map(|court| async move {
-                let observations =
-                    source
-                        .fetch(court, starts_at, ends_at)
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "fetching availability for court {} ({})",
-                                court.name(),
-                                court.id()
-                            )
-                        })?;
-                Ok::<_, anyhow::Error>((court, observations))
+        let fetched = stream::iter(targets)
+            .map(|(venue, court)| async move {
+                let (starts_at, ends_at) = utc_day_window(self.config.lookahead_days_for(venue));
+                let observations = source
+                    .fetch(venue, &court, starts_at, ends_at)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "fetching availability for court {} ({}) at venue {}",
+                            court.name(),
+                            court.id(),
+                            venue.id
+                        )
+                    })?;
+                Ok::<_, anyhow::Error>((venue, court, observations))
             })
             .buffer_unordered(MAX_CONCURRENT_COURT_FETCHES)
             .try_collect::<Vec<_>>()
@@ -163,10 +166,31 @@ impl Monitor {
 
         Ok(build_snapshot(fetched, Utc::now()))
     }
+
+    /// Every (venue, court) pair worth polling right now.
+    ///
+    /// The courts are copied out of the registry and the read guard released
+    /// before any fetch: holding it across an HTTP call would stall every other
+    /// reader behind one slow provider.
+    fn poll_targets(&self) -> Vec<(&Venue, Court)> {
+        let registry = self.registry.read().expect("venue registry poisoned");
+        self.config
+            .venues()
+            .iter()
+            .filter_map(|venue| registry.catalog(&venue.id).map(|catalog| (venue, catalog)))
+            .flat_map(|(venue, catalog)| {
+                catalog
+                    .courts()
+                    .iter()
+                    .map(|court| (venue, court.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
 }
 
-fn is_within_operating_window(now: chrono::DateTime<Utc>, start_hour: u32, end_hour: u32) -> bool {
-    (start_hour..end_hour).contains(&now.with_timezone(&Berlin).hour())
+fn is_within_operating_window(now: chrono::DateTime<Utc>, window: OperatingWindow) -> bool {
+    window.contains_hour(now.with_timezone(&Berlin).hour())
 }
 
 struct MonitorState {

@@ -1,4 +1,4 @@
-use crate::model::{Schedule, SurfaceFilter, TimeRange};
+use crate::model::{CourtFilter, Schedule, TimeRange};
 use crate::subscriptions::contract::{
     AvailabilityAlert, OwnedSubscriptionSummary, SubscriptionResult, SubscriptionSummary,
 };
@@ -38,7 +38,7 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
                 s.id,
                 schedule_label(s.schedule),
                 time_range_label(s.time_range),
-                scope_label(s.courts.as_deref(), s.surface),
+                scope_label(s.courts.as_deref(), s.filter),
             )];
             if !open_slots.is_empty() {
                 lines.push(String::new());
@@ -67,8 +67,8 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
             format!("Unknown court(s): {}.", unknown.join(", ")),
             format!("Available courts: {}.", available.join(", ")),
         ],
-        SubscriptionResult::SurfaceExcludesCourts { courts, surface } => vec![format!(
-            "{} not on {surface}, so `surface: {surface}` would never match. \
+        SubscriptionResult::FilterExcludesCourts { courts, filter } => vec![format!(
+            "{} not on {filter}, so `surface: {filter}` would never match. \
              Drop the surface option or pick other courts.",
             match courts.len() {
                 1 => format!("{} is", courts[0]),
@@ -156,7 +156,7 @@ fn summary_line(s: &SubscriptionSummary) -> String {
         s.id,
         schedule_label(s.schedule),
         time_range_label(s.time_range),
-        scope_label(s.courts.as_deref(), s.surface),
+        scope_label(s.courts.as_deref(), s.filter),
     )
 }
 
@@ -177,11 +177,11 @@ pub(super) fn render_alert(alert: &AvailabilityAlert) -> Vec<String> {
     chunk_lines(&lines, DISCORD_CHUNK_BUDGET)
 }
 
-fn scope_label(courts: Option<&[String]>, surface: SurfaceFilter) -> String {
-    match (courts, surface) {
+fn scope_label(courts: Option<&[String]>, filter: CourtFilter) -> String {
+    match (courts, filter) {
         (Some(courts), _) => courts.join(", "),
-        (None, SurfaceFilter::All) => "all courts".to_string(),
-        (None, SurfaceFilter::Only(surface)) => format!("all {surface} courts"),
+        (None, CourtFilter::Any) => "all courts".to_string(),
+        (None, filter) => format!("all {filter} courts"),
     }
 }
 
@@ -213,7 +213,7 @@ mod tests {
             schedule: Schedule::Weekday(Weekday::Tue),
             time_range: TimeRange::new(18 * 60, 20 * 60).unwrap(),
             courts: None,
-            surface: SurfaceFilter::All,
+            filter: CourtFilter::Any,
         }
     }
 
@@ -390,10 +390,10 @@ mod tests {
     #[test]
     fn renders_the_surface_a_subscription_watches() {
         let mut s = summary();
-        s.surface = SurfaceFilter::CLAY;
+        s.filter = CourtFilter::CLAY;
         assert!(reply_text(&subscribed(s.clone())).contains("all clay courts"));
 
-        s.surface = SurfaceFilter::Only(crate::model::CourtSurface::Synthetic);
+        s.filter = CourtFilter::Surface(crate::model::CourtSurface::Synthetic);
         assert!(reply_text(&subscribed(s)).contains("all synthetic courts"));
     }
 
@@ -401,7 +401,7 @@ mod tests {
     fn named_courts_are_shown_instead_of_a_surface() {
         let mut s = summary();
         s.courts = Some(vec!["Court 19 - Synthetic".into()]);
-        s.surface = SurfaceFilter::All;
+        s.filter = CourtFilter::Any;
         let text = reply_text(&subscribed(s));
         assert!(text.contains("Court 19 - Synthetic"));
         assert!(!text.contains("all courts"));
@@ -409,9 +409,9 @@ mod tests {
 
     #[test]
     fn renders_a_surface_that_excludes_the_named_courts() {
-        let text = reply_text(&SubscriptionResult::SurfaceExcludesCourts {
+        let text = reply_text(&SubscriptionResult::FilterExcludesCourts {
             courts: vec!["Court 19 - Synthetic".into()],
-            surface: SurfaceFilter::CLAY,
+            filter: CourtFilter::CLAY,
         });
         assert!(text.contains("Court 19 - Synthetic is not on clay"));
         assert!(text.contains("surface: clay"));

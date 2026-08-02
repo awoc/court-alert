@@ -15,7 +15,7 @@ impl BookableSlotSnapshotRepository for SqliteStore {
         self.with_conn("load_bookable_slot_snapshot", |connection| {
             let mut statement = connection
                 .prepare(
-                    "SELECT court_id, court_name, starts_at, ends_at, available_places
+                    "SELECT venue_id, court_id, court_name, starts_at, ends_at, available_places
                      FROM bookable_slots",
                 )
                 .context("preparing bookable-slot snapshot load")?;
@@ -44,13 +44,14 @@ impl BookableSlotSnapshotRepository for SqliteStore {
                 let mut statement = transaction
                     .prepare(
                         "INSERT INTO bookable_slots
-                         (court_id, court_name, starts_at, ends_at, available_places)
-                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                         (venue_id, court_id, court_name, starts_at, ends_at, available_places)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                     )
                     .context("preparing bookable-slot insert")?;
                 for slot in slots {
                     statement
                         .execute(params![
+                            slot.venue_id.to_string(),
                             slot.court_id.into_db()?,
                             slot.court_name,
                             slot.starts_at.into_db()?,
@@ -116,6 +117,7 @@ mod tests {
     fn slot(court: &str, hour: u32) -> BookableSlot {
         let starts_at = Utc.with_ymd_and_hms(2026, 7, 13, hour, 0, 0).unwrap();
         BookableSlot {
+            venue_id: crate::model::VenueId::new("zhs-munich"),
             court_id: Uuid::new_v4(),
             court_name: court.into(),
             starts_at,

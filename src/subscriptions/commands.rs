@@ -2,7 +2,7 @@ use anyhow::Result;
 use tracing::warn;
 
 use crate::model::{
-    BookableSlot, Court, ProviderUserRef, Schedule, Subscription, SubscriptionDraft, SurfaceFilter,
+    BookableSlot, CourtFilter, ProviderUserRef, Schedule, Subscription, SubscriptionDraft,
     TimeRange,
 };
 use crate::subscriptions::contract::{
@@ -24,7 +24,7 @@ impl SubscriptionService {
                 start_minute,
                 end_minute,
                 courts,
-                surface,
+                filter,
             } => {
                 let Some(time_range) = TimeRange::new(start_minute, end_minute) else {
                     return Ok(SubscriptionResult::InvalidTimeRange);
@@ -39,19 +39,19 @@ impl SubscriptionService {
                     Err(unknown) => {
                         return Ok(SubscriptionResult::UnknownCourts {
                             unknown,
-                            available: self.courts.names(),
+                            available: self.court_names(),
                         });
                     }
                 };
-                let chosen_surface = surface;
-                let surface = self.resolve_surface(surface, courts.as_deref());
+                let chosen_filter = filter;
+                let filter = self.resolve_filter(filter, courts.as_deref());
 
-                if let Some(chosen) = chosen_surface
+                if let Some(chosen) = chosen_filter
                     && let Some(excluded) = self.courts_excluded_by(chosen, courts.as_deref())
                 {
-                    return Ok(SubscriptionResult::SurfaceExcludesCourts {
+                    return Ok(SubscriptionResult::FilterExcludesCourts {
                         courts: excluded,
-                        surface: chosen,
+                        filter: chosen,
                     });
                 }
                 let id = self
@@ -61,7 +61,7 @@ impl SubscriptionService {
                         schedule,
                         time_range,
                         courts: courts.clone(),
-                        surface,
+                        filter,
                     })
                     .await?;
                 let sub = Subscription {
@@ -70,7 +70,7 @@ impl SubscriptionService {
                     schedule,
                     time_range,
                     courts,
-                    surface,
+                    filter,
                 };
                 let open_slots = self.open_slots_for(&sub).await;
                 Ok(SubscriptionResult::Subscribed {
@@ -115,10 +115,14 @@ impl SubscriptionService {
         let Some(courts) = courts else {
             return Ok(None);
         };
+        let catalogs = self.tennis_catalogs();
         let mut canonical = Vec::with_capacity(courts.len());
         let mut unknown = Vec::new();
         for court in courts {
-            match self.courts.resolve(&court) {
+            match catalogs
+                .iter()
+                .find_map(|(_, catalog)| catalog.resolve(&court))
+            {
                 Some(known) => canonical.push(known.name().to_owned()),
                 None => unknown.push(court),
             }
@@ -130,27 +134,32 @@ impl SubscriptionService {
         }
     }
 
-    fn resolve_surface(
+    fn resolve_filter(
         &self,
-        chosen: Option<SurfaceFilter>,
+        chosen: Option<CourtFilter>,
         courts: Option<&[String]>,
-    ) -> SurfaceFilter {
+    ) -> CourtFilter {
         chosen.unwrap_or(match courts {
-            Some(_) => SurfaceFilter::All,
+            // Naming courts means those courts, whatever they are made of.
+            Some(_) => CourtFilter::Any,
             None => self.default_surface,
         })
     }
 
     fn courts_excluded_by(
         &self,
-        surface: SurfaceFilter,
+        filter: CourtFilter,
         courts: Option<&[String]>,
     ) -> Option<Vec<String>> {
+        let catalogs = self.tennis_catalogs();
         let excluded: Vec<String> = courts?
             .iter()
             .filter(|name| {
-                let court_surface = self.courts.find_by_name(name).map(Court::surface);
-                !surface.allows(court_surface)
+                let attributes = catalogs
+                    .iter()
+                    .find_map(|(_, catalog)| catalog.find_by_name(name))
+                    .map(|court| court.attributes().clone());
+                !filter.allows(attributes.as_ref())
             })
             .cloned()
             .collect();
@@ -169,9 +178,10 @@ impl SubscriptionService {
             }
         };
         let now = self.clock.now();
+        let registry = self.registry.read().expect("venue registry poisoned");
         let mut slots: Vec<&BookableSlot> = snapshot
             .values()
-            .filter(|slot| slot.starts_at > now && slot_matches(sub, slot, &self.courts))
+            .filter(|slot| slot.starts_at > now && slot_matches(sub, slot, &registry))
             .collect();
         slots.sort_by_key(|slot| slot.starts_at);
         slots.into_iter().map(Into::into).collect()
@@ -185,7 +195,7 @@ mod tests {
         service_defaulting_to_clay, service_with_admin, service_with_clock,
         service_with_failing_slot_snapshot, service_with_slots, subscribe_cmd, uref,
     };
-    use crate::model::{CourtSurface, Schedule, SubscriptionDraft, SurfaceFilter, TimeRange};
+    use crate::model::{CourtFilter, CourtSurface, Schedule, SubscriptionDraft, TimeRange};
     use crate::ports::SubscriptionRepository;
     use crate::subscriptions::contract::{SubscriptionCommand, SubscriptionResult};
     use chrono::Weekday;
@@ -265,7 +275,7 @@ mod tests {
                 schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
                 time_range: TimeRange::new(18 * 60, 20 * 60).unwrap(),
                 courts: None,
-                surface: SurfaceFilter::All,
+                filter: CourtFilter::Any,
             })
             .await
             .unwrap();
@@ -445,7 +455,7 @@ mod tests {
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
                     courts: Some(vec!["Court 2".into()]),
-                    surface: None,
+                    filter: None,
                 },
             )
             .await
@@ -468,7 +478,7 @@ mod tests {
                         start_minute: 18 * 60,
                         end_minute: 20 * 60,
                         courts: Some(vec![input.into()]),
-                        surface: None,
+                        filter: None,
                     },
                 )
                 .await
@@ -491,7 +501,7 @@ mod tests {
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
                     courts: Some(vec!["Court 42".into(), "Court 5".into()]),
-                    surface: None,
+                    filter: None,
                 },
             )
             .await
@@ -510,7 +520,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscribe_without_courts_takes_the_configured_default_surface() {
+    async fn subscribe_without_courts_takes_the_configured_default_filter() {
         let svc = service_defaulting_to_clay().await;
         let SubscriptionResult::Subscribed { summary, .. } = svc
             .handle(&uref("1"), subscribe_cmd(18 * 60, 20 * 60))
@@ -519,11 +529,11 @@ mod tests {
         else {
             panic!("expected Subscribed");
         };
-        assert_eq!(summary.surface, SurfaceFilter::CLAY);
+        assert_eq!(summary.filter, CourtFilter::CLAY);
     }
 
     #[tokio::test]
-    async fn naming_courts_overrides_the_default_surface() {
+    async fn naming_courts_overrides_the_default_filter() {
         let svc = service_defaulting_to_clay().await;
         let SubscriptionResult::Subscribed { summary, .. } = svc
             .handle(
@@ -533,7 +543,7 @@ mod tests {
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
                     courts: Some(vec!["19".into()]),
-                    surface: None,
+                    filter: None,
                 },
             )
             .await
@@ -542,11 +552,11 @@ mod tests {
             panic!("expected Subscribed");
         };
         assert_eq!(summary.courts, Some(vec![SYNTHETIC_COURT.to_string()]));
-        assert_eq!(summary.surface, SurfaceFilter::All);
+        assert_eq!(summary.filter, CourtFilter::Any);
     }
 
     #[tokio::test]
-    async fn an_explicit_surface_beats_the_configured_default() {
+    async fn an_explicit_filter_beats_the_configured_default() {
         let svc = service_defaulting_to_clay().await;
         let SubscriptionResult::Subscribed { summary, .. } = svc
             .handle(
@@ -556,7 +566,7 @@ mod tests {
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
                     courts: None,
-                    surface: Some(SurfaceFilter::Only(CourtSurface::Synthetic)),
+                    filter: Some(CourtFilter::Surface(CourtSurface::Synthetic)),
                 },
             )
             .await
@@ -565,13 +575,13 @@ mod tests {
             panic!("expected Subscribed");
         };
         assert_eq!(
-            summary.surface,
-            SurfaceFilter::Only(CourtSurface::Synthetic)
+            summary.filter,
+            CourtFilter::Surface(CourtSurface::Synthetic)
         );
     }
 
     #[tokio::test]
-    async fn a_surface_contradicting_the_named_courts_is_rejected_and_stores_nothing() {
+    async fn a_filter_contradicting_the_named_courts_is_rejected_and_stores_nothing() {
         let svc = service().await;
         let reply = svc
             .handle(
@@ -581,7 +591,7 @@ mod tests {
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
                     courts: Some(vec!["19".into(), "2".into()]),
-                    surface: Some(SurfaceFilter::CLAY),
+                    filter: Some(CourtFilter::CLAY),
                 },
             )
             .await
@@ -589,9 +599,9 @@ mod tests {
 
         assert_eq!(
             reply,
-            SubscriptionResult::SurfaceExcludesCourts {
+            SubscriptionResult::FilterExcludesCourts {
                 courts: vec![SYNTHETIC_COURT.to_string()],
-                surface: SurfaceFilter::CLAY,
+                filter: CourtFilter::CLAY,
             }
         );
         assert_eq!(
@@ -603,7 +613,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_surface_matching_the_named_courts_is_accepted() {
+    async fn a_filter_matching_the_named_courts_is_accepted() {
         let svc = service().await;
         let SubscriptionResult::Subscribed { summary, .. } = svc
             .handle(
@@ -613,7 +623,7 @@ mod tests {
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
                     courts: Some(vec!["2".into()]),
-                    surface: Some(SurfaceFilter::CLAY),
+                    filter: Some(CourtFilter::CLAY),
                 },
             )
             .await
@@ -621,7 +631,7 @@ mod tests {
         else {
             panic!("expected Subscribed");
         };
-        assert_eq!(summary.surface, SurfaceFilter::CLAY);
+        assert_eq!(summary.filter, CourtFilter::CLAY);
     }
 
     use chrono::TimeZone as _;
@@ -676,7 +686,7 @@ mod tests {
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
                     courts: Some(vec!["Court 5".into()]),
-                    surface: None,
+                    filter: None,
                 },
             )
             .await

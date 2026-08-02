@@ -1,4 +1,4 @@
-use crate::model::{Schedule, SurfaceFilter};
+use crate::model::{CourtFilter, Schedule};
 
 use super::{AvailableSlotSummary, OwnedSubscriptionSummary, SubscriptionSummary};
 
@@ -9,7 +9,7 @@ pub enum SubscriptionCommand {
         start_minute: u32,
         end_minute: u32,
         courts: Option<Vec<String>>,
-        surface: Option<SurfaceFilter>,
+        filter: Option<CourtFilter>,
     },
     List,
     Unsubscribe {
@@ -37,9 +37,9 @@ pub enum SubscriptionResult {
         unknown: Vec<String>,
         available: Vec<String>,
     },
-    SurfaceExcludesCourts {
+    FilterExcludesCourts {
         courts: Vec<String>,
-        surface: SurfaceFilter,
+        filter: CourtFilter,
     },
     AllSubscriptions(Vec<OwnedSubscriptionSummary>),
     NotAuthorized,

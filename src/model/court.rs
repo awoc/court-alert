@@ -4,6 +4,8 @@ use std::str::FromStr;
 use serde::{Deserialize, Deserializer};
 use uuid::Uuid;
 
+use super::Sport;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum CourtSurface {
     #[default]
@@ -47,55 +49,41 @@ impl<'de> Deserialize<'de> for CourtSurface {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SurfaceFilter {
-    All,
-    Only(CourtSurface),
+pub enum CourtLocation {
+    Indoor,
+    Outdoor,
 }
 
-impl SurfaceFilter {
-    pub const CLAY: Self = Self::Only(CourtSurface::Clay);
-
-    pub fn allows(self, surface: Option<CourtSurface>) -> bool {
-        match self {
-            Self::All => true,
-            Self::Only(wanted) => surface == Some(wanted),
-        }
-    }
-
+impl CourtLocation {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::All => "all",
-            Self::Only(surface) => surface.as_str(),
+            Self::Indoor => "indoor",
+            Self::Outdoor => "outdoor",
         }
     }
 }
 
-impl Default for SurfaceFilter {
-    fn default() -> Self {
-        Self::CLAY
-    }
-}
-
-impl fmt::Display for SurfaceFilter {
+impl fmt::Display for CourtLocation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
-impl FromStr for SurfaceFilter {
+impl FromStr for CourtLocation {
     type Err = anyhow::Error;
 
     fn from_str(raw: &str) -> anyhow::Result<Self> {
-        if raw.trim().eq_ignore_ascii_case("all") {
-            return Ok(Self::All);
+        match raw.trim().to_lowercase().as_str() {
+            "indoor" => Ok(Self::Indoor),
+            "outdoor" => Ok(Self::Outdoor),
+            other => {
+                anyhow::bail!("unknown court location {other:?} (expected indoor or outdoor)")
+            }
         }
-        raw.parse().map(Self::Only).map_err(|_| {
-            anyhow::anyhow!("unknown surface {raw:?} (expected all, clay or synthetic)")
-        })
     }
 }
 
-impl<'de> Deserialize<'de> for SurfaceFilter {
+impl<'de> Deserialize<'de> for CourtLocation {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         String::deserialize(deserializer)?
             .parse()
@@ -103,16 +91,139 @@ impl<'de> Deserialize<'de> for SurfaceFilter {
     }
 }
 
-#[derive(Debug, Clone)]
+/// The filterable properties of a court, scoped to its sport.
+///
+/// A sum type rather than a flat `{surface, location}` pair because the axes
+/// genuinely differ: padel carries no playing-surface descriptor at all
+/// (`crystal`/`panoramic` describe the walls), so a shared surface field would
+/// model padel as having a permanently-empty one.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CourtAttributes {
+    Tennis {
+        surface: CourtSurface,
+    },
+    Padel {
+        /// `None` when the provider gave no usable location. Modelled as
+        /// unknown rather than defaulted, so a specific filter excludes it
+        /// instead of silently mislabelling it.
+        location: Option<CourtLocation>,
+    },
+}
+
+impl CourtAttributes {
+    pub fn tennis(surface: CourtSurface) -> Self {
+        Self::Tennis { surface }
+    }
+
+    pub fn padel(location: Option<CourtLocation>) -> Self {
+        Self::Padel { location }
+    }
+
+    pub fn sport(&self) -> Sport {
+        match self {
+            Self::Tennis { .. } => Sport::Tennis,
+            Self::Padel { .. } => Sport::Padel,
+        }
+    }
+
+    pub fn surface(&self) -> Option<CourtSurface> {
+        match self {
+            Self::Tennis { surface } => Some(*surface),
+            Self::Padel { .. } => None,
+        }
+    }
+
+    pub fn location(&self) -> Option<CourtLocation> {
+        match self {
+            Self::Tennis { .. } => None,
+            Self::Padel { location } => *location,
+        }
+    }
+}
+
+/// What a subscription — or the broadcast channel — is willing to be told about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CourtFilter {
+    Any,
+    Surface(CourtSurface),
+    Location(CourtLocation),
+}
+
+impl CourtFilter {
+    pub const CLAY: Self = Self::Surface(CourtSurface::Clay);
+
+    /// Evaluated against accessors rather than variants, so the day a Playtomic
+    /// tennis venue arrives and `Tennis` gains a location, an indoor filter
+    /// starts working for tennis without touching this function.
+    pub fn allows(self, attributes: Option<&CourtAttributes>) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Surface(wanted) => attributes.and_then(CourtAttributes::surface) == Some(wanted),
+            Self::Location(wanted) => {
+                attributes.and_then(CourtAttributes::location) == Some(wanted)
+            }
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Any => "any",
+            Self::Surface(surface) => surface.as_str(),
+            Self::Location(location) => location.as_str(),
+        }
+    }
+}
+
+impl fmt::Display for CourtFilter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for CourtFilter {
+    type Err = anyhow::Error;
+
+    /// `all` is accepted alongside `any` because it is the wording the
+    /// `/subscribe` surface option has always used.
+    fn from_str(raw: &str) -> anyhow::Result<Self> {
+        let trimmed = raw.trim();
+        if trimmed.eq_ignore_ascii_case("any") || trimmed.eq_ignore_ascii_case("all") {
+            return Ok(Self::Any);
+        }
+        if let Ok(surface) = trimmed.parse() {
+            return Ok(Self::Surface(surface));
+        }
+        trimmed.parse().map(Self::Location).map_err(|_| {
+            anyhow::anyhow!(
+                "unknown court filter {raw:?} \
+                 (expected any, clay, synthetic, indoor or outdoor)"
+            )
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for CourtFilter {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Court {
     id: Uuid,
     name: String,
-    surface: CourtSurface,
+    attributes: CourtAttributes,
 }
 
 impl Court {
-    pub fn new(id: Uuid, name: String, surface: CourtSurface) -> Self {
-        Self { id, name, surface }
+    pub fn new(id: Uuid, name: String, attributes: CourtAttributes) -> Self {
+        Self {
+            id,
+            name,
+            attributes,
+        }
     }
 
     pub fn id(&self) -> Uuid {
@@ -123,8 +234,8 @@ impl Court {
         &self.name
     }
 
-    pub fn surface(&self) -> CourtSurface {
-        self.surface
+    pub fn attributes(&self) -> &CourtAttributes {
+        &self.attributes
     }
 
     pub fn number(&self) -> Option<u32> {
@@ -142,7 +253,9 @@ fn first_number(text: &str) -> Option<u32> {
         .ok()
 }
 
-#[derive(Debug, Clone, Default)]
+/// One venue's courts. Catalogs are strictly per-venue, which is what makes
+/// "Court 1" unambiguous once several clubs are monitored.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CourtCatalog {
     courts: Vec<Court>,
 }
@@ -163,11 +276,11 @@ impl CourtCatalog {
             .collect()
     }
 
-    pub fn surface_of(&self, court_id: Uuid) -> Option<CourtSurface> {
+    pub fn attributes_of(&self, court_id: Uuid) -> Option<&CourtAttributes> {
         self.courts
             .iter()
             .find(|court| court.id() == court_id)
-            .map(Court::surface)
+            .map(Court::attributes)
     }
 
     pub fn find_by_name(&self, name: &str) -> Option<&Court> {
@@ -196,16 +309,20 @@ mod tests {
 
     fn catalog() -> CourtCatalog {
         CourtCatalog::new(vec![
-            Court::new(Uuid::from_u128(2), "Court 2".into(), CourtSurface::Clay),
+            Court::new(
+                Uuid::from_u128(2),
+                "Court 2".into(),
+                CourtAttributes::tennis(CourtSurface::Clay),
+            ),
             Court::new(
                 Uuid::from_u128(19),
                 "Court 19 - Synthetic".into(),
-                CourtSurface::Synthetic,
+                CourtAttributes::tennis(CourtSurface::Synthetic),
             ),
             Court::new(
                 Uuid::from_u128(99),
                 "Centre Court".into(),
-                CourtSurface::Clay,
+                CourtAttributes::tennis(CourtSurface::Clay),
             ),
         ])
     }
@@ -222,31 +339,96 @@ mod tests {
     }
 
     #[test]
-    fn surface_filters_parse_all_and_single_surfaces() {
-        assert_eq!("all".parse::<SurfaceFilter>().unwrap(), SurfaceFilter::All);
+    fn locations_parse_case_insensitively_and_round_trip() {
         assert_eq!(
-            "clay".parse::<SurfaceFilter>().unwrap(),
-            SurfaceFilter::CLAY
+            "Indoor".parse::<CourtLocation>().unwrap(),
+            CourtLocation::Indoor
         );
         assert_eq!(
-            "synthetic".parse::<SurfaceFilter>().unwrap(),
-            SurfaceFilter::Only(CourtSurface::Synthetic)
+            " OUTDOOR ".parse::<CourtLocation>().unwrap(),
+            CourtLocation::Outdoor
         );
-        assert!("grass".parse::<SurfaceFilter>().is_err());
-        assert_eq!(SurfaceFilter::default(), SurfaceFilter::CLAY);
+        assert_eq!(CourtLocation::Indoor.to_string(), "indoor");
+        assert!("roofed".parse::<CourtLocation>().is_err());
     }
 
     #[test]
-    fn a_filter_only_admits_its_own_surface() {
-        assert!(SurfaceFilter::All.allows(Some(CourtSurface::Synthetic)));
-        assert!(SurfaceFilter::CLAY.allows(Some(CourtSurface::Clay)));
-        assert!(!SurfaceFilter::CLAY.allows(Some(CourtSurface::Synthetic)));
+    fn court_filters_parse_every_vocabulary_they_span() {
+        assert_eq!("any".parse::<CourtFilter>().unwrap(), CourtFilter::Any);
+        assert_eq!("all".parse::<CourtFilter>().unwrap(), CourtFilter::Any);
+        assert_eq!("clay".parse::<CourtFilter>().unwrap(), CourtFilter::CLAY);
+        assert_eq!(
+            "synthetic".parse::<CourtFilter>().unwrap(),
+            CourtFilter::Surface(CourtSurface::Synthetic)
+        );
+        assert_eq!(
+            "indoor".parse::<CourtFilter>().unwrap(),
+            CourtFilter::Location(CourtLocation::Indoor)
+        );
+        assert_eq!(
+            "outdoor".parse::<CourtFilter>().unwrap(),
+            CourtFilter::Location(CourtLocation::Outdoor)
+        );
+        assert!("grass".parse::<CourtFilter>().is_err());
     }
 
     #[test]
-    fn an_unknown_surface_passes_only_the_all_filter() {
-        assert!(SurfaceFilter::All.allows(None));
-        assert!(!SurfaceFilter::CLAY.allows(None));
+    fn a_filter_only_admits_its_own_attribute() {
+        let clay = CourtAttributes::tennis(CourtSurface::Clay);
+        let synthetic = CourtAttributes::tennis(CourtSurface::Synthetic);
+
+        assert!(CourtFilter::Any.allows(Some(&synthetic)));
+        assert!(CourtFilter::CLAY.allows(Some(&clay)));
+        assert!(!CourtFilter::CLAY.allows(Some(&synthetic)));
+    }
+
+    #[test]
+    fn a_location_filter_only_admits_its_own_location() {
+        let indoor = CourtAttributes::padel(Some(CourtLocation::Indoor));
+        let outdoor = CourtAttributes::padel(Some(CourtLocation::Outdoor));
+        let indoor_filter = CourtFilter::Location(CourtLocation::Indoor);
+
+        assert!(indoor_filter.allows(Some(&indoor)));
+        assert!(!indoor_filter.allows(Some(&outdoor)));
+        assert!(CourtFilter::Any.allows(Some(&outdoor)));
+    }
+
+    /// A tennis filter against a padel court is `false`, and vice versa — the
+    /// correct answer, since neither court has the attribute being asked about.
+    #[test]
+    fn filters_and_courts_from_different_sports_never_match() {
+        let padel = CourtAttributes::padel(Some(CourtLocation::Indoor));
+        let tennis = CourtAttributes::tennis(CourtSurface::Clay);
+
+        assert!(!CourtFilter::CLAY.allows(Some(&padel)));
+        assert!(!CourtFilter::Location(CourtLocation::Indoor).allows(Some(&tennis)));
+    }
+
+    #[test]
+    fn an_unknown_court_passes_only_the_any_filter() {
+        assert!(CourtFilter::Any.allows(None));
+        assert!(!CourtFilter::CLAY.allows(None));
+        assert!(!CourtFilter::Location(CourtLocation::Indoor).allows(None));
+    }
+
+    /// A padel court whose location could not be determined is surfaced by
+    /// `Any` and excluded by a specific filter, never silently mislabelled.
+    #[test]
+    fn a_padel_court_of_unknown_location_passes_only_the_any_filter() {
+        let unknown = CourtAttributes::padel(None);
+
+        assert!(CourtFilter::Any.allows(Some(&unknown)));
+        assert!(!CourtFilter::Location(CourtLocation::Indoor).allows(Some(&unknown)));
+        assert!(!CourtFilter::Location(CourtLocation::Outdoor).allows(Some(&unknown)));
+    }
+
+    #[test]
+    fn attributes_report_the_sport_they_belong_to() {
+        assert_eq!(
+            CourtAttributes::tennis(CourtSurface::Clay).sport(),
+            Sport::Tennis
+        );
+        assert_eq!(CourtAttributes::padel(None).sport(), Sport::Padel);
     }
 
     #[test]
@@ -280,16 +462,16 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_are_looked_up_by_court_id() {
+    fn attributes_are_looked_up_by_court_id() {
         let catalog = catalog();
         assert_eq!(
-            catalog.surface_of(Uuid::from_u128(19)),
-            Some(CourtSurface::Synthetic)
+            catalog.attributes_of(Uuid::from_u128(19)),
+            Some(&CourtAttributes::tennis(CourtSurface::Synthetic))
         );
         assert_eq!(
-            catalog.surface_of(Uuid::from_u128(2)),
-            Some(CourtSurface::Clay)
+            catalog.attributes_of(Uuid::from_u128(2)),
+            Some(&CourtAttributes::tennis(CourtSurface::Clay))
         );
-        assert_eq!(catalog.surface_of(Uuid::nil()), None);
+        assert_eq!(catalog.attributes_of(Uuid::nil()), None);
     }
 }

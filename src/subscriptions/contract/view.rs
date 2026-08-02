@@ -1,8 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use crate::model::{
-    BookableSlot, ProviderUserRef, Schedule, Subscription, SurfaceFilter, TimeRange,
-};
+use crate::model::{BookableSlot, CourtFilter, ProviderUserRef, Schedule, Subscription, TimeRange};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubscriptionSummary {
@@ -10,7 +8,7 @@ pub struct SubscriptionSummary {
     pub schedule: Schedule,
     pub time_range: TimeRange,
     pub courts: Option<Vec<String>>,
-    pub surface: SurfaceFilter,
+    pub filter: CourtFilter,
 }
 
 impl From<Subscription> for SubscriptionSummary {
@@ -20,7 +18,7 @@ impl From<Subscription> for SubscriptionSummary {
             schedule: subscription.schedule,
             time_range: subscription.time_range,
             courts: subscription.courts,
-            surface: subscription.surface,
+            filter: subscription.filter,
         }
     }
 }
@@ -39,7 +37,7 @@ impl From<Subscription> for OwnedSubscriptionSummary {
             schedule,
             time_range,
             courts,
-            surface,
+            filter,
         } = subscription;
         Self {
             user,
@@ -48,7 +46,7 @@ impl From<Subscription> for OwnedSubscriptionSummary {
                 schedule,
                 time_range,
                 courts,
-                surface,
+                filter,
             },
         }
     }

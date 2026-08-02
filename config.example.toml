@@ -1,7 +1,6 @@
-# Copy this file to config.toml, then replace products
+# Copy this file to config.toml, then replace the venues below.
 poll_interval_secs = 300
 lookahead_days = 7
-base_url = "https://kurse.zhs-muenchen.de"
 quiet_first_poll = true
 
 operating_window_start_hour = 8
@@ -9,12 +8,19 @@ operating_window_end_hour = 24
 
 surface_filter = "clay"
 
-[[products]]
-id = "00000000-0000-0000-0000-000000000000"
-name = "Example court 1"
-surface = "clay"
+[[venues]]
+id           = "zhs-munich"       # stable: the join key for slots and subscriptions
+display_name = "ZHS München"
+sport        = "tennis"
+provider     = "zhs"
+base_url     = "https://kurse.zhs-muenchen.de"
 
-[[products]]
-id = "00000000-0000-0000-0000-000000000001"
-name = "Example court 2 - Synthetic"
-surface = "synthetic"
+  [[venues.courts]]
+  id = "00000000-0000-0000-0000-000000000000"
+  name = "Example court 1"
+  surface = "clay"
+
+  [[venues.courts]]
+  id = "00000000-0000-0000-0000-000000000001"
+  name = "Example court 2 - Synthetic"
+  surface = "synthetic"

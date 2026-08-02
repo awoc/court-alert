@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::model::{Court, SlotObservation};
+use crate::model::{Court, SlotObservation, Venue, VenueId};
 use crate::ports::SlotAvailabilitySource;
 
 use super::auth::Auth;
@@ -31,6 +31,7 @@ impl ZhsSlotAvailabilitySource {
 impl SlotAvailabilitySource for ZhsSlotAvailabilitySource {
     async fn fetch(
         &self,
+        venue: &Venue,
         court: &Court,
         starts_at: DateTime<Utc>,
         ends_at: DateTime<Utc>,
@@ -38,17 +39,19 @@ impl SlotAvailabilitySource for ZhsSlotAvailabilitySource {
         let slots = fetch_booking_slot_dtos(&self.auth, court.id(), starts_at, ends_at).await?;
         Ok(slots
             .into_iter()
-            .map(|slot| normalize_booking_slot(court.id(), court.name(), slot))
+            .map(|slot| normalize_booking_slot(&venue.id, court.id(), court.name(), slot))
             .collect())
     }
 }
 
 fn normalize_booking_slot(
+    venue_id: &VenueId,
     court_id: Uuid,
     court_name: &str,
     slot: BookingSlotDto,
 ) -> SlotObservation {
     SlotObservation {
+        venue_id: venue_id.clone(),
         court_id,
         court_name: court_name.to_owned(),
         starts_at: slot.start,
@@ -307,8 +310,10 @@ mod tests {
         let dto = response.data.unwrap().booking_slots.remove(0);
         let court_id = Uuid::parse_str(PRODUCT_ID).unwrap();
 
-        let observation = normalize_booking_slot(court_id, "Court 1", dto);
+        let venue_id = VenueId::new("zhs-munich");
+        let observation = normalize_booking_slot(&venue_id, court_id, "Court 1", dto);
 
+        assert_eq!(observation.venue_id, venue_id);
         assert_eq!(observation.court_id, court_id);
         assert_eq!(observation.court_name, "Court 1");
         assert_eq!(observation.available_places, 1);

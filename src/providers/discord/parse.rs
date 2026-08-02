@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use serenity::all::{CommandDataOptionValue, CommandInteraction};
 use tracing::warn;
 
-use crate::model::SurfaceFilter;
+use crate::model::CourtFilter;
 use crate::parsing::{parse_hhmm, parse_schedule};
 use crate::subscriptions::contract::SubscriptionCommand;
 use crate::time::today_berlin;
@@ -35,13 +35,13 @@ pub(super) fn parse_interaction(cmd: &CommandInteraction) -> Result<Subscription
             let start_minute = parse_hhmm(&from).context("invalid 'from' (expected HH:MM)")?;
             let end_minute = parse_hhmm(&to).context("invalid 'to' (expected HH:MM)")?;
             let courts = parse_courts(get_string_opt(cmd, "courts"))?;
-            let surface = parse_surface(get_string_opt(cmd, "surface"))?;
+            let filter = parse_filter(get_string_opt(cmd, "surface"))?;
             Ok(SubscriptionCommand::Subscribe {
                 schedule,
                 start_minute,
                 end_minute,
                 courts,
-                surface,
+                filter,
             })
         }
         "list" => Ok(SubscriptionCommand::List),
@@ -84,7 +84,7 @@ fn parse_courts(input: Option<String>) -> Result<Option<Vec<String>>> {
     Ok((!courts.is_empty()).then_some(courts))
 }
 
-fn parse_surface(input: Option<String>) -> Result<Option<SurfaceFilter>> {
+fn parse_filter(input: Option<String>) -> Result<Option<CourtFilter>> {
     input
         .filter(|raw| !raw.trim().is_empty())
         .map(|raw| raw.parse().context("invalid 'surface'"))
@@ -147,17 +147,17 @@ mod tests {
 
     #[test]
     fn surface_is_optional_and_validated() {
-        assert_eq!(parse_surface(None).unwrap(), None);
-        assert_eq!(parse_surface(Some("  ".into())).unwrap(), None);
+        assert_eq!(parse_filter(None).unwrap(), None);
+        assert_eq!(parse_filter(Some("  ".into())).unwrap(), None);
         assert_eq!(
-            parse_surface(Some("clay".into())).unwrap(),
-            Some(SurfaceFilter::CLAY)
+            parse_filter(Some("clay".into())).unwrap(),
+            Some(CourtFilter::CLAY)
         );
         assert_eq!(
-            parse_surface(Some("all".into())).unwrap(),
-            Some(SurfaceFilter::All)
+            parse_filter(Some("all".into())).unwrap(),
+            Some(CourtFilter::Any)
         );
-        assert!(parse_surface(Some("grass".into())).is_err());
+        assert!(parse_filter(Some("grass".into())).is_err());
     }
 
     #[test]

@@ -1,11 +1,11 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use tracing::{info, warn};
 
 use crate::config::{Config, Settings};
-use crate::model::CourtCatalog;
+use crate::model::{Provider, VenueIdentity, VenueRegistry};
 use crate::monitor::Monitor;
 use crate::notify::{ChannelSink, DiscordNotifier, SurfaceFilteredSink};
 use crate::ports::{AvailabilityChangeSink, SlotAvailabilitySource};
@@ -18,7 +18,7 @@ const PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct App {
     config: Config,
-    courts: Arc<CourtCatalog>,
+    registry: Arc<RwLock<VenueRegistry>>,
     slot_source: Arc<dyn SlotAvailabilitySource>,
     sinks: Vec<Box<dyn AvailabilityChangeSink>>,
     chat_providers: Vec<Box<dyn ChatProvider>>,
@@ -28,7 +28,7 @@ pub struct App {
 impl App {
     pub async fn assemble(settings: Settings) -> Result<Self> {
         let config = Config::load(&settings.config_path)?;
-        let courts = Arc::new(config.catalog().clone());
+        let registry = Arc::new(RwLock::new(build_registry(&config)));
         let chat_providers = providers::build(&settings);
 
         let store = Arc::new(SqliteStore::open(settings.db_path.clone()).await?);
@@ -37,13 +37,19 @@ impl App {
         match &settings.discord_webhook {
             Some(url) => sinks.push(SurfaceFilteredSink::wrap(
                 Box::new(DiscordNotifier::new(url.clone(), store.clone())?),
-                courts.clone(),
+                registry.clone(),
                 config.surface_filter(),
             )),
             None => info!("COURT_ALERT_DISCORD_WEBHOOK not set — webhook notifier disabled"),
         }
         info!(
-            courts = config.courts().len(),
+            venues = config.venues().len(),
+            courts = config
+                .venues()
+                .iter()
+                .filter_map(|venue| config.catalog_for(&venue.id))
+                .map(|catalog| catalog.courts().len())
+                .sum::<usize>(),
             poll_interval_secs = config.poll_interval_secs(),
             lookahead_days = config.lookahead_days(),
             surface_filter = %config.surface_filter(),
@@ -58,13 +64,13 @@ impl App {
             "starting court-alert"
         );
 
-        let auth = Auth::new(config.base_url().to_owned(), settings.credentials)?;
-        let slot_source: Arc<dyn SlotAvailabilitySource> =
-            Arc::new(ZhsSlotAvailabilitySource::new(auth));
+        let slot_source: Arc<dyn SlotAvailabilitySource> = Arc::new(
+            ZhsSlotAvailabilitySource::new(zhs_auth(&config, settings.credentials)?),
+        );
 
         Ok(Self {
             config,
-            courts,
+            registry,
             slot_source,
             sinks,
             chat_providers,
@@ -74,9 +80,15 @@ impl App {
 
     pub async fn run(self) -> Result<()> {
         if self.chat_providers.is_empty() {
-            Monitor::new(self.config, self.slot_source, self.sinks, self.store)
-                .run()
-                .await
+            Monitor::new(
+                self.config,
+                self.registry,
+                self.slot_source,
+                self.sinks,
+                self.store,
+            )
+            .run()
+            .await
         } else {
             self.run_with_providers().await
         }
@@ -85,7 +97,7 @@ impl App {
     async fn run_with_providers(self) -> Result<()> {
         let Self {
             config,
-            courts,
+            registry,
             slot_source,
             mut sinks,
             chat_providers,
@@ -100,7 +112,7 @@ impl App {
             store.clone(),
             store.clone(),
             admins,
-            courts,
+            registry.clone(),
             config.surface_filter(),
             Arc::new(BerlinClock),
         ));
@@ -117,7 +129,9 @@ impl App {
                         "chat providers not ready; starting monitor anyway"
                     ),
                 }
-                Monitor::new(config, slot_source, sinks, store).run().await
+                Monitor::new(config, registry, slot_source, sinks, store)
+                    .run()
+                    .await
             },
             providers::run_all(chat_providers, service, ready_signals),
             async {
@@ -127,4 +141,42 @@ impl App {
         )?;
         Ok(())
     }
+}
+
+/// Seeds the registry from config: ZHS venues arrive with their catalog, and
+/// every other venue starts `Unresolved` for its own loop to fill in.
+fn build_registry(config: &Config) -> VenueRegistry {
+    let mut registry = VenueRegistry::new();
+    for venue in config.venues() {
+        registry.register(venue.id.clone(), venue.sport);
+        if let Some(catalog) = config.catalog_for(&venue.id) {
+            registry.set_catalog(venue.id.clone(), catalog.clone());
+        }
+    }
+    registry
+}
+
+/// One set of ZHS credentials covers one ZHS deployment, which is all there is.
+fn zhs_auth(config: &Config, credentials: crate::config::Credentials) -> Result<Auth> {
+    let base_url = config
+        .venues()
+        .iter()
+        .find_map(|venue| match &venue.identity {
+            VenueIdentity::Zhs { base_url } => Some(base_url.clone()),
+            _ => None,
+        })
+        .context("no ZHS venue configured")?;
+
+    let extra = config
+        .venues()
+        .iter()
+        .filter(|venue| venue.provider() == Provider::Zhs)
+        .count();
+    anyhow::ensure!(
+        extra == 1,
+        "only one ZHS venue is supported (found {extra}); \
+         a second would need its own credentials"
+    );
+
+    Auth::new(base_url, credentials)
 }

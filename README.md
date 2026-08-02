@@ -6,15 +6,23 @@
 
 1. A configuration file is required. Copy the example, then edit `config.toml` to choose courts to monitor:
 
-   Replace the example court, then adjust:
+   Replace the example venue, then adjust the global defaults:
    - `poll_interval_secs` — polling frequency.
    - `lookahead_days` — booking horizon to query.
    - `quiet_first_poll` — suppress alerts for slots already open when an empty database is initialized.
    - `operating_window_start_hour` / `operating_window_end_hour` — Berlin-local half-open polling window.
    - `surface_filter` — `clay` (default), `synthetic` or `all`. Restricts what the webhook channel posts, and is the default for new subscriptions.
-   - `surface` on each `[[products]]` entry — `clay` (default) or `synthetic`.
+
+   Each monitored club is a `[[venues]]` entry:
+   - `id` — a stable key of your choosing. It is the join key for stored slots, so **do not change it once set**: a rename orphans that venue's rows. The existing deployment keeps `id = "zhs-munich"`.
+   - `display_name`, `sport` (`tennis` or `padel`) and `provider` (`zhs`).
+   - `base_url` for a `zhs` venue.
+   - `poll_interval_secs`, `lookahead_days`, `operating_window_start_hour` / `operating_window_end_hour` — optional per-venue overrides of the globals above.
+   - `[[venues.courts]]` — the courts to poll, each with an `id`, a `name`, and for a tennis venue a `surface` of `clay` (default) or `synthetic`.
 
    Every court is polled whatever the filter says, so subscribers can still ask for a surface the channel does not carry.
+
+   > Upgrading from a flat top-level `base_url` and `[[products]]`? Move them into a single `[[venues]]` entry as above; the old layout is rejected at startup. Then apply the pending migrations in `sql/migrations` (see [Database](#database)).
 
    `config.toml` is intentionally ignored by Git. Set `COURT_ALERT_CONFIG_PATH` to use a configuration file at another path.
 
@@ -41,3 +49,13 @@ Install the Rust toolchain specified in `rust-toolchain.toml`, then run locally:
 ```sh
 cargo run --release
 ```
+
+## Database
+
+Startup creates the schema in an empty database, but never upgrades an existing one: it refuses to start against a database that is behind and names the files to apply. Run them by hand, in order, from the version the database is at:
+
+```sh
+sqlite3 -bail data/court-alert.db < sql/migrations/0004_venue_scoped_slots.sql
+```
+
+`0004` drops `bookable_slots` rather than migrating it — it is a cache the next poll rewrites, and pre-existing rows have no venue to attribute them to. The next poll therefore starts from an empty snapshot, so **check `quiet_first_poll = true` before running it**, or the first poll after the restart alerts on every slot that is currently free.

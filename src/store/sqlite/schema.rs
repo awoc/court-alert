@@ -8,7 +8,7 @@
 use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA: &str = include_str!("../../../sql/schema.sql");
 
@@ -64,6 +64,7 @@ mod tests {
         include_str!("../../../sql/migrations/0002_alert_message_slots.sql");
     const UPGRADE_TO_V3: &str =
         include_str!("../../../sql/migrations/0003_subscription_surface.sql");
+    const UPGRADE_TO_V4: &str = include_str!("../../../sql/migrations/0004_venue_scoped_slots.sql");
 
     const LEGACY_SCHEMA: &str = "
         CREATE TABLE subscriptions (
@@ -109,6 +110,7 @@ mod tests {
         conn.execute_batch(UPGRADE_TO_V1).unwrap();
         conn.execute_batch(UPGRADE_TO_V2).unwrap();
         conn.execute_batch(UPGRADE_TO_V3).unwrap();
+        conn.execute_batch(UPGRADE_TO_V4).unwrap();
         ensure_current(conn).unwrap();
     }
 
@@ -174,12 +176,47 @@ mod tests {
         assert_eq!(schema_version(&conn).unwrap(), 1);
         conn.execute_batch(UPGRADE_TO_V2).unwrap();
         conn.execute_batch(UPGRADE_TO_V3).unwrap();
+        conn.execute_batch(UPGRADE_TO_V4).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         assert!(table_sql(&conn, "bookable_slots").is_none());
+        assert!(table_sql(&conn, "venue_state").is_none());
 
         ensure_current(&mut conn).unwrap();
 
         assert!(is_strict(&conn, "bookable_slots"));
+        assert!(is_strict(&conn, "venue_state"));
+    }
+
+    #[test]
+    fn fourth_migration_refuses_to_run_twice() {
+        let mut conn = legacy_database();
+        migrate_by_hand(&mut conn);
+
+        assert!(conn.execute_batch(UPGRADE_TO_V4).is_err());
+    }
+
+    /// 0004 drops the cache rather than migrating it, because there is no venue
+    /// to attribute pre-existing rows to.
+    #[test]
+    fn fourth_migration_drops_the_snapshot_cache() {
+        let mut conn = legacy_database();
+        conn.execute_batch(UPGRADE_TO_V1).unwrap();
+        conn.execute_batch(UPGRADE_TO_V2).unwrap();
+        conn.execute_batch(UPGRADE_TO_V3).unwrap();
+        ensure_schema(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO bookable_slots
+             (venue_id, court_id, court_name, starts_at, ends_at, available_places)
+             VALUES ('zhs-munich', '92db7384-2dec-4888-a92a-4c2b6faac5f7', 'Court 1',
+                     '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z', 2)",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 3).unwrap();
+
+        conn.execute_batch(UPGRADE_TO_V4).unwrap();
+
+        assert!(table_sql(&conn, "bookable_slots").is_none());
     }
 
     /// The guard inside the migration file, which is what protects a maintainer

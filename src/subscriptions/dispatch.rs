@@ -47,7 +47,11 @@ impl SubscriptionService {
         if subs.is_empty() {
             return;
         }
-        for (user, slots) in match_subscriptions(changes, &subs, &self.courts) {
+        let matched = {
+            let registry = self.registry.read().expect("venue registry poisoned");
+            match_subscriptions(changes, &subs, &registry)
+        };
+        for (user, slots) in matched {
             let alert = AvailabilityAlert {
                 slots: slots.iter().map(Into::into).collect(),
             };
@@ -79,9 +83,11 @@ impl SubscriptionService {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testing::{court_id, service, service_with_store, subscribe_cmd, uref};
+    use super::super::testing::{
+        court_id, service, service_with_store, subscribe_cmd, uref, venue_id,
+    };
     use crate::model::{
-        AvailabilityChange, BookableSlot, Schedule, SubscriptionDraft, SurfaceFilter, TimeRange,
+        AvailabilityChange, BookableSlot, CourtFilter, Schedule, SubscriptionDraft, TimeRange,
     };
     use crate::ports::SubscriptionRepository;
     use crate::subscriptions::contract::{AvailabilityAlert, DirectMessageSender};
@@ -120,6 +126,7 @@ mod tests {
     fn bookable(name: &str) -> AvailabilityChange {
         let starts_at = Utc.with_ymd_and_hms(2026, 6, 2, 18, 0, 0).unwrap();
         AvailabilityChange::BecameBookable(BookableSlot {
+            venue_id: venue_id(),
             court_id: court_id(name),
             court_name: name.into(),
             starts_at,
@@ -195,7 +202,7 @@ mod tests {
                 schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
                 time_range: TimeRange::new(0, 24 * 60).unwrap(),
                 courts: None,
-                surface: SurfaceFilter::All,
+                filter: CourtFilter::Any,
             })
             .await
             .unwrap();
@@ -214,7 +221,7 @@ mod tests {
                 schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
                 time_range: TimeRange::new(0, 24 * 60).unwrap(),
                 courts: None,
-                surface: SurfaceFilter::All,
+                filter: CourtFilter::Any,
             })
             .await
             .unwrap();
