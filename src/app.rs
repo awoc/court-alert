@@ -5,9 +5,9 @@ use anyhow::{Context as _, Result};
 use tracing::{info, warn};
 
 use crate::config::{Config, Settings};
-use crate::model::{Provider, VenueIdentity, VenueRegistry};
+use crate::model::{Provider, Sport, VenueIdentity, VenueRegistry};
 use crate::monitor::Monitor;
-use crate::notify::{ChannelSink, DiscordNotifier, SurfaceFilteredSink};
+use crate::notify::{ChannelSink, DiscordNotifier, SportScopedSink, SurfaceFilteredSink};
 use crate::ports::{AvailabilityChangeSink, VenueAvailabilitySource};
 use crate::providers::{self, ChatProvider};
 use crate::store::SqliteStore;
@@ -35,11 +35,18 @@ impl App {
 
         let mut sinks: Vec<Arc<dyn AvailabilityChangeSink>> = Vec::new();
         match &settings.discord_webhook {
+            // The sport scope is the outer wrapper and is never a no-op: padel
+            // is DM-only, and the surface filter would let it through whenever
+            // `surface_filter = "all"` removes that filter from the chain.
             Some(url) => sinks.push(
-                SurfaceFilteredSink::wrap(
-                    Box::new(DiscordNotifier::new(url.clone(), store.clone())?),
+                SportScopedSink::wrap(
+                    SurfaceFilteredSink::wrap(
+                        Box::new(DiscordNotifier::new(url.clone(), store.clone())?),
+                        registry.clone(),
+                        config.surface_filter(),
+                    ),
                     registry.clone(),
-                    config.surface_filter(),
+                    Sport::Tennis,
                 )
                 .into(),
             ),

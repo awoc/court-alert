@@ -1,6 +1,8 @@
 # court-alert
 
-`court-alert` monitors configured ZHS Munich court products for newly bookable slots. It stores the last observed availability in SQLite and can post changes to a Discord webhook or send matching slot alerts as Discord DMs to subscribers.
+`court-alert` monitors configured clubs for newly bookable court slots. It stores the last observed availability in SQLite and can post changes to a Discord webhook or send matching slot alerts as Discord DMs to subscribers.
+
+Each club is a venue with a sport: `/subscribe` covers tennis venues and `/padel` covers padel ones. Only tennis reaches the broadcast webhook channel; padel alerts go out solely as `/padel` direct messages.
 
 ## Configuration
 
@@ -56,6 +58,9 @@ Startup creates the schema in an empty database, but never upgrades an existing 
 
 ```sh
 sqlite3 -bail data/court-alert.db < sql/migrations/0004_venue_scoped_slots.sql
+sqlite3 -bail data/court-alert.db < sql/migrations/0005_subscription_sport_and_venue.sql
 ```
 
 `0004` drops `bookable_slots` rather than migrating it — it is a cache the next poll rewrites, and pre-existing rows have no venue to attribute them to. The next poll therefore starts from an empty snapshot, so **check `quiet_first_poll = true` before running it**, or the first poll after the restart alerts on every slot that is currently free.
+
+`0005` gives subscriptions a `sport` and an optional `venue`, and renames `surface` to `court_filter` now that the column spans both sports' vocabularies. Existing rows become `sport = 'tennis'` with no venue, i.e. "all tennis venues", which preserves their behaviour exactly.
