@@ -169,7 +169,10 @@ pub(super) async fn service_with_slots(
     slots: Vec<BookableSlot>,
 ) -> Arc<SubscriptionService> {
     let store = store().await;
-    store.replace_snapshot(slots).await.unwrap();
+    store
+        .replace_venue_snapshot(&venue_id(), slots)
+        .await
+        .unwrap();
     Arc::new(SubscriptionService::new(
         store.clone(),
         store,
@@ -188,7 +191,22 @@ impl BookableSlotSnapshotRepository for FailingSlotSnapshotRepository {
         anyhow::bail!("simulated slot-snapshot failure")
     }
 
-    async fn replace_snapshot(&self, _slots: Vec<BookableSlot>) -> anyhow::Result<()> {
+    async fn load_venue_snapshot(
+        &self,
+        _venue_id: &VenueId,
+    ) -> anyhow::Result<BookableSlotSnapshot> {
+        anyhow::bail!("simulated slot-snapshot failure")
+    }
+
+    async fn replace_venue_snapshot(
+        &self,
+        _venue_id: &VenueId,
+        _slots: Vec<BookableSlot>,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("simulated slot-snapshot failure")
+    }
+
+    async fn delete_snapshots_except(&self, _venue_ids: &[VenueId]) -> anyhow::Result<u64> {
         anyhow::bail!("simulated slot-snapshot failure")
     }
 }

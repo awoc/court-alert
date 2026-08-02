@@ -8,7 +8,7 @@ use crate::config::{Config, Settings};
 use crate::model::{Provider, VenueIdentity, VenueRegistry};
 use crate::monitor::Monitor;
 use crate::notify::{ChannelSink, DiscordNotifier, SurfaceFilteredSink};
-use crate::ports::{AvailabilityChangeSink, SlotAvailabilitySource};
+use crate::ports::{AvailabilityChangeSink, VenueAvailabilitySource};
 use crate::providers::{self, ChatProvider};
 use crate::store::SqliteStore;
 use crate::subscriptions::{BerlinClock, SubscriptionService};
@@ -19,8 +19,8 @@ const PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 pub struct App {
     config: Config,
     registry: Arc<RwLock<VenueRegistry>>,
-    slot_source: Arc<dyn SlotAvailabilitySource>,
-    sinks: Vec<Box<dyn AvailabilityChangeSink>>,
+    slot_source: Arc<dyn VenueAvailabilitySource>,
+    sinks: Vec<Arc<dyn AvailabilityChangeSink>>,
     chat_providers: Vec<Box<dyn ChatProvider>>,
     store: Arc<SqliteStore>,
 }
@@ -33,13 +33,16 @@ impl App {
 
         let store = Arc::new(SqliteStore::open(settings.db_path.clone()).await?);
 
-        let mut sinks: Vec<Box<dyn AvailabilityChangeSink>> = Vec::new();
+        let mut sinks: Vec<Arc<dyn AvailabilityChangeSink>> = Vec::new();
         match &settings.discord_webhook {
-            Some(url) => sinks.push(SurfaceFilteredSink::wrap(
-                Box::new(DiscordNotifier::new(url.clone(), store.clone())?),
-                registry.clone(),
-                config.surface_filter(),
-            )),
+            Some(url) => sinks.push(
+                SurfaceFilteredSink::wrap(
+                    Box::new(DiscordNotifier::new(url.clone(), store.clone())?),
+                    registry.clone(),
+                    config.surface_filter(),
+                )
+                .into(),
+            ),
             None => info!("COURT_ALERT_DISCORD_WEBHOOK not set — webhook notifier disabled"),
         }
         info!(
@@ -64,7 +67,7 @@ impl App {
             "starting court-alert"
         );
 
-        let slot_source: Arc<dyn SlotAvailabilitySource> = Arc::new(
+        let slot_source: Arc<dyn VenueAvailabilitySource> = Arc::new(
             ZhsSlotAvailabilitySource::new(zhs_auth(&config, settings.credentials)?),
         );
 
@@ -85,6 +88,7 @@ impl App {
                 self.registry,
                 self.slot_source,
                 self.sinks,
+                self.store.clone(),
                 self.store,
             )
             .run()
@@ -105,7 +109,7 @@ impl App {
         } = self;
 
         let (tx, rx) = tokio::sync::mpsc::channel(2);
-        sinks.push(Box::new(ChannelSink::new(tx)));
+        sinks.push(Arc::new(ChannelSink::new(tx)));
 
         let admins = chat_providers.iter().flat_map(|p| p.admins()).collect();
         let service = Arc::new(SubscriptionService::new(
@@ -129,7 +133,7 @@ impl App {
                         "chat providers not ready; starting monitor anyway"
                     ),
                 }
-                Monitor::new(config, registry, slot_source, sinks, store)
+                Monitor::new(config, registry, slot_source, sinks, store.clone(), store)
                     .run()
                     .await
             },

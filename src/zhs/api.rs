@@ -1,11 +1,12 @@
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use futures::{StreamExt, TryStreamExt, stream};
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::model::{Court, SlotObservation, Venue, VenueId};
-use crate::ports::SlotAvailabilitySource;
+use crate::model::{CourtCatalog, SlotObservation, Venue, VenueId};
+use crate::ports::VenueAvailabilitySource;
 
 use super::auth::Auth;
 use super::dto::{
@@ -16,6 +17,11 @@ use super::dto::{
 const BOOKING_SLOTS_QUERY: &str = "\nquery List_product_slots($productID: UUID!, $input: BookingSlotsInput!) {\n  booking_slots(product_id: $productID, input: $input) {\n    start\n    end\n    booking_period_start\n    booking_period_end\n    availability\n    already_booked\n    already_in_cart\n    already_on_waiting_list\n    blocked_by_resource\n }\n}";
 
 const MAX_ATTEMPTS: u32 = 3;
+
+/// ZHS is per-product, so the venue fetch fans out over its courts. Kept low so
+/// the pooled TLS connection is reused: on the armv7 deploy target the
+/// handshake, not the JSON, is what costs CPU.
+const MAX_CONCURRENT_COURT_FETCHES: usize = 4;
 
 pub struct ZhsSlotAvailabilitySource {
     auth: Auth,
@@ -28,19 +34,37 @@ impl ZhsSlotAvailabilitySource {
 }
 
 #[async_trait]
-impl SlotAvailabilitySource for ZhsSlotAvailabilitySource {
+impl VenueAvailabilitySource for ZhsSlotAvailabilitySource {
     async fn fetch(
         &self,
         venue: &Venue,
-        court: &Court,
+        catalog: &CourtCatalog,
         starts_at: DateTime<Utc>,
         ends_at: DateTime<Utc>,
     ) -> Result<Vec<SlotObservation>> {
-        let slots = fetch_booking_slot_dtos(&self.auth, court.id(), starts_at, ends_at).await?;
-        Ok(slots
-            .into_iter()
-            .map(|slot| normalize_booking_slot(&venue.id, court.id(), court.name(), slot))
-            .collect())
+        let courts: Vec<(Uuid, String)> = catalog
+            .courts()
+            .iter()
+            .map(|court| (court.id(), court.name().to_owned()))
+            .collect();
+        let per_court = stream::iter(courts)
+            .map(|(court_id, court_name)| async move {
+                let slots = fetch_booking_slot_dtos(&self.auth, court_id, starts_at, ends_at)
+                    .await
+                    .with_context(|| {
+                        format!("fetching availability for court {court_name} ({court_id})")
+                    })?;
+                Ok::<_, anyhow::Error>(
+                    slots
+                        .into_iter()
+                        .map(|slot| normalize_booking_slot(&venue.id, court_id, &court_name, slot))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .buffer_unordered(MAX_CONCURRENT_COURT_FETCHES)
+            .try_collect::<Vec<_>>()
+            .await?;
+        Ok(per_court.into_iter().flatten().collect())
     }
 }
 
@@ -209,6 +233,7 @@ mod tests {
     use crate::zhs::testing::{install_login_flow_mocks, login_success_response};
     use chrono::TimeZone;
     use serde_json::json;
+    use std::collections::HashSet;
     use wiremock::matchers::{body_partial_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -358,6 +383,63 @@ mod tests {
                 .await
                 .expect("fetch after retry");
         assert_eq!(slots.len(), 2);
+    }
+
+    /// The port is venue-granular, so one call covers the whole catalog and
+    /// stamps every observation with the venue it came from.
+    #[tokio::test]
+    async fn a_venue_fetch_covers_every_court_in_its_catalog() {
+        use crate::model::{
+            Court, CourtAttributes, CourtCatalog, CourtSurface, Sport, Venue, VenueId,
+            VenueIdentity,
+        };
+
+        let server = MockServer::start().await;
+        install_login_flow_mocks(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/services/identity/self-service/login"))
+            .respond_with(login_success_response())
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/query"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(sample_slots_response()))
+            .expect(2) // one request per court
+            .mount(&server)
+            .await;
+
+        let venue = Venue {
+            id: VenueId::new("zhs-munich"),
+            display_name: "ZHS München".into(),
+            sport: Sport::Tennis,
+            identity: VenueIdentity::Zhs {
+                base_url: server.uri(),
+            },
+            poll_interval_secs: None,
+            lookahead_days: None,
+            operating_window: None,
+        };
+        let catalog = CourtCatalog::new(vec![
+            Court::new(
+                Uuid::parse_str(PRODUCT_ID).unwrap(),
+                "Court 2".into(),
+                CourtAttributes::tennis(CourtSurface::Clay),
+            ),
+            Court::new(
+                Uuid::from_u128(5),
+                "Court 5".into(),
+                CourtAttributes::tennis(CourtSurface::Clay),
+            ),
+        ]);
+        let source = ZhsSlotAvailabilitySource::new(Auth::new(server.uri(), creds()).unwrap());
+        let (start, end) = sample_window();
+
+        let observations = source.fetch(&venue, &catalog, start, end).await.unwrap();
+
+        assert_eq!(observations.len(), 4); // 2 slots × 2 courts
+        assert!(observations.iter().all(|o| o.venue_id == venue.id));
+        let names: HashSet<&str> = observations.iter().map(|o| o.court_name.as_str()).collect();
+        assert_eq!(names, HashSet::from(["Court 2", "Court 5"]));
     }
 
     #[tokio::test]

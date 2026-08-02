@@ -5,6 +5,7 @@ use super::*;
 use crate::model::{
     Court, CourtAttributes, CourtSurface, SlotObservation, Sport, Venue, VenueId, VenueIdentity,
 };
+use crate::ports::{BookableSlotSnapshotRepository, VenueStateRepository};
 use crate::store::SqliteStore;
 
 fn venue() -> Venue {
@@ -46,19 +47,87 @@ fn observation(court: &Court) -> SlotObservation {
     }
 }
 
+/// Suppression follows the `venue_state` marker, not the slice being empty: a
+/// single club can legitimately be fully booked across its whole horizon, and
+/// inferring from emptiness would swallow its next batch of freed slots.
 #[test]
-fn quiet_first_poll_is_used_only_for_an_empty_initial_snapshot() {
-    let empty = MonitorState::new(BookableSlotSnapshot::new(), true);
-    assert!(empty.suppress_next_publish);
+fn a_fully_booked_venue_at_restart_is_not_treated_as_new() {
+    let uninitialised = MonitorState::new(BookableSlotSnapshot::new(), true);
+    assert!(uninitialised.suppress_next_publish);
 
+    let already_polled = MonitorState::new(BookableSlotSnapshot::new(), false);
+    assert!(
+        !already_polled.suppress_next_publish,
+        "a venue that has polled before must alert even with nothing currently free"
+    );
+}
+
+#[tokio::test]
+async fn a_venue_is_only_new_until_its_first_successful_poll() {
+    let store = SqliteStore::open_in_memory().await.unwrap();
+    let venue = venue();
+    assert!(!store.is_initialised(&venue.id).await.unwrap());
+
+    store.mark_initialised(&venue.id).await.unwrap();
+
+    assert!(store.is_initialised(&venue.id).await.unwrap());
+}
+
+/// Each loop diffs against its own slice only. Against the global snapshot it
+/// would report every other venue's slots as unbookable, every tick.
+#[tokio::test]
+async fn a_venue_loads_only_its_own_previous_slots() {
+    let store = SqliteStore::open_in_memory().await.unwrap();
     let court = court();
     let observed_at = Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
-    let populated = build_snapshot(
-        vec![(&venue(), court.clone(), vec![observation(&court)])],
-        observed_at,
-    );
-    let restored = MonitorState::new(populated, true);
-    assert!(!restored.suppress_next_publish);
+    let ours = build_snapshot(&venue(), vec![observation(&court)], observed_at);
+
+    let other_id = crate::model::VenueId::new("casa-padel");
+    let mut theirs = observation(&court);
+    theirs.venue_id = other_id.clone();
+    theirs.starts_at += ChronoDuration::hours(3);
+    theirs.ends_at += ChronoDuration::hours(3);
+
+    store
+        .replace_venue_snapshot(&venue().id, ours.values().cloned().collect())
+        .await
+        .unwrap();
+    store
+        .replace_venue_snapshot(&other_id, vec![theirs.into_bookable(observed_at).unwrap()])
+        .await
+        .unwrap();
+
+    let previous = store.load_venue_snapshot(&venue().id).await.unwrap();
+
+    assert_eq!(previous, ours);
+    assert!(diff_availability(&previous, &ours).is_empty());
+}
+
+#[test]
+fn venues_are_phase_offset_evenly_across_the_interval() {
+    assert_eq!(phase_offset(0, 1, 300), Duration::ZERO);
+    assert_eq!(phase_offset(0, 4, 300), Duration::ZERO);
+    assert_eq!(phase_offset(1, 4, 300), Duration::from_secs(75));
+    assert_eq!(phase_offset(3, 4, 300), Duration::from_secs(225));
+}
+
+/// A provider outage must not become one webhook message per venue per tick,
+/// forever: only the transitions in and out of failure are reported at WARN.
+#[test]
+fn repeated_failures_are_reported_once_per_run() {
+    let venue = venue();
+    let mut run = FailureRun::default();
+
+    assert!(!run.failing);
+    run.failed(&venue, &anyhow::anyhow!("boom"));
+    assert!(run.failing, "the first failure is reported");
+    run.failed(&venue, &anyhow::anyhow!("boom"));
+    assert!(run.failing, "subsequent failures stay inside the same run");
+
+    run.succeeded(&venue);
+    assert!(!run.failing);
+    run.failed(&venue, &anyhow::anyhow!("boom"));
+    assert!(run.failing, "a new outage is reported again");
 }
 
 #[test]
@@ -93,10 +162,7 @@ fn snapshot_keeps_the_last_duplicate_observation() {
     duplicate.available_places = 3;
     let observed_at = Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
 
-    let snapshot = build_snapshot(
-        vec![(&venue(), court.clone(), vec![first, duplicate])],
-        observed_at,
-    );
+    let snapshot = build_snapshot(&venue(), vec![first, duplicate], observed_at);
 
     assert_eq!(snapshot.len(), 1);
     assert_eq!(snapshot.values().next().unwrap().available_places, 3);
@@ -114,10 +180,7 @@ fn snapshot_excludes_slots_that_do_not_end_after_they_start() {
     let mut empty_range = observation(&court);
     empty_range.ends_at = empty_range.starts_at;
 
-    let snapshot = build_snapshot(
-        vec![(&venue(), court.clone(), vec![inverted, empty_range])],
-        observed_at,
-    );
+    let snapshot = build_snapshot(&venue(), vec![inverted, empty_range], observed_at);
 
     assert!(snapshot.is_empty());
 }
@@ -133,15 +196,12 @@ async fn a_malformed_slot_does_not_stop_the_others_from_persisting() {
     malformed.starts_at = good.starts_at + ChronoDuration::hours(2);
     malformed.ends_at = malformed.starts_at - ChronoDuration::hours(1);
 
-    let snapshot = build_snapshot(
-        vec![(&venue(), court.clone(), vec![good.clone(), malformed])],
-        observed_at,
-    );
+    let snapshot = build_snapshot(&venue(), vec![good.clone(), malformed], observed_at);
     assert_eq!(snapshot.len(), 1);
 
     let store = SqliteStore::open_in_memory().await.unwrap();
     store
-        .replace_snapshot(snapshot.values().cloned().collect())
+        .replace_venue_snapshot(&venue().id, snapshot.values().cloned().collect())
         .await
         .expect("a snapshot built from a malformed observation must still persist");
     assert_eq!(store.load_snapshot().await.unwrap().len(), 1);
@@ -154,7 +214,7 @@ fn snapshot_excludes_observations_that_are_not_bookable() {
     blocked.blocked_by_resource = true;
     let observed_at = Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
 
-    let snapshot = build_snapshot(vec![(&venue(), court.clone(), vec![blocked])], observed_at);
+    let snapshot = build_snapshot(&venue(), vec![blocked], observed_at);
 
     assert!(snapshot.is_empty());
 }

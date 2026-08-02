@@ -1,0 +1,15 @@
+use anyhow::Result;
+use async_trait::async_trait;
+
+use crate::model::VenueId;
+
+/// Remembers which venues have completed a poll.
+///
+/// Recorded rather than inferred from an empty snapshot: a single club can
+/// legitimately be fully booked across its whole horizon, and inferring would
+/// then swallow its first batch of freed slots after a restart.
+#[async_trait]
+pub trait VenueStateRepository: Send + Sync {
+    async fn is_initialised(&self, venue_id: &VenueId) -> Result<bool>;
+    async fn mark_initialised(&self, venue_id: &VenueId) -> Result<()>;
+}
