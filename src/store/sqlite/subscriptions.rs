@@ -8,8 +8,8 @@ use crate::ports::SubscriptionRepository;
 
 use super::{DbRepr, SqliteStore, SubscriptionRow};
 
-const SUB_COLUMNS: &str =
-    "id, provider, user_id, weekday, on_date, start_minute, end_minute, courts, surface";
+const SUB_COLUMNS: &str = "id, provider, user_id, sport, venue, weekday, on_date, \
+                           start_minute, end_minute, courts, court_filter";
 
 fn map_subscription(row: &Row<'_>) -> rusqlite::Result<Subscription> {
     Subscription::try_from(SubscriptionRow::try_from(row)?)
@@ -22,13 +22,17 @@ impl SubscriptionRepository for SqliteStore {
             let (weekday, on_date) = sub.schedule.into_db()?;
             let courts_json = sub.courts.into_db()?;
             let filter = sub.filter.into_db()?;
+            let sport = sub.sport.into_db()?;
             conn.execute(
                 "INSERT INTO subscriptions
-                 (provider, user_id, weekday, on_date, start_minute, end_minute, courts, surface)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 (provider, user_id, sport, venue, weekday, on_date,
+                  start_minute, end_minute, courts, court_filter)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     sub.user.provider,
                     sub.user.user_id,
+                    sport,
+                    sub.venue.map(|venue| venue.to_string()),
                     weekday,
                     on_date,
                     sub.time_range.start_minute(),
@@ -135,7 +139,7 @@ impl SubscriptionRepository for SqliteStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{CourtFilter, CourtSurface, Schedule, TimeRange};
+    use crate::model::{CourtFilter, CourtLocation, CourtSurface, Schedule, Sport, TimeRange};
     use chrono::{NaiveDate, Weekday};
 
     fn uref(id: &str) -> ProviderUserRef {
@@ -156,6 +160,8 @@ mod tests {
     fn sample(weekday: Weekday) -> SubscriptionDraft {
         SubscriptionDraft {
             user: uref("12345"),
+            sport: Sport::Tennis,
+            venue: None,
             schedule: Schedule::Weekday(weekday),
             time_range: range(18 * 60, 22 * 60),
             courts: None,
@@ -187,6 +193,8 @@ mod tests {
             CourtFilter::Any,
             CourtFilter::CLAY,
             CourtFilter::Surface(CourtSurface::Synthetic),
+            CourtFilter::Location(CourtLocation::Indoor),
+            CourtFilter::Location(CourtLocation::Outdoor),
         ];
         for filter in filters {
             let mut sub = sample(Weekday::Tue);
@@ -275,6 +283,8 @@ mod tests {
     fn date_sample(date: NaiveDate) -> SubscriptionDraft {
         SubscriptionDraft {
             user: uref("12345"),
+            sport: Sport::Tennis,
+            venue: None,
             schedule: Schedule::Date(date),
             time_range: range(18 * 60, 22 * 60),
             courts: None,

@@ -87,7 +87,8 @@ mod tests {
         court_id, service, service_with_store, subscribe_cmd, uref, venue_id,
     };
     use crate::model::{
-        AvailabilityChange, BookableSlot, CourtFilter, Schedule, SubscriptionDraft, TimeRange,
+        AvailabilityChange, BookableSlot, CourtFilter, Schedule, Sport, SubscriptionDraft,
+        TimeRange,
     };
     use crate::ports::SubscriptionRepository;
     use crate::subscriptions::contract::{AvailabilityAlert, DirectMessageSender};
@@ -199,6 +200,8 @@ mod tests {
         store
             .add(SubscriptionDraft {
                 user: uref("1"),
+                sport: Sport::Tennis,
+                venue: None,
                 schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
                 time_range: TimeRange::new(0, 24 * 60).unwrap(),
                 courts: None,
@@ -218,6 +221,8 @@ mod tests {
         store
             .add(SubscriptionDraft {
                 user: uref("1"),
+                sport: Sport::Tennis,
+                venue: None,
                 schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
                 time_range: TimeRange::new(0, 24 * 60).unwrap(),
                 courts: None,

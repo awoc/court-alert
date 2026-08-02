@@ -56,7 +56,8 @@ impl AvailabilityChangeSink for SurfaceFilteredSink {
 mod tests {
     use super::*;
     use crate::model::{
-        BookableSlot, Court, CourtAttributes, CourtCatalog, CourtSurface, Sport, VenueId,
+        BookableSlot, Court, CourtAttributes, CourtCatalog, CourtSurface, Sport, Venue, VenueId,
+        VenueIdentity,
     };
     use chrono::{TimeZone, Utc};
     use std::sync::Mutex;
@@ -80,9 +81,23 @@ mod tests {
         }
     }
 
+    fn venue() -> Venue {
+        Venue {
+            id: venue_id(),
+            display_name: "ZHS München".into(),
+            sport: Sport::Tennis,
+            identity: VenueIdentity::Zhs {
+                base_url: "https://example.test".into(),
+            },
+            poll_interval_secs: None,
+            lookahead_days: None,
+            operating_window: None,
+        }
+    }
+
     fn registry() -> Arc<RwLock<VenueRegistry>> {
         let mut registry = VenueRegistry::new();
-        registry.register(venue_id(), Sport::Tennis);
+        registry.register(&venue());
         registry.set_catalog(
             venue_id(),
             CourtCatalog::new(vec![

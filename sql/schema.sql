@@ -5,12 +5,19 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     provider     TEXT    NOT NULL CHECK (provider <> ''),
     user_id      TEXT    NOT NULL CHECK (user_id <> ''),
+    -- Which command created the row. NULL `venue` means "every venue of this
+    -- sport", so without it a padel subscription would match tennis courts.
+    sport        TEXT    NOT NULL CHECK (sport IN ('tennis', 'padel')),
+    venue        TEXT    CHECK (venue IS NULL OR venue <> ''),
     weekday      INTEGER CHECK (weekday BETWEEN 0 AND 6),
     on_date      TEXT    CHECK (on_date IS date(on_date)),
     start_minute INTEGER NOT NULL CHECK (start_minute BETWEEN 0 AND 1440),
     end_minute   INTEGER NOT NULL CHECK (end_minute BETWEEN 0 AND 1440),
     courts       TEXT    CHECK (courts IS NULL OR (json_valid(courts) AND json_type(courts) = 'array')),
-    surface      TEXT    NOT NULL DEFAULT 'clay' CHECK (surface IN ('all', 'clay', 'synthetic')),
+    -- Spans both sports' vocabularies, hence the name: a column called
+    -- `surface` holding 'indoor' would mislead every future reader.
+    court_filter TEXT    NOT NULL
+                         CHECK (court_filter IN ('any', 'clay', 'synthetic', 'indoor', 'outdoor')),
     created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                          CHECK (created_at IS strftime('%Y-%m-%dT%H:%M:%fZ', created_at)),
     -- Exactly one schedule kind: recurring weekday or single date.

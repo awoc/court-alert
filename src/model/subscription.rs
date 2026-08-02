@@ -1,6 +1,6 @@
 use chrono::{NaiveDate, Weekday};
 
-use super::CourtFilter;
+use super::{CourtFilter, Sport, VenueId};
 
 pub const MINUTES_PER_DAY: u32 = 24 * 60;
 
@@ -47,6 +47,15 @@ impl TimeRange {
 pub struct Subscription {
     pub id: i64,
     pub user: ProviderUserRef,
+    /// Which command created this, and therefore which venues it covers.
+    ///
+    /// Not redundant with `venue`: `/subscribe` and `/padel` can both produce
+    /// `filter = Any, venue = None`, and `'any'` cannot say which sport it
+    /// meant. Scoping by sport rather than by provider is also what lets a
+    /// future Playtomic *tennis* club fall under `/subscribe` automatically.
+    pub sport: Sport,
+    /// `None` = every venue of that sport.
+    pub venue: Option<VenueId>,
     pub schedule: Schedule,
     pub time_range: TimeRange,
     pub courts: Option<Vec<String>>,
@@ -56,6 +65,8 @@ pub struct Subscription {
 #[derive(Debug, Clone)]
 pub struct SubscriptionDraft {
     pub user: ProviderUserRef,
+    pub sport: Sport,
+    pub venue: Option<VenueId>,
     pub schedule: Schedule,
     pub time_range: TimeRange,
     pub courts: Option<Vec<String>>,

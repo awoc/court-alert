@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use serenity::all::{CommandDataOptionValue, CommandInteraction};
 use tracing::warn;
 
-use crate::model::CourtFilter;
+use crate::model::{CourtFilter, Sport, VenueId};
 use crate::parsing::{parse_hhmm, parse_schedule};
 use crate::subscriptions::contract::SubscriptionCommand;
 use crate::time::today_berlin;
@@ -28,20 +28,31 @@ pub(super) fn parse_component(custom_id: &str) -> Result<SubscriptionCommand> {
 pub(super) fn parse_interaction(cmd: &CommandInteraction) -> Result<SubscriptionCommand> {
     match cmd.data.name.as_str() {
         "subscribe" => {
-            let day = get_string_opt(cmd, "day").context("missing 'day'")?;
-            let from = get_string_opt(cmd, "from").context("missing 'from'")?;
-            let to = get_string_opt(cmd, "to").context("missing 'to'")?;
-            let schedule = parse_schedule(&day, today_berlin()).context("invalid 'day'")?;
-            let start_minute = parse_hhmm(&from).context("invalid 'from' (expected HH:MM)")?;
-            let end_minute = parse_hhmm(&to).context("invalid 'to' (expected HH:MM)")?;
-            let courts = parse_courts(get_string_opt(cmd, "courts"))?;
-            let filter = parse_filter(get_string_opt(cmd, "surface"))?;
+            let (schedule, start_minute, end_minute) = parse_when(cmd)?;
             Ok(SubscriptionCommand::Subscribe {
+                sport: Sport::Tennis,
+                venue: None,
                 schedule,
                 start_minute,
                 end_minute,
-                courts,
-                filter,
+                courts: parse_courts(get_string_opt(cmd, "courts"))?,
+                filter: parse_filter(get_string_opt(cmd, "surface"))?,
+            })
+        }
+        "padel" => {
+            let (schedule, start_minute, end_minute) = parse_when(cmd)?;
+            Ok(SubscriptionCommand::Subscribe {
+                sport: Sport::Padel,
+                // Omitted means every padel club; `sport` is what keeps that
+                // from spilling onto tennis courts.
+                venue: get_string_opt(cmd, "club")
+                    .filter(|raw| !raw.trim().is_empty())
+                    .map(|raw| VenueId::new(raw.trim())),
+                schedule,
+                start_minute,
+                end_minute,
+                courts: None,
+                filter: parse_filter(get_string_opt(cmd, "location"))?,
             })
         }
         "list" => Ok(SubscriptionCommand::List),
@@ -55,6 +66,18 @@ pub(super) fn parse_interaction(cmd: &CommandInteraction) -> Result<Subscription
             Err(anyhow!("unknown command: {other}"))
         }
     }
+}
+
+/// The `day`/`from`/`to` trio both subscription commands require.
+fn parse_when(cmd: &CommandInteraction) -> Result<(crate::model::Schedule, u32, u32)> {
+    let day = get_string_opt(cmd, "day").context("missing 'day'")?;
+    let from = get_string_opt(cmd, "from").context("missing 'from'")?;
+    let to = get_string_opt(cmd, "to").context("missing 'to'")?;
+    Ok((
+        parse_schedule(&day, today_berlin()).context("invalid 'day'")?,
+        parse_hhmm(&from).context("invalid 'from' (expected HH:MM)")?,
+        parse_hhmm(&to).context("invalid 'to' (expected HH:MM)")?,
+    ))
 }
 
 fn parse_courts(input: Option<String>) -> Result<Option<Vec<String>>> {
@@ -84,10 +107,12 @@ fn parse_courts(input: Option<String>) -> Result<Option<Vec<String>>> {
     Ok((!courts.is_empty()).then_some(courts))
 }
 
+/// Shared by `/subscribe`'s `surface` and `/padel`'s `location`: both narrow to
+/// a `CourtFilter`, and each command only ever offers its own vocabulary.
 fn parse_filter(input: Option<String>) -> Result<Option<CourtFilter>> {
     input
         .filter(|raw| !raw.trim().is_empty())
-        .map(|raw| raw.parse().context("invalid 'surface'"))
+        .map(|raw| raw.parse().context("invalid court filter"))
         .transpose()
 }
 

@@ -152,7 +152,7 @@ impl App {
 fn build_registry(config: &Config) -> VenueRegistry {
     let mut registry = VenueRegistry::new();
     for venue in config.venues() {
-        registry.register(venue.id.clone(), venue.sport);
+        registry.register(venue);
         if let Some(catalog) = config.catalog_for(&venue.id) {
             registry.set_catalog(venue.id.clone(), catalog.clone());
         }

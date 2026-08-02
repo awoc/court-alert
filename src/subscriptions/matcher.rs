@@ -11,6 +11,17 @@ pub(super) fn slot_matches(
     slot: &BookableSlot,
     registry: &VenueRegistry,
 ) -> bool {
+    // Sport first: a subscription with no club watches every venue of *its*
+    // sport, so without this a "all clubs" padel row would match tennis courts.
+    if registry.sport(&slot.venue_id) != Some(sub.sport) {
+        return false;
+    }
+    if let Some(venue) = &sub.venue
+        && *venue != slot.venue_id
+    {
+        return false;
+    }
+
     let local = local_slot_time(slot.starts_at);
     let matches_schedule = match &sub.schedule {
         Schedule::Weekday(w) => *w == local.weekday,
@@ -69,8 +80,11 @@ mod tests {
     use super::*;
     use chrono::{NaiveDate, TimeZone, Utc, Weekday};
 
-    use super::super::testing::{SYNTHETIC_COURT, court_id, registry, uref, venue_id};
-    use crate::model::{CourtFilter, CourtSurface, TimeRange};
+    use super::super::testing::{
+        INDOOR_COURT, OUTDOOR_COURT, SYNTHETIC_COURT, court_id, padel_court_id, padel_venue_id,
+        registry, uref, venue_id,
+    };
+    use crate::model::{CourtFilter, CourtLocation, CourtSurface, Sport, TimeRange};
 
     fn slot(name: &str, hour_utc: u32, minute_utc: u32) -> BookableSlot {
         let starts_at = Utc
@@ -86,6 +100,22 @@ mod tests {
         }
     }
 
+    fn padel_slot(name: &str, hour_utc: u32) -> BookableSlot {
+        BookableSlot {
+            venue_id: padel_venue_id(),
+            court_id: padel_court_id(name),
+            ..slot(name, hour_utc, 0)
+        }
+    }
+
+    fn padel_sub(user: &str, venue: Option<crate::model::VenueId>) -> Subscription {
+        Subscription {
+            sport: Sport::Padel,
+            venue,
+            ..sub(user, Weekday::Tue, 18 * 60, 22 * 60, None)
+        }
+    }
+
     fn sub(
         user: &str,
         weekday: Weekday,
@@ -96,6 +126,8 @@ mod tests {
         Subscription {
             id: 1,
             user: uref(user),
+            sport: Sport::Tennis,
+            venue: None,
             schedule: Schedule::Weekday(weekday),
             time_range: TimeRange::new(from, to).unwrap(),
             courts: courts.map(|v| v.into_iter().map(String::from).collect()),
@@ -107,6 +139,8 @@ mod tests {
         Subscription {
             id: 1,
             user: uref(user),
+            sport: Sport::Tennis,
+            venue: None,
             schedule: Schedule::Date(date),
             time_range: TimeRange::new(from, to).unwrap(),
             courts: None,
@@ -126,6 +160,79 @@ mod tests {
     #[test]
     fn empty_inputs_produce_no_matches() {
         assert!(match_subscriptions(&[], &[]).is_empty());
+    }
+
+    /// The hole `sport` exists to close: "every padel club" must not mean
+    /// "every court anywhere".
+    #[test]
+    fn a_padel_subscription_for_all_clubs_never_matches_a_tennis_court() {
+        let changes = vec![
+            AvailabilityChange::BecameBookable(padel_slot(INDOOR_COURT, 18)),
+            AvailabilityChange::BecameBookable(slot("Court 2", 18, 0)),
+        ];
+
+        let m = match_subscriptions(&changes, &[padel_sub("1", None)]);
+
+        assert_eq!(m[&uref("1")].len(), 1);
+        assert_eq!(m[&uref("1")][0].court_name, INDOOR_COURT);
+    }
+
+    /// …and the mirror: `/subscribe` stays off padel courts.
+    #[test]
+    fn a_tennis_subscription_never_matches_a_padel_court() {
+        let changes = vec![AvailabilityChange::BecameBookable(padel_slot(
+            INDOOR_COURT,
+            18,
+        ))];
+        let subs = vec![sub("1", Weekday::Tue, 18 * 60, 22 * 60, None)];
+
+        assert!(match_subscriptions(&changes, &subs).is_empty());
+    }
+
+    #[test]
+    fn a_padel_subscription_with_no_location_matches_indoor_and_outdoor() {
+        let changes = vec![
+            AvailabilityChange::BecameBookable(padel_slot(INDOOR_COURT, 18)),
+            AvailabilityChange::BecameBookable(padel_slot(OUTDOOR_COURT, 19)),
+        ];
+
+        let m = match_subscriptions(&changes, &[padel_sub("1", None)]);
+
+        assert_eq!(m[&uref("1")].len(), 2);
+    }
+
+    #[test]
+    fn a_location_filter_narrows_a_padel_subscription() {
+        let changes = vec![
+            AvailabilityChange::BecameBookable(padel_slot(INDOOR_COURT, 18)),
+            AvailabilityChange::BecameBookable(padel_slot(OUTDOOR_COURT, 19)),
+        ];
+        let indoor = Subscription {
+            filter: CourtFilter::Location(CourtLocation::Indoor),
+            ..padel_sub("1", None)
+        };
+
+        let m = match_subscriptions(&changes, &[indoor]);
+
+        assert_eq!(m[&uref("1")].len(), 1);
+        assert_eq!(m[&uref("1")][0].court_name, INDOOR_COURT);
+    }
+
+    #[test]
+    fn naming_a_club_excludes_every_other_club() {
+        let changes = vec![AvailabilityChange::BecameBookable(padel_slot(
+            INDOOR_COURT,
+            18,
+        ))];
+
+        let matching = match_subscriptions(&changes, &[padel_sub("1", Some(padel_venue_id()))]);
+        assert_eq!(matching[&uref("1")].len(), 1);
+
+        let elsewhere = match_subscriptions(
+            &changes,
+            &[padel_sub("1", Some(crate::model::VenueId::new("other")))],
+        );
+        assert!(elsewhere.is_empty());
     }
 
     #[test]

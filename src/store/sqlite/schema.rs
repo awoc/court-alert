@@ -8,7 +8,7 @@
 use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA: &str = include_str!("../../../sql/schema.sql");
 
@@ -65,6 +65,8 @@ mod tests {
     const UPGRADE_TO_V3: &str =
         include_str!("../../../sql/migrations/0003_subscription_surface.sql");
     const UPGRADE_TO_V4: &str = include_str!("../../../sql/migrations/0004_venue_scoped_slots.sql");
+    const UPGRADE_TO_V5: &str =
+        include_str!("../../../sql/migrations/0005_subscription_sport_and_venue.sql");
 
     const LEGACY_SCHEMA: &str = "
         CREATE TABLE subscriptions (
@@ -111,6 +113,7 @@ mod tests {
         conn.execute_batch(UPGRADE_TO_V2).unwrap();
         conn.execute_batch(UPGRADE_TO_V3).unwrap();
         conn.execute_batch(UPGRADE_TO_V4).unwrap();
+        conn.execute_batch(UPGRADE_TO_V5).unwrap();
         ensure_current(conn).unwrap();
     }
 
@@ -177,6 +180,7 @@ mod tests {
         conn.execute_batch(UPGRADE_TO_V2).unwrap();
         conn.execute_batch(UPGRADE_TO_V3).unwrap();
         conn.execute_batch(UPGRADE_TO_V4).unwrap();
+        conn.execute_batch(UPGRADE_TO_V5).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         assert!(table_sql(&conn, "bookable_slots").is_none());
         assert!(table_sql(&conn, "venue_state").is_none());
@@ -250,12 +254,20 @@ mod tests {
     }
 
     #[test]
-    fn migration_gives_existing_subscriptions_the_surface_subscribe_would_pick() {
+    fn fifth_migration_refuses_to_run_twice() {
+        let mut conn = legacy_database();
+        migrate_by_hand(&mut conn);
+
+        assert!(conn.execute_batch(UPGRADE_TO_V5).is_err());
+    }
+
+    #[test]
+    fn migration_gives_existing_subscriptions_the_filter_subscribe_would_pick() {
         let mut conn = legacy_database();
         migrate_by_hand(&mut conn);
 
         let mut statement = conn
-            .prepare("SELECT courts IS NULL, surface FROM subscriptions ORDER BY id")
+            .prepare("SELECT courts IS NULL, court_filter FROM subscriptions ORDER BY id")
             .unwrap();
         let rows: Vec<(bool, String)> = statement
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
@@ -263,9 +275,32 @@ mod tests {
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
 
+        // 'all' becomes 'any' under the wider vocabulary; 'clay' is unchanged.
         assert_eq!(
             rows,
-            vec![(false, "all".to_string()), (true, "clay".to_string())]
+            vec![(false, "any".to_string()), (true, "clay".to_string())]
+        );
+    }
+
+    /// Existing rows all came from `/subscribe`, and "all tennis venues"
+    /// preserves today's behaviour without inventing a venue id.
+    #[test]
+    fn migration_back_fills_existing_subscriptions_as_tennis_at_every_venue() {
+        let mut conn = legacy_database();
+        migrate_by_hand(&mut conn);
+
+        let mut statement = conn
+            .prepare("SELECT sport, venue IS NULL FROM subscriptions ORDER BY id")
+            .unwrap();
+        let rows: Vec<(String, bool)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(
+            rows,
+            vec![("tennis".to_string(), true), ("tennis".to_string(), true)]
         );
     }
 
@@ -289,8 +324,9 @@ mod tests {
 
         let error = conn
             .execute(
-                "INSERT INTO subscriptions (provider, user_id, weekday, start_minute, end_minute)
-                 VALUES ('discord', '12345', 2, 'half past six', 1320)",
+                "INSERT INTO subscriptions
+                 (provider, user_id, sport, weekday, start_minute, end_minute, court_filter)
+                 VALUES ('discord', '12345', 'tennis', 2, 'half past six', 1320, 'clay')",
                 [],
             )
             .unwrap_err();
@@ -309,28 +345,41 @@ mod tests {
 
         let rejected = [
             // weekday outside Mon..=Sun
-            "INSERT INTO subscriptions (provider, user_id, weekday, start_minute, end_minute)
-             VALUES ('discord', '12345', 9, 1080, 1320)",
+            "INSERT INTO subscriptions
+             (provider, user_id, sport, weekday, start_minute, end_minute, court_filter)
+             VALUES ('discord', '12345', 'tennis', 9, 1080, 1320, 'clay')",
             // inverted time range
-            "INSERT INTO subscriptions (provider, user_id, weekday, start_minute, end_minute)
-             VALUES ('discord', '12345', 2, 1320, 1080)",
+            "INSERT INTO subscriptions
+             (provider, user_id, sport, weekday, start_minute, end_minute, court_filter)
+             VALUES ('discord', '12345', 'tennis', 2, 1320, 1080, 'clay')",
             // calendar date that does not exist
-            "INSERT INTO subscriptions (provider, user_id, on_date, start_minute, end_minute)
-             VALUES ('discord', '12345', '2026-02-30', 1080, 1320)",
+            "INSERT INTO subscriptions
+             (provider, user_id, sport, on_date, start_minute, end_minute, court_filter)
+             VALUES ('discord', '12345', 'tennis', '2026-02-30', 1080, 1320, 'clay')",
             // courts is not a JSON array
-            "INSERT INTO subscriptions (provider, user_id, weekday, start_minute, end_minute, courts)
-             VALUES ('discord', '12345', 2, 1080, 1320, 'Court 2')",
-            // surface outside the known domain
-            "INSERT INTO subscriptions (provider, user_id, weekday, start_minute, end_minute, surface)
-             VALUES ('discord', '12345', 2, 1080, 1320, 'grass')",
+            "INSERT INTO subscriptions
+             (provider, user_id, sport, weekday, start_minute, end_minute, courts, court_filter)
+             VALUES ('discord', '12345', 'tennis', 2, 1080, 1320, 'Court 2', 'clay')",
+            // court_filter outside the known domain
+            "INSERT INTO subscriptions
+             (provider, user_id, sport, weekday, start_minute, end_minute, court_filter)
+             VALUES ('discord', '12345', 'tennis', 2, 1080, 1320, 'grass')",
+            // sport outside the known domain
+            "INSERT INTO subscriptions
+             (provider, user_id, sport, weekday, start_minute, end_minute, court_filter)
+             VALUES ('discord', '12345', 'squash', 2, 1080, 1320, 'any')",
             // timestamp that is not canonical UTC RFC 3339
             "INSERT INTO bookable_slots
-             VALUES ('123e4567-e89b-12d3-a456-426614174000', 'Court 1',
+             VALUES ('zhs-munich', '123e4567-e89b-12d3-a456-426614174000', 'Court 1',
                      '2026-07-13T08:00:00+00:00', '2026-07-13T09:00:00.000Z', 2)",
             // slot that ends before it starts
             "INSERT INTO bookable_slots
-             VALUES ('123e4567-e89b-12d3-a456-426614174000', 'Court 1',
+             VALUES ('zhs-munich', '123e4567-e89b-12d3-a456-426614174000', 'Court 1',
                      '2026-07-13T09:00:00.000Z', '2026-07-13T08:00:00.000Z', 2)",
+            // slot with no venue to scope its replacement by
+            "INSERT INTO bookable_slots
+             VALUES ('', '123e4567-e89b-12d3-a456-426614174000', 'Court 1',
+                     '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z', 2)",
             // struck outside the 0/1 domain
             "INSERT INTO alert_message_slots
              VALUES ('1408', 0, '123e4567-e89b-12d3-a456-426614174000', 'Court 1',
@@ -353,8 +402,9 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         ensure_current(&mut conn).unwrap();
         conn.execute(
-            "INSERT INTO subscriptions (provider, user_id, weekday, start_minute, end_minute)
-             VALUES ('discord', '12345', 2, 1080, 1320)",
+            "INSERT INTO subscriptions
+             (provider, user_id, sport, weekday, start_minute, end_minute, court_filter)
+             VALUES ('discord', '12345', 'tennis', 2, 1080, 1320, 'clay')",
             [],
         )
         .unwrap();
@@ -412,8 +462,9 @@ mod tests {
         migrate_by_hand(&mut conn);
 
         conn.execute(
-            "INSERT INTO subscriptions (provider, user_id, weekday, start_minute, end_minute)
-             VALUES ('discord', '12345', 3, 600, 660)",
+            "INSERT INTO subscriptions
+             (provider, user_id, sport, weekday, start_minute, end_minute, court_filter)
+             VALUES ('discord', '12345', 'tennis', 3, 600, 660, 'clay')",
             [],
         )
         .unwrap();

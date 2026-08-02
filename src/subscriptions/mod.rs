@@ -11,7 +11,7 @@ use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, NaiveDate, Utc};
 
-use crate::model::{CourtFilter, ProviderUserRef, Sport, VenueRegistry};
+use crate::model::{CourtCatalog, CourtFilter, ProviderUserRef, Sport, VenueId, VenueRegistry};
 use crate::ports::{BookableSlotSnapshotRepository, SubscriptionRepository};
 use contract::DirectMessageSender;
 
@@ -37,7 +37,7 @@ pub struct SubscriptionService {
     senders: RwLock<HashMap<String, Arc<dyn DirectMessageSender>>>,
     admins: HashSet<ProviderUserRef>,
     registry: Arc<RwLock<VenueRegistry>>,
-    default_surface: CourtFilter,
+    tennis_default_filter: CourtFilter,
     clock: Arc<dyn Clock>,
 }
 
@@ -47,7 +47,7 @@ impl SubscriptionService {
         slot_snapshots: Arc<dyn BookableSlotSnapshotRepository>,
         admins: HashSet<ProviderUserRef>,
         registry: Arc<RwLock<VenueRegistry>>,
-        default_surface: CourtFilter,
+        tennis_default_filter: CourtFilter,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
@@ -56,7 +56,7 @@ impl SubscriptionService {
             senders: RwLock::new(HashMap::new()),
             admins,
             registry,
-            default_surface,
+            tennis_default_filter,
             clock,
         }
     }
@@ -65,22 +65,46 @@ impl SubscriptionService {
         self.admins.contains(user)
     }
 
-    /// The court catalogs `/subscribe` operates over.
+    /// The court catalogs a command operates over, narrowed to one club when
+    /// the subscription names one.
     ///
     /// Cloned out of the registry so the guard is released before the caller
-    /// does anything slow. With a single tennis venue this is exactly today's
-    /// catalog; the per-subscription venue scoping arrives with `/padel`.
-    fn tennis_catalogs(&self) -> Vec<(crate::model::VenueId, Arc<crate::model::CourtCatalog>)> {
-        self.registry
-            .read()
-            .expect("venue registry poisoned")
-            .catalogs_for_sport(Sport::Tennis)
+    /// does anything slow.
+    fn catalogs_for(
+        &self,
+        sport: Sport,
+        venue: Option<&VenueId>,
+    ) -> Vec<(VenueId, Arc<CourtCatalog>)> {
+        let registry = self.registry.read().expect("venue registry poisoned");
+        match venue {
+            Some(venue_id) => registry
+                .catalog(venue_id)
+                .map(|catalog| vec![(venue_id.clone(), catalog)])
+                .unwrap_or_default(),
+            None => registry.catalogs_for_sport(sport),
+        }
     }
 
-    fn court_names(&self) -> Vec<String> {
-        self.tennis_catalogs()
+    fn court_names(&self, sport: Sport, venue: Option<&VenueId>) -> Vec<String> {
+        self.catalogs_for(sport, venue)
             .iter()
             .flat_map(|(_, catalog)| catalog.names())
+            .collect()
+    }
+
+    /// The clubs a sport's command offers, as (id, display name) pairs.
+    pub fn clubs_of(&self, sport: Sport) -> Vec<(VenueId, String)> {
+        let registry = self.registry.read().expect("venue registry poisoned");
+        registry
+            .venues_of_sport(sport)
+            .into_iter()
+            .map(|venue_id| {
+                let name = registry
+                    .display_name(&venue_id)
+                    .unwrap_or_else(|| venue_id.as_str())
+                    .to_owned();
+                (venue_id, name)
+            })
             .collect()
     }
 

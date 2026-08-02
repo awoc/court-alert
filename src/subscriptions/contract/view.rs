@@ -1,55 +1,24 @@
 use chrono::{DateTime, Utc};
 
-use crate::model::{BookableSlot, CourtFilter, ProviderUserRef, Schedule, Subscription, TimeRange};
+use crate::model::{BookableSlot, CourtFilter, ProviderUserRef, Schedule, Sport, TimeRange};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubscriptionSummary {
     pub id: i64,
+    pub sport: Sport,
+    /// The club's display name, or `None` for every club of the sport.
+    /// Resolved by the service, so renderers never handle venue ids.
+    pub club: Option<String>,
     pub schedule: Schedule,
     pub time_range: TimeRange,
     pub courts: Option<Vec<String>>,
     pub filter: CourtFilter,
 }
 
-impl From<Subscription> for SubscriptionSummary {
-    fn from(subscription: Subscription) -> Self {
-        Self {
-            id: subscription.id,
-            schedule: subscription.schedule,
-            time_range: subscription.time_range,
-            courts: subscription.courts,
-            filter: subscription.filter,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnedSubscriptionSummary {
     pub user: ProviderUserRef,
     pub summary: SubscriptionSummary,
-}
-
-impl From<Subscription> for OwnedSubscriptionSummary {
-    fn from(subscription: Subscription) -> Self {
-        let Subscription {
-            id,
-            user,
-            schedule,
-            time_range,
-            courts,
-            filter,
-        } = subscription;
-        Self {
-            user,
-            summary: SubscriptionSummary {
-                id,
-                schedule,
-                time_range,
-                courts,
-                filter,
-            },
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

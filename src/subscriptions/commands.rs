@@ -2,11 +2,12 @@ use anyhow::Result;
 use tracing::warn;
 
 use crate::model::{
-    BookableSlot, CourtFilter, ProviderUserRef, Schedule, Subscription, SubscriptionDraft,
-    TimeRange,
+    BookableSlot, CourtFilter, ProviderUserRef, Schedule, Sport, Subscription, SubscriptionDraft,
+    TimeRange, VenueId,
 };
 use crate::subscriptions::contract::{
-    AvailableSlotSummary, SubscriptionCommand, SubscriptionResult,
+    AvailableSlotSummary, OwnedSubscriptionSummary, SubscriptionCommand, SubscriptionResult,
+    SubscriptionSummary,
 };
 
 use super::SubscriptionService;
@@ -20,12 +21,27 @@ impl SubscriptionService {
     ) -> Result<SubscriptionResult> {
         match command {
             SubscriptionCommand::Subscribe {
+                sport,
+                venue,
                 schedule,
                 start_minute,
                 end_minute,
                 courts,
                 filter,
             } => {
+                let clubs = self.clubs_of(sport);
+                if clubs.is_empty() {
+                    return Ok(SubscriptionResult::NoClubsConfigured { sport });
+                }
+                if let Some(chosen) = &venue
+                    && !clubs.iter().any(|(id, _)| id == chosen)
+                {
+                    return Ok(SubscriptionResult::UnknownClub {
+                        unknown: chosen.to_string(),
+                        available: clubs.into_iter().map(|(_, name)| name).collect(),
+                    });
+                }
+
                 let Some(time_range) = TimeRange::new(start_minute, end_minute) else {
                     return Ok(SubscriptionResult::InvalidTimeRange);
                 };
@@ -34,20 +50,21 @@ impl SubscriptionService {
                 {
                     return Ok(SubscriptionResult::InvalidSchedule);
                 }
-                let courts = match self.canonicalize_courts(courts) {
+                let courts = match self.canonicalize_courts(sport, venue.as_ref(), courts) {
                     Ok(courts) => courts,
                     Err(unknown) => {
                         return Ok(SubscriptionResult::UnknownCourts {
                             unknown,
-                            available: self.court_names(),
+                            available: self.court_names(sport, venue.as_ref()),
                         });
                     }
                 };
                 let chosen_filter = filter;
-                let filter = self.resolve_filter(filter, courts.as_deref());
+                let filter = self.resolve_filter(sport, filter, courts.as_deref());
 
                 if let Some(chosen) = chosen_filter
-                    && let Some(excluded) = self.courts_excluded_by(chosen, courts.as_deref())
+                    && let Some(excluded) =
+                        self.courts_excluded_by(sport, venue.as_ref(), chosen, courts.as_deref())
                 {
                     return Ok(SubscriptionResult::FilterExcludesCourts {
                         courts: excluded,
@@ -58,6 +75,8 @@ impl SubscriptionService {
                     .store
                     .add(SubscriptionDraft {
                         user: user.clone(),
+                        sport,
+                        venue: venue.clone(),
                         schedule,
                         time_range,
                         courts: courts.clone(),
@@ -67,6 +86,8 @@ impl SubscriptionService {
                 let sub = Subscription {
                     id,
                     user: user.clone(),
+                    sport,
+                    venue,
                     schedule,
                     time_range,
                     courts,
@@ -74,14 +95,14 @@ impl SubscriptionService {
                 };
                 let open_slots = self.open_slots_for(&sub).await;
                 Ok(SubscriptionResult::Subscribed {
-                    summary: sub.into(),
+                    summary: self.summarize(sub),
                     open_slots,
                 })
             }
             SubscriptionCommand::List => {
                 let subs = self.store.list_for_user(user, self.clock.today()).await?;
                 Ok(SubscriptionResult::SubscriptionList(
-                    subs.into_iter().map(Into::into).collect(),
+                    subs.into_iter().map(|sub| self.summarize(sub)).collect(),
                 ))
             }
             SubscriptionCommand::ListAll => {
@@ -90,7 +111,12 @@ impl SubscriptionService {
                 }
                 let subs = self.store.list_all(self.clock.today()).await?;
                 Ok(SubscriptionResult::AllSubscriptions(
-                    subs.into_iter().map(Into::into).collect(),
+                    subs.into_iter()
+                        .map(|sub| OwnedSubscriptionSummary {
+                            user: sub.user.clone(),
+                            summary: self.summarize(sub),
+                        })
+                        .collect(),
                 ))
             }
             SubscriptionCommand::Unsubscribe { id } => {
@@ -108,14 +134,37 @@ impl SubscriptionService {
         }
     }
 
+    /// Resolves a stored subscription for display, naming its club.
+    fn summarize(&self, sub: Subscription) -> SubscriptionSummary {
+        let club = sub.venue.as_ref().map(|venue_id| {
+            self.registry
+                .read()
+                .expect("venue registry poisoned")
+                .display_name(venue_id)
+                .unwrap_or_else(|| venue_id.as_str())
+                .to_owned()
+        });
+        SubscriptionSummary {
+            id: sub.id,
+            sport: sub.sport,
+            club,
+            schedule: sub.schedule,
+            time_range: sub.time_range,
+            courts: sub.courts,
+            filter: sub.filter,
+        }
+    }
+
     fn canonicalize_courts(
         &self,
+        sport: Sport,
+        venue: Option<&VenueId>,
         courts: Option<Vec<String>>,
     ) -> Result<Option<Vec<String>>, Vec<String>> {
         let Some(courts) = courts else {
             return Ok(None);
         };
-        let catalogs = self.tennis_catalogs();
+        let catalogs = self.catalogs_for(sport, venue);
         let mut canonical = Vec::with_capacity(courts.len());
         let mut unknown = Vec::new();
         for court in courts {
@@ -134,24 +183,31 @@ impl SubscriptionService {
         }
     }
 
+    /// The default is per sport, not one shared field: `surface_filter` is a
+    /// tennis setting, and letting `/padel` inherit it would hand every padel
+    /// subscription a clay filter that can never match.
     fn resolve_filter(
         &self,
+        sport: Sport,
         chosen: Option<CourtFilter>,
         courts: Option<&[String]>,
     ) -> CourtFilter {
-        chosen.unwrap_or(match courts {
+        chosen.unwrap_or(match (sport, courts) {
             // Naming courts means those courts, whatever they are made of.
-            Some(_) => CourtFilter::Any,
-            None => self.default_surface,
+            (_, Some(_)) => CourtFilter::Any,
+            (Sport::Tennis, None) => self.tennis_default_filter,
+            (Sport::Padel, None) => CourtFilter::Any,
         })
     }
 
     fn courts_excluded_by(
         &self,
+        sport: Sport,
+        venue: Option<&VenueId>,
         filter: CourtFilter,
         courts: Option<&[String]>,
     ) -> Option<Vec<String>> {
-        let catalogs = self.tennis_catalogs();
+        let catalogs = self.catalogs_for(sport, venue);
         let excluded: Vec<String> = courts?
             .iter()
             .filter(|name| {
@@ -191,11 +247,12 @@ impl SubscriptionService {
 #[cfg(test)]
 mod tests {
     use super::super::testing::{
-        SYNTHETIC_COURT, admin_uref, date_subscribe_cmd, open_slot, service,
-        service_defaulting_to_clay, service_with_admin, service_with_clock,
-        service_with_failing_slot_snapshot, service_with_slots, subscribe_cmd, uref,
+        PADEL_CLUB_NAME, SYNTHETIC_COURT, admin_uref, date_subscribe_cmd, open_slot,
+        padel_venue_id, service, service_defaulting_to_clay, service_with_admin,
+        service_with_clock, service_with_failing_slot_snapshot, service_with_slots,
+        service_without_padel, subscribe_cmd, uref,
     };
-    use crate::model::{CourtFilter, CourtSurface, Schedule, SubscriptionDraft, TimeRange};
+    use crate::model::{CourtFilter, CourtSurface, Schedule, Sport, SubscriptionDraft, TimeRange};
     use crate::ports::SubscriptionRepository;
     use crate::subscriptions::contract::{SubscriptionCommand, SubscriptionResult};
     use chrono::Weekday;
@@ -272,6 +329,8 @@ mod tests {
         store
             .add(SubscriptionDraft {
                 user: uref("1"),
+                sport: Sport::Tennis,
+                venue: None,
                 schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
                 time_range: TimeRange::new(18 * 60, 20 * 60).unwrap(),
                 courts: None,
@@ -451,6 +510,8 @@ mod tests {
             .handle(
                 &uref("1"),
                 SubscriptionCommand::Subscribe {
+                    sport: Sport::Tennis,
+                    venue: None,
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
@@ -474,6 +535,8 @@ mod tests {
                 .handle(
                     &uref("1"),
                     SubscriptionCommand::Subscribe {
+                        sport: Sport::Tennis,
+                        venue: None,
                         schedule: Schedule::Weekday(chrono::Weekday::Tue),
                         start_minute: 18 * 60,
                         end_minute: 20 * 60,
@@ -497,6 +560,8 @@ mod tests {
             .handle(
                 &uref("1"),
                 SubscriptionCommand::Subscribe {
+                    sport: Sport::Tennis,
+                    venue: None,
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
@@ -539,6 +604,8 @@ mod tests {
             .handle(
                 &uref("1"),
                 SubscriptionCommand::Subscribe {
+                    sport: Sport::Tennis,
+                    venue: None,
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
@@ -562,6 +629,8 @@ mod tests {
             .handle(
                 &uref("1"),
                 SubscriptionCommand::Subscribe {
+                    sport: Sport::Tennis,
+                    venue: None,
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
@@ -587,6 +656,8 @@ mod tests {
             .handle(
                 &uref("1"),
                 SubscriptionCommand::Subscribe {
+                    sport: Sport::Tennis,
+                    venue: None,
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
@@ -619,6 +690,8 @@ mod tests {
             .handle(
                 &uref("1"),
                 SubscriptionCommand::Subscribe {
+                    sport: Sport::Tennis,
+                    venue: None,
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
@@ -632,6 +705,120 @@ mod tests {
             panic!("expected Subscribed");
         };
         assert_eq!(summary.filter, CourtFilter::CLAY);
+    }
+
+    fn padel_cmd(venue: Option<crate::model::VenueId>) -> SubscriptionCommand {
+        SubscriptionCommand::Subscribe {
+            sport: Sport::Padel,
+            venue,
+            schedule: Schedule::Weekday(Weekday::Tue),
+            start_minute: 18 * 60,
+            end_minute: 20 * 60,
+            courts: None,
+            filter: None,
+        }
+    }
+
+    /// `surface_filter` is a tennis setting. Inheriting it would hand every
+    /// padel subscription a clay filter, which can never match a padel court.
+    #[tokio::test]
+    async fn padel_does_not_inherit_the_configured_tennis_default() {
+        let svc = service_defaulting_to_clay().await;
+
+        let SubscriptionResult::Subscribed { summary, .. } =
+            svc.handle(&uref("1"), padel_cmd(None)).await.unwrap()
+        else {
+            panic!("expected Subscribed");
+        };
+
+        assert_eq!(summary.filter, CourtFilter::Any);
+        assert_eq!(summary.sport, Sport::Padel);
+    }
+
+    #[tokio::test]
+    async fn padel_records_the_club_it_was_given_and_none_for_all_clubs() {
+        let svc = service().await;
+
+        let SubscriptionResult::Subscribed { summary, .. } = svc
+            .handle(&uref("1"), padel_cmd(Some(padel_venue_id())))
+            .await
+            .unwrap()
+        else {
+            panic!("expected Subscribed");
+        };
+        assert_eq!(summary.club.as_deref(), Some(PADEL_CLUB_NAME));
+
+        let SubscriptionResult::Subscribed { summary, .. } =
+            svc.handle(&uref("1"), padel_cmd(None)).await.unwrap()
+        else {
+            panic!("expected Subscribed");
+        };
+        assert_eq!(summary.club, None);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_club_is_rejected_and_stores_nothing() {
+        let svc = service().await;
+
+        let reply = svc
+            .handle(
+                &uref("1"),
+                padel_cmd(Some(crate::model::VenueId::new("not-a-club"))),
+            )
+            .await
+            .unwrap();
+
+        let SubscriptionResult::UnknownClub { unknown, available } = reply else {
+            panic!("expected UnknownClub, got {reply:?}");
+        };
+        assert_eq!(unknown, "not-a-club");
+        assert_eq!(available, vec![PADEL_CLUB_NAME.to_string()]);
+        assert_eq!(
+            svc.handle(&uref("1"), SubscriptionCommand::List)
+                .await
+                .unwrap(),
+            SubscriptionResult::SubscriptionList(vec![])
+        );
+    }
+
+    /// The state at build-order step 4: `/padel` exists before any padel venue
+    /// does, and has to say so rather than storing a subscription that can
+    /// never fire.
+    #[tokio::test]
+    async fn padel_with_no_configured_club_says_so_and_stores_nothing() {
+        let svc = service_without_padel().await;
+
+        let reply = svc.handle(&uref("1"), padel_cmd(None)).await.unwrap();
+
+        assert_eq!(
+            reply,
+            SubscriptionResult::NoClubsConfigured {
+                sport: Sport::Padel
+            }
+        );
+        assert_eq!(
+            svc.handle(&uref("1"), SubscriptionCommand::List)
+                .await
+                .unwrap(),
+            SubscriptionResult::SubscriptionList(vec![])
+        );
+    }
+
+    /// `/subscribe` keeps its own default, unaffected by the split.
+    #[tokio::test]
+    async fn tennis_still_takes_the_configured_default() {
+        let svc = service_defaulting_to_clay().await;
+
+        let SubscriptionResult::Subscribed { summary, .. } = svc
+            .handle(&uref("1"), subscribe_cmd(18 * 60, 20 * 60))
+            .await
+            .unwrap()
+        else {
+            panic!("expected Subscribed");
+        };
+
+        assert_eq!(summary.filter, CourtFilter::CLAY);
+        assert_eq!(summary.sport, Sport::Tennis);
     }
 
     use chrono::TimeZone as _;
@@ -682,6 +869,8 @@ mod tests {
             .handle(
                 &uref("1"),
                 SubscriptionCommand::Subscribe {
+                    sport: Sport::Tennis,
+                    venue: None,
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,

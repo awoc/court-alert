@@ -33,12 +33,13 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
             open_slots,
         } => {
             let mut lines = vec![format!(
-                "#{}: **{}** {} ({}). You'll get a direct message \
+                "#{}: **{}** {} ({} at {}). You'll get a direct message \
                  as soon as matching courts become free.",
                 s.id,
                 schedule_label(s.schedule),
                 time_range_label(s.time_range),
                 scope_label(s.courts.as_deref(), s.filter),
+                club_label(s),
             )];
             if !open_slots.is_empty() {
                 lines.push(String::new());
@@ -75,6 +76,15 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
                 _ => format!("{} are", courts.join(", ")),
             },
         )],
+        SubscriptionResult::UnknownClub { unknown, available } => vec![
+            format!("Unknown club: {unknown}."),
+            format!("Available clubs: {}.", available.join(", ")),
+        ],
+        SubscriptionResult::NoClubsConfigured { sport } => {
+            vec![format!(
+                "No {sport} clubs are configured, so there is nothing to watch."
+            )]
+        }
         SubscriptionResult::AllSubscriptions(_) => {
             vec!["No reminders exist.".to_string()]
         }
@@ -130,8 +140,9 @@ fn reminder_messages(header: &str, entries: Vec<(String, i64)>) -> Vec<ReplyMess
 
 pub(super) fn render_help() -> Vec<ReplyMessage> {
     let lines = [
-        "**ZHS court reminders — commands:**",
-        "`/subscribe day from to [courts] [surface]` — get a DM when a matching court becomes free",
+        "**Court reminders — commands:**",
+        "`/subscribe day from to [courts] [surface]` — get a DM when a matching \
+         **tennis** court becomes free",
         "• `day`: weekday for every week (e.g. `Thu`), or a date for one day \
          (e.g. `23.06.2026`; year optional)",
         "• `from`/`to`: time window as HH:MM, Berlin time (e.g. `18:00`, `20:00`)",
@@ -139,6 +150,9 @@ pub(super) fn render_help() -> Vec<ReplyMessage> {
          omit to watch a whole surface",
         "• `surface`: `clay`, `synthetic` or `all`; defaults to clay, or to the \
          courts you named",
+        "`/padel day from to [club] [location]` — the same for **padel** courts",
+        "• `club`: optional; omit to watch every configured padel club",
+        "• `location`: `indoor`, `outdoor` or `any`; defaults to any",
         "`/list` — show your reminders, each with a button to delete it",
         "`/unsubscribe id` — delete a reminder by its ID",
         "`/listall` — show all reminders (admin only)",
@@ -152,12 +166,22 @@ pub(super) fn render_help() -> Vec<ReplyMessage> {
 
 fn summary_line(s: &SubscriptionSummary) -> String {
     format!(
-        "#{} – {} {} ({})",
+        "#{} – {} {} ({} at {})",
         s.id,
         schedule_label(s.schedule),
         time_range_label(s.time_range),
         scope_label(s.courts.as_deref(), s.filter),
+        club_label(s),
     )
+}
+
+/// A subscription with no club watches every club of its sport, and that has
+/// to read as such — a blank would be indistinguishable from one named club.
+fn club_label(s: &SubscriptionSummary) -> String {
+    match &s.club {
+        Some(club) => club.clone(),
+        None => format!("all {} clubs", s.sport),
+    }
 }
 
 fn owned_summary_line(owned: &OwnedSubscriptionSummary) -> String {
@@ -203,13 +227,15 @@ fn schedule_label(schedule: Schedule) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ProviderUserRef;
+    use crate::model::{ProviderUserRef, Sport};
     use crate::subscriptions::contract::{AvailableSlotSummary, OwnedSubscriptionSummary};
     use chrono::{TimeZone, Utc, Weekday};
 
     fn summary() -> SubscriptionSummary {
         SubscriptionSummary {
             id: 7,
+            sport: Sport::Tennis,
+            club: None,
             schedule: Schedule::Weekday(Weekday::Tue),
             time_range: TimeRange::new(18 * 60, 20 * 60).unwrap(),
             courts: None,
@@ -302,7 +328,7 @@ mod tests {
     fn renders_list_lines() {
         let text = reply_text(&SubscriptionResult::SubscriptionList(vec![summary()]));
         assert!(text.contains("**Your reminders:**"));
-        assert!(text.contains("#7 – Tue 18:00–20:00 (all courts)"));
+        assert!(text.contains("#7 – Tue 18:00–20:00 (all courts at all tennis clubs)"));
     }
 
     #[test]
@@ -415,6 +441,50 @@ mod tests {
         });
         assert!(text.contains("Court 19 - Synthetic is not on clay"));
         assert!(text.contains("surface: clay"));
+    }
+
+    /// A blank would be indistinguishable from a named club, so "all clubs"
+    /// has to be spelled out — and it names the sport, since that is what
+    /// bounds it.
+    #[test]
+    fn a_subscription_without_a_club_reads_as_all_clubs_of_its_sport() {
+        let mut s = summary();
+        s.sport = Sport::Padel;
+        s.club = None;
+        assert!(reply_text(&subscribed(s.clone())).contains("all padel clubs"));
+
+        s.club = Some("Casa Padel".into());
+        let text = reply_text(&subscribed(s));
+        assert!(text.contains("Casa Padel"));
+        assert!(!text.contains("all padel clubs"));
+    }
+
+    #[test]
+    fn renders_an_unknown_club_with_available_alternatives() {
+        let text = reply_text(&SubscriptionResult::UnknownClub {
+            unknown: "not-a-club".into(),
+            available: vec!["Casa Padel".into()],
+        });
+        assert!(text.contains("Unknown club: not-a-club."));
+        assert!(text.contains("Available clubs: Casa Padel."));
+    }
+
+    #[test]
+    fn renders_a_sport_with_no_configured_clubs() {
+        let text = reply_text(&SubscriptionResult::NoClubsConfigured {
+            sport: Sport::Padel,
+        });
+        assert!(text.contains("No padel clubs"), "got: {text}");
+    }
+
+    #[test]
+    fn help_covers_padel_as_well_as_subscribe() {
+        let text = join(&render_help());
+        for cmd in ["/subscribe", "/padel", "/list", "/unsubscribe", "/listall"] {
+            assert!(text.contains(cmd), "help is missing {cmd}");
+        }
+        assert!(text.contains("indoor"));
+        assert!(text.contains("club"));
     }
 
     #[test]
