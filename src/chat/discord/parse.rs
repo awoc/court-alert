@@ -27,7 +27,7 @@ pub(super) fn parse_component(custom_id: &str) -> Result<SubscriptionCommand> {
 
 pub(super) fn parse_interaction(cmd: &CommandInteraction) -> Result<SubscriptionCommand> {
     match cmd.data.name.as_str() {
-        "subscribe" => {
+        "tennis" => {
             let (schedule, start_minute, end_minute) = parse_when(cmd)?;
             Ok(SubscriptionCommand::Subscribe {
                 sport: Sport::Tennis,
@@ -72,8 +72,8 @@ fn parse_when(cmd: &CommandInteraction) -> Result<(Schedule, u32, u32)> {
     let to = get_string_opt(cmd, "to").context("missing 'to'")?;
     Ok((
         parse_schedule(&day, today_berlin()).context("invalid 'day'")?,
-        parse_hhmm(&from).context("invalid 'from' (expected HH:MM)")?,
-        parse_hhmm(&to).context("invalid 'to' (expected HH:MM)")?,
+        parse_hhmm(&from).context("invalid 'from' (expected HH:MM or whole hour)")?,
+        parse_hhmm(&to).context("invalid 'to' (expected HH:MM or whole hour)")?,
     ))
 }
 
@@ -166,15 +166,13 @@ pub(super) fn parse_schedule(s: &str, today: NaiveDate) -> Result<Schedule> {
 
 pub(super) fn parse_hhmm(s: &str) -> Result<u32> {
     let s = s.trim();
-    let (h, m) = s
-        .split_once(':')
-        .ok_or_else(|| anyhow!("expected HH:MM, got {s:?}"))?;
-    let h: u32 = h.parse().context("hour is not a number")?;
-    let m: u32 = m.parse().context("minute is not a number")?;
-    if h > 23 || m > 59 {
+    let (hour, minute) = s.split_once(':').unwrap_or((s, "0"));
+    let hour: u32 = hour.parse().context("hour is not a number")?;
+    let minute: u32 = minute.parse().context("minute is not a number")?;
+    if hour > 23 || minute > 59 {
         return Err(anyhow!("expected hour 0-23 and minute 0-59"));
     }
-    Ok(h * 60 + m)
+    Ok(hour * 60 + minute)
 }
 
 pub(super) fn parse_date(s: &str, today: NaiveDate) -> Result<NaiveDate> {
@@ -298,12 +296,15 @@ mod tests {
         assert_eq!(parse_hhmm("00:00").unwrap(), 0);
         assert_eq!(parse_hhmm("23:59").unwrap(), 23 * 60 + 59);
         assert_eq!(parse_hhmm("9:30").unwrap(), 9 * 60 + 30);
+        assert_eq!(parse_hhmm("9").unwrap(), 9 * 60);
+        assert_eq!(parse_hhmm("22").unwrap(), 22 * 60);
         assert_eq!(parse_hhmm(" 18:00 ").unwrap(), 18 * 60);
     }
 
     #[test]
     fn rejects_invalid_hhmm() {
         assert!(parse_hhmm("24:00").is_err());
+        assert!(parse_hhmm("24").is_err());
         assert!(parse_hhmm("12:60").is_err());
         assert!(parse_hhmm("1800").is_err());
         assert!(parse_hhmm("ab:cd").is_err());

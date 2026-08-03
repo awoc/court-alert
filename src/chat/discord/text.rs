@@ -6,8 +6,8 @@ pub(super) const DISCORD_CHUNK_BUDGET: usize = 1800;
 
 pub(super) fn fmt_slot_line(court: &str, start: DateTime<Utc>, end: DateTime<Utc>) -> String {
     format!(
-        "• {} : {}–{}",
-        court,
+        "{}: {}–{}",
+        pad_court_number(court),
         fmt_berlin(start),
         fmt_berlin_time(end)
     )
@@ -20,11 +20,26 @@ pub(super) fn fmt_club_slot_line(
     end: DateTime<Utc>,
 ) -> String {
     format!(
-        "• {} — {} : {}–{}",
+        "{} — {}: {}–{}",
         club,
-        court,
+        pad_court_number(court),
         fmt_berlin(start),
         fmt_berlin_time(end)
+    )
+}
+
+fn pad_court_number(court: &str) -> String {
+    let Some(start) = court.find(|ch: char| ch.is_ascii_digit()) else {
+        return court.to_owned();
+    };
+    let end = court[start..]
+        .find(|ch: char| !ch.is_ascii_digit())
+        .map_or(court.len(), |end| start + end);
+    format!(
+        "{}{:0>2}{}",
+        &court[..start],
+        &court[start..end],
+        &court[end..]
     )
 }
 
@@ -80,8 +95,16 @@ mod tests {
         let end = start + chrono::Duration::hours(1);
         assert_eq!(
             fmt_slot_line("Court 2", start, end),
-            "• Court 2 : Tue, 02.06.2026 20:00–21:00"
+            "Court 02: Tue, 02.06.2026 20:00–21:00"
         );
+    }
+
+    #[test]
+    fn court_numbers_are_zero_padded_to_two_digits() {
+        assert_eq!(pad_court_number("Court 2"), "Court 02");
+        assert_eq!(pad_court_number("Court 25"), "Court 25");
+        assert_eq!(pad_court_number("Court 6 (Outdoor)"), "Court 06 (Outdoor)");
+        assert_eq!(pad_court_number("Centre Court"), "Centre Court");
     }
 
     #[test]

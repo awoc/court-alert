@@ -15,14 +15,10 @@ pub(super) struct ReplyMessage {
 pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
     let lines = match reply {
         SubscriptionResult::SubscriptionList(subs) if !subs.is_empty() => {
-            return reminder_messages(
-                "**Your reminders:**",
-                subs.iter().map(|s| (summary_line(s), s.id)).collect(),
-            );
+            return reminder_messages(subs.iter().map(|s| (summary_line(s), s.id)).collect());
         }
         SubscriptionResult::AllSubscriptions(all) if !all.is_empty() => {
             return reminder_messages(
-                "**All reminders:**",
                 all.iter()
                     .map(|a| (owned_summary_line(a), a.summary.id))
                     .collect(),
@@ -51,7 +47,7 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
             lines
         }
         SubscriptionResult::SubscriptionList(_) => {
-            vec!["No reminders yet. Create one with `/subscribe`.".to_string()]
+            vec!["No reminders yet. Create one with `/tennis`.".to_string()]
         }
         SubscriptionResult::Unsubscribed { id } => vec![format!("Reminder #{id} deleted.")],
         SubscriptionResult::NotFound { id } => {
@@ -114,8 +110,8 @@ fn text_messages(lines: Vec<String>) -> Vec<ReplyMessage> {
         .collect()
 }
 
-fn reminder_messages(header: &str, entries: Vec<(String, i64)>) -> Vec<ReplyMessage> {
-    let mut messages = text_messages(vec![header.to_string()]);
+fn reminder_messages(entries: Vec<(String, i64)>) -> Vec<ReplyMessage> {
+    let mut messages = Vec::new();
     let (with_button, rest) = entries.split_at(entries.len().min(MAX_UNSUBSCRIBE_BUTTONS));
     for (line, id) in with_button {
         let mut chunks = text_messages(vec![line.clone()]);
@@ -139,11 +135,12 @@ fn reminder_messages(header: &str, entries: Vec<(String, i64)>) -> Vec<ReplyMess
 pub(super) fn render_help() -> Vec<ReplyMessage> {
     let lines = [
         "**Court reminders — commands:**",
-        "`/subscribe day from to [courts] [surface]` — get a DM when a matching \
+        "`/tennis day from to [courts] [surface]` — get a DM when a matching \
          **tennis** court becomes free",
         "• `day`: weekday for every week (e.g. `Thu`), or a date for one day \
          (e.g. `23.06.2026`; year optional)",
-        "• `from`/`to`: time window as HH:MM, Berlin time (e.g. `18:00`, `20:00`)",
+        "• `from`/`to`: time window as HH:MM or a whole hour, Berlin time \
+         (e.g. `18:30`, `9`, `22`)",
         "• `courts`: optional comma-separated court numbers (e.g. `2, 19`); \
          omit to watch a whole surface",
         "• `surface`: `clay`, `synthetic` or `all`; defaults to clay, or to the \
@@ -190,7 +187,7 @@ fn owned_summary_line(owned: &OwnedSubscriptionSummary) -> String {
 }
 
 pub(super) fn render_alert(alert: &AvailabilityAlert) -> Vec<String> {
-    let mut lines = vec!["**New free courts:**".to_string()];
+    let mut lines = vec![];
     for s in &alert.slots {
         lines.push(fmt_club_slot_line(
             &s.club,
@@ -311,7 +308,7 @@ mod tests {
             open_slots: vec![slot_info("Court 2")],
         });
         assert!(text.contains("**Currently free:**"));
-        assert!(text.contains("• ZHS München — Court 2 : Tue, 02.06.2026 20:00–21:00"));
+        assert!(text.contains("ZHS München — Court 02: Tue, 02.06.2026 20:00–21:00"));
     }
 
     #[test]
@@ -323,13 +320,12 @@ mod tests {
     #[test]
     fn renders_empty_list_hint() {
         let text = reply_text(&SubscriptionResult::SubscriptionList(vec![]));
-        assert!(text.contains("/subscribe"));
+        assert!(text.contains("/tennis"));
     }
 
     #[test]
     fn renders_list_lines() {
         let text = reply_text(&SubscriptionResult::SubscriptionList(vec![summary()]));
-        assert!(text.contains("**Your reminders:**"));
         assert!(text.contains("#7 – Tue 18:00–20:00 (all courts at all tennis clubs)"));
     }
 
@@ -337,10 +333,8 @@ mod tests {
     fn every_listed_reminder_gets_its_own_message_with_an_unsubscribe_button() {
         let messages = render_reply(&SubscriptionResult::SubscriptionList(summaries(3)));
 
-        assert_eq!(messages.len(), 4); // header + one per reminder
-        assert_eq!(messages[0].content, "**Your reminders:**");
-        assert_eq!(messages[0].unsubscribe_id, None); // the header has no button
-        for (message, id) in messages[1..].iter().zip(1..=3) {
+        assert_eq!(messages.len(), 3); // one per reminder
+        for (message, id) in messages.iter().zip(1..=3) {
             assert!(message.content.starts_with(&format!("#{id} – ")));
             assert_eq!(message.unsubscribe_id, Some(id));
         }
@@ -369,7 +363,7 @@ mod tests {
         s.courts = Some(vec!["ä".repeat(DISCORD_CHUNK_BUDGET + 1)]);
         let messages = render_reply(&SubscriptionResult::SubscriptionList(vec![s]));
 
-        assert!(messages.len() > 2);
+        assert!(messages.len() > 1);
         assert_eq!(buttons(&messages), vec![7]);
         assert_eq!(messages.last().unwrap().unsubscribe_id, Some(7));
         assert!(
@@ -477,9 +471,9 @@ mod tests {
     }
 
     #[test]
-    fn help_covers_padel_as_well_as_subscribe() {
+    fn help_covers_both_tennis_and_padel() {
         let text = join(&render_help());
-        for cmd in ["/subscribe", "/padel", "/list", "/unsubscribe", "/listall"] {
+        for cmd in ["/tennis", "/padel", "/list", "/unsubscribe", "/listall"] {
             assert!(text.contains(cmd), "help is missing {cmd}");
         }
         assert!(text.contains("indoor"));
@@ -502,8 +496,7 @@ mod tests {
             slots: vec![slot_info("Court 2")],
         });
         assert_eq!(msgs.len(), 1);
-        assert!(msgs[0].starts_with("**New free courts:**"));
-        assert!(msgs[0].contains("• ZHS München — Court 2 : Tue, 02.06.2026 20:00–21:00"));
+        assert!(msgs[0].contains("ZHS München — Court 02: Tue, 02.06.2026 20:00–21:00"));
         assert!(!msgs[0].contains("<@"));
     }
 
@@ -522,15 +515,14 @@ mod tests {
     }
 
     #[test]
-    fn alert_renders_multiple_slots_as_ordered_bullet_lines() {
+    fn alert_renders_multiple_slots_as_ordered_lines() {
         let msgs = render_alert(&AvailabilityAlert {
             slots: vec![slot_info("Court 2"), slot_info("Court 5")],
         });
         assert_eq!(msgs.len(), 1);
         let lines: Vec<&str> = msgs[0].lines().collect();
-        assert_eq!(lines[0], "**New free courts:**");
-        assert!(lines[1].starts_with("• ZHS München — Court 2 : "));
-        assert!(lines[2].starts_with("• ZHS München — Court 5 : "));
+        assert!(lines[0].starts_with("ZHS München — Court 02: "));
+        assert!(lines[1].starts_with("ZHS München — Court 05: "));
     }
 
     #[test]
@@ -575,7 +567,7 @@ mod tests {
     #[test]
     fn help_explains_every_command() {
         let text = join(&render_help());
-        for cmd in ["/subscribe", "/list", "/unsubscribe", "/listall", "/help"] {
+        for cmd in ["/tennis", "/list", "/unsubscribe", "/listall", "/help"] {
             assert!(text.contains(cmd), "help is missing {cmd}");
         }
         assert!(text.contains("Thu"));
