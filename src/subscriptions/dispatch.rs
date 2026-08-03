@@ -47,9 +47,13 @@ impl SubscriptionService {
         if subs.is_empty() {
             return;
         }
-        for (user, slots) in match_subscriptions(changes, &subs, &self.courts) {
+        let matched = {
+            let registry = self.registry.read().expect("venue registry poisoned");
+            match_subscriptions(changes, &subs, &registry)
+        };
+        for (user, slots) in matched {
             let alert = AvailabilityAlert {
-                slots: slots.iter().map(Into::into).collect(),
+                slots: slots.iter().map(|slot| self.slot_summary(slot)).collect(),
             };
             let sender = self
                 .senders
@@ -79,12 +83,18 @@ impl SubscriptionService {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testing::{court_id, service, service_with_store, subscribe_cmd, uref};
+    use super::super::testing::{
+        INDOOR_COURT, PADEL_CLUB_NAME, court_id, padel_court_id, padel_venue_id, service,
+        service_with_store, subscribe_cmd, uref, venue_id,
+    };
     use crate::model::{
-        AvailabilityChange, BookableSlot, Schedule, SubscriptionDraft, SurfaceFilter, TimeRange,
+        AvailabilityChange, BookableSlot, CourtFilter, Schedule, Sport, SubscriptionDraft,
+        TimeRange,
     };
     use crate::ports::SubscriptionRepository;
-    use crate::subscriptions::contract::{AvailabilityAlert, DirectMessageSender};
+    use crate::subscriptions::contract::{
+        AvailabilityAlert, DirectMessageSender, SubscriptionCommand,
+    };
     use crate::time::today_berlin;
     use chrono::{TimeZone, Utc};
     use std::sync::{Arc, Mutex};
@@ -120,8 +130,21 @@ mod tests {
     fn bookable(name: &str) -> AvailabilityChange {
         let starts_at = Utc.with_ymd_and_hms(2026, 6, 2, 18, 0, 0).unwrap();
         AvailabilityChange::BecameBookable(BookableSlot {
+            venue_id: venue_id(),
             court_id: court_id(name),
             court_name: name.into(),
+            starts_at,
+            ends_at: starts_at + chrono::Duration::hours(1),
+            available_places: 1,
+        })
+    }
+
+    fn padel_bookable() -> AvailabilityChange {
+        let starts_at = Utc.with_ymd_and_hms(2026, 6, 2, 18, 0, 0).unwrap();
+        AvailabilityChange::BecameBookable(BookableSlot {
+            venue_id: padel_venue_id(),
+            court_id: padel_court_id(INDOOR_COURT),
+            court_name: INDOOR_COURT.into(),
             starts_at,
             ends_at: starts_at + chrono::Duration::hours(1),
             available_places: 1,
@@ -144,6 +167,52 @@ mod tests {
         assert_eq!(sent[0].0, "1");
         assert_eq!(sent[0].1.slots.len(), 1);
         assert_eq!(sent[0].1.slots[0].court, "Court 2");
+    }
+
+    #[tokio::test]
+    async fn an_alert_names_the_club_each_court_belongs_to() {
+        let svc = service().await;
+        let sender = RecordingSender::new(false);
+        svc.register_sender("discord", sender.clone());
+        svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
+            .await
+            .unwrap();
+
+        svc.dispatch(&[bookable("Court 2")]).await;
+
+        let sent = sender.sent.lock().unwrap();
+        assert_eq!(sent[0].1.slots[0].club, "ZHS München");
+    }
+
+    #[tokio::test]
+    async fn courts_of_the_same_name_at_different_clubs_are_distinguishable() {
+        let svc = service().await;
+        let sender = RecordingSender::new(false);
+        svc.register_sender("discord", sender.clone());
+        svc.handle(
+            &uref("1"),
+            SubscriptionCommand::Subscribe {
+                sport: Sport::Padel,
+                venue: None,
+                schedule: Schedule::Weekday(chrono::Weekday::Tue),
+                start_minute: 18 * 60,
+                end_minute: 22 * 60,
+                courts: None,
+                filter: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        svc.dispatch(&[padel_bookable()]).await;
+
+        let sent = sender.sent.lock().unwrap();
+        assert_eq!(sent[0].1.slots.len(), 1);
+        assert_eq!(sent[0].1.slots[0].club, PADEL_CLUB_NAME);
+        assert_ne!(
+            sent[0].1.slots[0].club, "ZHS München",
+            "the padel court was labelled with the tennis club"
+        );
     }
 
     #[tokio::test]
@@ -192,10 +261,12 @@ mod tests {
         store
             .add(SubscriptionDraft {
                 user: uref("1"),
+                sport: Sport::Tennis,
+                venue: None,
                 schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
                 time_range: TimeRange::new(0, 24 * 60).unwrap(),
                 courts: None,
-                surface: SurfaceFilter::All,
+                filter: CourtFilter::Any,
             })
             .await
             .unwrap();
@@ -211,10 +282,12 @@ mod tests {
         store
             .add(SubscriptionDraft {
                 user: uref("1"),
+                sport: Sport::Tennis,
+                venue: None,
                 schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
                 time_range: TimeRange::new(0, 24 * 60).unwrap(),
                 courts: None,
-                surface: SurfaceFilter::All,
+                filter: CourtFilter::Any,
             })
             .await
             .unwrap();

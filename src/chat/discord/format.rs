@@ -1,5 +1,5 @@
+use super::text::{DISCORD_CHUNK_BUDGET, fmt_slot_line};
 use crate::model::{AlertLine, AvailabilityChange, BookableSlot, BookableSlotId};
-use crate::text::{DISCORD_CHUNK_BUDGET, fmt_slot_line};
 
 const STRIKE_MARKUP_CHARS: usize = 4;
 
@@ -76,6 +76,7 @@ mod tests {
     fn slot(name: &str, hour: u32) -> BookableSlot {
         let starts_at = Utc.with_ymd_and_hms(2026, 6, 2, hour, 0, 0).unwrap();
         BookableSlot {
+            venue_id: crate::model::VenueId::new("zhs-munich"),
             court_id: Uuid::new_v4(),
             court_name: name.into(),
             starts_at,

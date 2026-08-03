@@ -51,6 +51,18 @@ fn berlin_day_window_at(now: DateTime<Utc>, lookahead_days: i64) -> (DateTime<Ut
     (start, end)
 }
 
+pub(crate) fn berlin_dates_in(starts_at: DateTime<Utc>, ends_at: DateTime<Utc>) -> Vec<NaiveDate> {
+    let end = berlin_date(ends_at);
+    let mut dates = Vec::new();
+    let mut date = berlin_date(starts_at);
+    while date < end {
+        dates.push(date);
+        let Some(next) = date.succ_opt() else { break };
+        date = next;
+    }
+    dates
+}
+
 pub(crate) fn fmt_berlin_log(dt: DateTime<Utc>) -> String {
     dt.with_timezone(&Berlin)
         .format("%a %Y-%m-%d %H:%M %Z")

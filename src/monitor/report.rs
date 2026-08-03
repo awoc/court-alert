@@ -1,9 +1,9 @@
 use tracing::info;
 
-use crate::model::AvailabilityChange;
+use crate::model::{AvailabilityChange, Venue};
 use crate::time::fmt_berlin_log;
 
-pub(super) fn log_changes(changes: &[AvailabilityChange], total_bookable: usize) {
+pub(super) fn report_changes(venue: &Venue, changes: &[AvailabilityChange], total_bookable: usize) {
     let (added, removed) = changes
         .iter()
         .fold((0usize, 0usize), |counts, change| match change {
@@ -11,7 +11,7 @@ pub(super) fn log_changes(changes: &[AvailabilityChange], total_bookable: usize)
             AvailabilityChange::BecameUnbookable(_) => (counts.0, counts.1 + 1),
         });
 
-    info!(added, removed, bookable = total_bookable, "tick");
+    info!(venue = %venue.id, added, removed, bookable = total_bookable, "tick");
 
     let mut chronological = changes.iter().collect::<Vec<_>>();
     chronological.sort_by_key(|change| change.slot().starts_at);
@@ -19,12 +19,14 @@ pub(super) fn log_changes(changes: &[AvailabilityChange], total_bookable: usize)
     for change in chronological {
         match change {
             AvailabilityChange::BecameBookable(slot) => info!(
+                venue = %venue.id,
                 court = %slot.court_name,
                 start = %fmt_berlin_log(slot.starts_at),
                 end = %fmt_berlin_log(slot.ends_at),
                 "+ became bookable"
             ),
             AvailabilityChange::BecameUnbookable(slot) => info!(
+                venue = %venue.id,
                 court = %slot.court_name,
                 start = %fmt_berlin_log(slot.starts_at),
                 "- became unbookable"

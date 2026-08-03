@@ -1,6 +1,6 @@
 use chrono::{NaiveDate, Weekday};
 
-use super::SurfaceFilter;
+use super::{CourtFilter, Sport, VenueId};
 
 pub const MINUTES_PER_DAY: u32 = 24 * 60;
 
@@ -47,19 +47,23 @@ impl TimeRange {
 pub struct Subscription {
     pub id: i64,
     pub user: ProviderUserRef,
+    pub sport: Sport,
+    pub venue: Option<VenueId>,
     pub schedule: Schedule,
     pub time_range: TimeRange,
     pub courts: Option<Vec<String>>,
-    pub surface: SurfaceFilter,
+    pub filter: CourtFilter,
 }
 
 #[derive(Debug, Clone)]
 pub struct SubscriptionDraft {
     pub user: ProviderUserRef,
+    pub sport: Sport,
+    pub venue: Option<VenueId>,
     pub schedule: Schedule,
     pub time_range: TimeRange,
     pub courts: Option<Vec<String>>,
-    pub surface: SurfaceFilter,
+    pub filter: CourtFilter,
 }
 
 #[cfg(test)]

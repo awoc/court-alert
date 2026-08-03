@@ -10,10 +10,8 @@ use crate::model::{AlertLine, AvailabilityChange};
 use crate::ports::{AlertMessageRepository, AvailabilityChangeSink};
 use crate::time::today_berlin;
 
-use super::discord_http::{
-    HTTP_TIMEOUT, redact_discord_webhook_tokens, send_with_rate_limit_retry,
-};
 use super::format::{added_slots, chunk_slots, removed_slot_ids, render};
+use super::http::{HTTP_TIMEOUT, redact_discord_webhook_tokens, send_with_rate_limit_retry};
 
 // Other Discord 404 codes do not prove that the tracked message is gone.
 const DISCORD_UNKNOWN_MESSAGE: i64 = 10008;
@@ -265,6 +263,7 @@ mod tests {
     fn slot(name: &str, hour: u32) -> BookableSlot {
         let starts_at = Utc.with_ymd_and_hms(2026, 6, 2, hour, 0, 0).unwrap();
         BookableSlot {
+            venue_id: crate::model::VenueId::new("zhs-munich"),
             court_id: Uuid::new_v4(),
             court_name: name.into(),
             starts_at,

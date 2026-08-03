@@ -2,7 +2,9 @@ use anyhow::{Context, Result};
 use chrono::{NaiveDate, Weekday};
 use rusqlite::Row;
 
-use crate::model::{ProviderUserRef, Schedule, Subscription, SurfaceFilter, TimeRange};
+use crate::model::{
+    CourtFilter, ProviderUserRef, Schedule, Sport, Subscription, TimeRange, VenueId,
+};
 
 use super::DbRepr;
 
@@ -10,12 +12,14 @@ pub(super) struct SubscriptionRow {
     id: i64,
     provider: String,
     user_id: String,
+    sport: String,
+    venue: Option<String>,
     weekday: Option<u8>,
     on_date: Option<String>,
     start_minute: u32,
     end_minute: u32,
     courts: Option<String>,
-    surface: String,
+    court_filter: String,
 }
 
 impl TryFrom<&Row<'_>> for SubscriptionRow {
@@ -26,12 +30,14 @@ impl TryFrom<&Row<'_>> for SubscriptionRow {
             id: row.get("id")?,
             provider: row.get("provider")?,
             user_id: row.get("user_id")?,
+            sport: row.get("sport")?,
+            venue: row.get("venue")?,
             weekday: row.get("weekday")?,
             on_date: row.get("on_date")?,
             start_minute: row.get("start_minute")?,
             end_minute: row.get("end_minute")?,
             courts: row.get("courts")?,
-            surface: row.get("surface")?,
+            court_filter: row.get("court_filter")?,
         })
     }
 }
@@ -52,10 +58,12 @@ impl TryFrom<SubscriptionRow> for Subscription {
                 provider: row.provider,
                 user_id: row.user_id,
             },
+            sport: Sport::from_db(row.sport)?,
+            venue: row.venue.map(VenueId::from),
             schedule: Schedule::from_db((row.weekday, row.on_date))?,
             time_range,
             courts: Option::<Vec<String>>::from_db(row.courts)?,
-            surface: SurfaceFilter::from_db(row.surface)?,
+            filter: CourtFilter::from_db(row.court_filter)?,
         })
     }
 }
@@ -95,7 +103,21 @@ impl DbRepr for Schedule {
     }
 }
 
-impl DbRepr for SurfaceFilter {
+impl DbRepr for CourtFilter {
+    type Db = String;
+
+    fn into_db(self) -> Result<Self::Db> {
+        Ok(self.to_string())
+    }
+
+    fn from_db(db: Self::Db) -> rusqlite::Result<Self> {
+        db.parse().map_err(|error| {
+            conversion_error(format!("invalid stored court filter {db:?}: {error}"))
+        })
+    }
+}
+
+impl DbRepr for Sport {
     type Db = String;
 
     fn into_db(self) -> Result<Self::Db> {
@@ -104,7 +126,7 @@ impl DbRepr for SurfaceFilter {
 
     fn from_db(db: Self::Db) -> rusqlite::Result<Self> {
         db.parse()
-            .map_err(|error| conversion_error(format!("invalid stored surface {db:?}: {error}")))
+            .map_err(|error| conversion_error(format!("invalid stored sport {db:?}: {error}")))
     }
 }
 

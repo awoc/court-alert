@@ -1,12 +1,8 @@
-mod discord_http;
-mod error_webhook;
-mod format;
+mod sport;
 mod surface;
-mod webhook;
 
-pub use error_webhook::DiscordErrorLayer;
+pub use sport::SportScopedSink;
 pub use surface::SurfaceFilteredSink;
-pub use webhook::DiscordNotifier;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;

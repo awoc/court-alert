@@ -5,12 +5,15 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     provider     TEXT    NOT NULL CHECK (provider <> ''),
     user_id      TEXT    NOT NULL CHECK (user_id <> ''),
+    sport        TEXT    NOT NULL CHECK (sport IN ('tennis', 'padel')),
+    venue        TEXT    CHECK (venue IS NULL OR venue <> ''),
     weekday      INTEGER CHECK (weekday BETWEEN 0 AND 6),
     on_date      TEXT    CHECK (on_date IS date(on_date)),
     start_minute INTEGER NOT NULL CHECK (start_minute BETWEEN 0 AND 1440),
     end_minute   INTEGER NOT NULL CHECK (end_minute BETWEEN 0 AND 1440),
     courts       TEXT    CHECK (courts IS NULL OR (json_valid(courts) AND json_type(courts) = 'array')),
-    surface      TEXT    NOT NULL DEFAULT 'clay' CHECK (surface IN ('all', 'clay', 'synthetic')),
+    court_filter TEXT    NOT NULL
+                         CHECK (court_filter IN ('any', 'clay', 'synthetic', 'indoor', 'outdoor')),
     created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                          CHECK (created_at IS strftime('%Y-%m-%dT%H:%M:%fZ', created_at)),
     -- Exactly one schedule kind: recurring weekday or single date.
@@ -21,8 +24,9 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 
 CREATE INDEX IF NOT EXISTS subscriptions_user_idx ON subscriptions (provider, user_id);
 
--- Last observed snapshot of bookable slots; rewritten in full on every poll.
+-- Last observed snapshot of bookable slots; rewritten per venue on every poll.
 CREATE TABLE IF NOT EXISTS bookable_slots (
+    venue_id         TEXT    NOT NULL CHECK (venue_id <> ''),
     court_id         TEXT    NOT NULL CHECK (length(court_id) = 36),
     court_name       TEXT    NOT NULL CHECK (court_name <> ''),
     starts_at        TEXT    NOT NULL CHECK (starts_at IS strftime('%Y-%m-%dT%H:%M:%fZ', starts_at)),
@@ -30,6 +34,15 @@ CREATE TABLE IF NOT EXISTS bookable_slots (
     available_places INTEGER NOT NULL CHECK (available_places > 0),
     PRIMARY KEY (court_id, starts_at),
     CHECK (ends_at > starts_at)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS bookable_slots_venue_idx ON bookable_slots (venue_id);
+
+-- Tracks completed polls even when a venue has no free slots.
+CREATE TABLE IF NOT EXISTS venue_state (
+    venue_id       TEXT NOT NULL PRIMARY KEY CHECK (venue_id <> ''),
+    initialised_at TEXT NOT NULL
+                   CHECK (initialised_at IS strftime('%Y-%m-%dT%H:%M:%fZ', initialised_at))
 ) STRICT, WITHOUT ROWID;
 
 -- Posted alert lines retained after a slot becomes unbookable so its message can be edited.

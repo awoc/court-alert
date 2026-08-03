@@ -1,8 +1,8 @@
-use crate::model::{Schedule, SurfaceFilter, TimeRange};
+use super::text::{DISCORD_CHUNK_BUDGET, chunk_lines, fmt_club_slot_line};
+use crate::model::{CourtFilter, Schedule, TimeRange};
 use crate::subscriptions::contract::{
     AvailabilityAlert, OwnedSubscriptionSummary, SubscriptionResult, SubscriptionSummary,
 };
-use crate::text::{DISCORD_CHUNK_BUDGET, chunk_lines, fmt_slot_line};
 use crate::time::fmt_hhmm;
 
 const MAX_UNSUBSCRIBE_BUTTONS: usize = 20;
@@ -33,21 +33,20 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
             open_slots,
         } => {
             let mut lines = vec![format!(
-                "#{}: **{}** {} ({}). You'll get a direct message \
+                "#{}: **{}** {} ({} at {}). You'll get a direct message \
                  as soon as matching courts become free.",
                 s.id,
                 schedule_label(s.schedule),
                 time_range_label(s.time_range),
-                scope_label(s.courts.as_deref(), s.surface),
+                scope_label(s.courts.as_deref(), s.filter),
+                club_label(s),
             )];
             if !open_slots.is_empty() {
                 lines.push(String::new());
                 lines.push("**Currently free:**".to_string());
-                lines.extend(
-                    open_slots
-                        .iter()
-                        .map(|slot| fmt_slot_line(&slot.court, slot.starts_at, slot.ends_at)),
-                );
+                lines.extend(open_slots.iter().map(|slot| {
+                    fmt_club_slot_line(&slot.club, &slot.court, slot.starts_at, slot.ends_at)
+                }));
             }
             lines
         }
@@ -67,14 +66,23 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
             format!("Unknown court(s): {}.", unknown.join(", ")),
             format!("Available courts: {}.", available.join(", ")),
         ],
-        SubscriptionResult::SurfaceExcludesCourts { courts, surface } => vec![format!(
-            "{} not on {surface}, so `surface: {surface}` would never match. \
-             Drop the surface option or pick other courts.",
+        SubscriptionResult::FilterExcludesCourts { courts, filter } => vec![format!(
+            "{} not {filter}, so `{filter}` would never match. \
+             Drop the filter or pick other courts.",
             match courts.len() {
                 1 => format!("{} is", courts[0]),
                 _ => format!("{} are", courts.join(", ")),
             },
         )],
+        SubscriptionResult::UnknownClub { unknown, available } => vec![
+            format!("Unknown club: {unknown}."),
+            format!("Available clubs: {}.", available.join(", ")),
+        ],
+        SubscriptionResult::NoClubsConfigured { sport } => {
+            vec![format!(
+                "No {sport} clubs are configured, so there is nothing to watch."
+            )]
+        }
         SubscriptionResult::AllSubscriptions(_) => {
             vec!["No reminders exist.".to_string()]
         }
@@ -130,8 +138,9 @@ fn reminder_messages(header: &str, entries: Vec<(String, i64)>) -> Vec<ReplyMess
 
 pub(super) fn render_help() -> Vec<ReplyMessage> {
     let lines = [
-        "**ZHS court reminders — commands:**",
-        "`/subscribe day from to [courts] [surface]` — get a DM when a matching court becomes free",
+        "**Court reminders — commands:**",
+        "`/subscribe day from to [courts] [surface]` — get a DM when a matching \
+         **tennis** court becomes free",
         "• `day`: weekday for every week (e.g. `Thu`), or a date for one day \
          (e.g. `23.06.2026`; year optional)",
         "• `from`/`to`: time window as HH:MM, Berlin time (e.g. `18:00`, `20:00`)",
@@ -139,6 +148,9 @@ pub(super) fn render_help() -> Vec<ReplyMessage> {
          omit to watch a whole surface",
         "• `surface`: `clay`, `synthetic` or `all`; defaults to clay, or to the \
          courts you named",
+        "`/padel day from to [club] [location]` — the same for **padel** courts",
+        "• `club`: optional; omit to watch every configured padel club",
+        "• `location`: `indoor`, `outdoor` or `any`; defaults to any",
         "`/list` — show your reminders, each with a button to delete it",
         "`/unsubscribe id` — delete a reminder by its ID",
         "`/listall` — show all reminders (admin only)",
@@ -152,12 +164,20 @@ pub(super) fn render_help() -> Vec<ReplyMessage> {
 
 fn summary_line(s: &SubscriptionSummary) -> String {
     format!(
-        "#{} – {} {} ({})",
+        "#{} – {} {} ({} at {})",
         s.id,
         schedule_label(s.schedule),
         time_range_label(s.time_range),
-        scope_label(s.courts.as_deref(), s.surface),
+        scope_label(s.courts.as_deref(), s.filter),
+        club_label(s),
     )
+}
+
+fn club_label(s: &SubscriptionSummary) -> String {
+    match &s.club {
+        Some(club) => club.clone(),
+        None => format!("all {} clubs", s.sport),
+    }
 }
 
 fn owned_summary_line(owned: &OwnedSubscriptionSummary) -> String {
@@ -172,16 +192,21 @@ fn owned_summary_line(owned: &OwnedSubscriptionSummary) -> String {
 pub(super) fn render_alert(alert: &AvailabilityAlert) -> Vec<String> {
     let mut lines = vec!["**New free courts:**".to_string()];
     for s in &alert.slots {
-        lines.push(fmt_slot_line(&s.court, s.starts_at, s.ends_at));
+        lines.push(fmt_club_slot_line(
+            &s.club,
+            &s.court,
+            s.starts_at,
+            s.ends_at,
+        ));
     }
     chunk_lines(&lines, DISCORD_CHUNK_BUDGET)
 }
 
-fn scope_label(courts: Option<&[String]>, surface: SurfaceFilter) -> String {
-    match (courts, surface) {
+fn scope_label(courts: Option<&[String]>, filter: CourtFilter) -> String {
+    match (courts, filter) {
         (Some(courts), _) => courts.join(", "),
-        (None, SurfaceFilter::All) => "all courts".to_string(),
-        (None, SurfaceFilter::Only(surface)) => format!("all {surface} courts"),
+        (None, CourtFilter::Any) => "all courts".to_string(),
+        (None, filter) => format!("all {filter} courts"),
     }
 }
 
@@ -203,23 +228,26 @@ fn schedule_label(schedule: Schedule) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ProviderUserRef;
+    use crate::model::{ProviderUserRef, Sport};
     use crate::subscriptions::contract::{AvailableSlotSummary, OwnedSubscriptionSummary};
     use chrono::{TimeZone, Utc, Weekday};
 
     fn summary() -> SubscriptionSummary {
         SubscriptionSummary {
             id: 7,
+            sport: Sport::Tennis,
+            club: None,
             schedule: Schedule::Weekday(Weekday::Tue),
             time_range: TimeRange::new(18 * 60, 20 * 60).unwrap(),
             courts: None,
-            surface: SurfaceFilter::All,
+            filter: CourtFilter::Any,
         }
     }
 
     fn slot_info(court: &str) -> AvailableSlotSummary {
         let starts_at = Utc.with_ymd_and_hms(2026, 6, 2, 18, 0, 0).unwrap();
         AvailableSlotSummary {
+            club: "ZHS München".into(),
             court: court.into(),
             starts_at,
             ends_at: starts_at + chrono::Duration::hours(1),
@@ -283,7 +311,7 @@ mod tests {
             open_slots: vec![slot_info("Court 2")],
         });
         assert!(text.contains("**Currently free:**"));
-        assert!(text.contains("• Court 2 : Tue, 02.06.2026 20:00–21:00"));
+        assert!(text.contains("• ZHS München — Court 2 : Tue, 02.06.2026 20:00–21:00"));
     }
 
     #[test]
@@ -302,7 +330,7 @@ mod tests {
     fn renders_list_lines() {
         let text = reply_text(&SubscriptionResult::SubscriptionList(vec![summary()]));
         assert!(text.contains("**Your reminders:**"));
-        assert!(text.contains("#7 – Tue 18:00–20:00 (all courts)"));
+        assert!(text.contains("#7 – Tue 18:00–20:00 (all courts at all tennis clubs)"));
     }
 
     #[test]
@@ -390,10 +418,10 @@ mod tests {
     #[test]
     fn renders_the_surface_a_subscription_watches() {
         let mut s = summary();
-        s.surface = SurfaceFilter::CLAY;
+        s.filter = CourtFilter::CLAY;
         assert!(reply_text(&subscribed(s.clone())).contains("all clay courts"));
 
-        s.surface = SurfaceFilter::Only(crate::model::CourtSurface::Synthetic);
+        s.filter = CourtFilter::Surface(crate::model::CourtSurface::Synthetic);
         assert!(reply_text(&subscribed(s)).contains("all synthetic courts"));
     }
 
@@ -401,7 +429,7 @@ mod tests {
     fn named_courts_are_shown_instead_of_a_surface() {
         let mut s = summary();
         s.courts = Some(vec!["Court 19 - Synthetic".into()]);
-        s.surface = SurfaceFilter::All;
+        s.filter = CourtFilter::Any;
         let text = reply_text(&subscribed(s));
         assert!(text.contains("Court 19 - Synthetic"));
         assert!(!text.contains("all courts"));
@@ -409,12 +437,53 @@ mod tests {
 
     #[test]
     fn renders_a_surface_that_excludes_the_named_courts() {
-        let text = reply_text(&SubscriptionResult::SurfaceExcludesCourts {
+        let text = reply_text(&SubscriptionResult::FilterExcludesCourts {
             courts: vec!["Court 19 - Synthetic".into()],
-            surface: SurfaceFilter::CLAY,
+            filter: CourtFilter::CLAY,
         });
-        assert!(text.contains("Court 19 - Synthetic is not on clay"));
-        assert!(text.contains("surface: clay"));
+        assert!(text.contains("Court 19 - Synthetic is not clay"));
+        assert!(text.contains("`clay`"));
+    }
+
+    #[test]
+    fn a_subscription_without_a_club_reads_as_all_clubs_of_its_sport() {
+        let mut s = summary();
+        s.sport = Sport::Padel;
+        s.club = None;
+        assert!(reply_text(&subscribed(s.clone())).contains("all padel clubs"));
+
+        s.club = Some("Casa Padel".into());
+        let text = reply_text(&subscribed(s));
+        assert!(text.contains("Casa Padel"));
+        assert!(!text.contains("all padel clubs"));
+    }
+
+    #[test]
+    fn renders_an_unknown_club_with_available_alternatives() {
+        let text = reply_text(&SubscriptionResult::UnknownClub {
+            unknown: "not-a-club".into(),
+            available: vec!["Casa Padel".into()],
+        });
+        assert!(text.contains("Unknown club: not-a-club."));
+        assert!(text.contains("Available clubs: Casa Padel."));
+    }
+
+    #[test]
+    fn renders_a_sport_with_no_configured_clubs() {
+        let text = reply_text(&SubscriptionResult::NoClubsConfigured {
+            sport: Sport::Padel,
+        });
+        assert!(text.contains("No padel clubs"), "got: {text}");
+    }
+
+    #[test]
+    fn help_covers_padel_as_well_as_subscribe() {
+        let text = join(&render_help());
+        for cmd in ["/subscribe", "/padel", "/list", "/unsubscribe", "/listall"] {
+            assert!(text.contains(cmd), "help is missing {cmd}");
+        }
+        assert!(text.contains("indoor"));
+        assert!(text.contains("club"));
     }
 
     #[test]
@@ -434,7 +503,7 @@ mod tests {
         });
         assert_eq!(msgs.len(), 1);
         assert!(msgs[0].starts_with("**New free courts:**"));
-        assert!(msgs[0].contains("• Court 2 : Tue, 02.06.2026 20:00–21:00"));
+        assert!(msgs[0].contains("• ZHS München — Court 2 : Tue, 02.06.2026 20:00–21:00"));
         assert!(!msgs[0].contains("<@"));
     }
 
@@ -460,8 +529,8 @@ mod tests {
         assert_eq!(msgs.len(), 1);
         let lines: Vec<&str> = msgs[0].lines().collect();
         assert_eq!(lines[0], "**New free courts:**");
-        assert!(lines[1].starts_with("• Court 2 : "));
-        assert!(lines[2].starts_with("• Court 5 : "));
+        assert!(lines[1].starts_with("• ZHS München — Court 2 : "));
+        assert!(lines[2].starts_with("• ZHS München — Court 5 : "));
     }
 
     #[test]

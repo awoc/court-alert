@@ -6,21 +6,31 @@ use serenity::Client;
 use serenity::all::{GatewayIntents, GuildId, Http, UserId};
 use serenity::async_trait;
 
+use crate::chat::{ChatProvider, ReadySignal};
 use crate::config::DiscordSettings;
 use crate::model::ProviderUserRef;
-use crate::providers::{ChatProvider, ReadySignal};
 use crate::subscriptions::SubscriptionService;
 use crate::subscriptions::contract::{AvailabilityAlert, DirectMessageSender};
 
 mod commands;
+mod error_webhook;
+mod format;
 mod handler;
+mod http;
 mod parse;
 mod render;
+mod text;
+mod webhook;
+
+pub use error_webhook::DiscordErrorLayer;
+pub use webhook::DiscordNotifier;
 
 use handler::Handler;
 use render::render_alert;
 
 pub const PROVIDER_NAME: &str = "discord";
+
+pub const MAX_CLUB_CHOICES: usize = 25;
 
 pub struct DiscordProvider {
     token: String,

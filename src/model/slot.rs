@@ -3,8 +3,11 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use super::VenueId;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlotObservation {
+    pub venue_id: VenueId,
     pub court_id: Uuid,
     pub court_name: String,
     pub starts_at: DateTime<Utc>,
@@ -27,6 +30,7 @@ impl SlotObservation {
             && !self.already_on_waiting_list
             && !self.blocked_by_resource)
             .then_some(BookableSlot {
+                venue_id: self.venue_id,
                 court_id: self.court_id,
                 court_name: self.court_name,
                 starts_at: self.starts_at,
@@ -38,6 +42,7 @@ impl SlotObservation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BookableSlot {
+    pub venue_id: VenueId,
     pub court_id: Uuid,
     pub court_name: String,
     pub starts_at: DateTime<Utc>,
@@ -102,6 +107,7 @@ mod tests {
     fn observation() -> SlotObservation {
         let starts_at = Utc.with_ymd_and_hms(2026, 6, 2, 8, 0, 0).unwrap();
         SlotObservation {
+            venue_id: VenueId::new("zhs-munich"),
             court_id: Uuid::nil(),
             court_name: "Court 1".into(),
             starts_at,

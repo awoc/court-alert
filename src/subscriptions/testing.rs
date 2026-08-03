@@ -1,11 +1,12 @@
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, NaiveDate, Utc, Weekday};
 
 use crate::model::{
-    BookableSlot, BookableSlotSnapshot, Court, CourtCatalog, CourtSurface, ProviderUserRef,
-    Schedule, SurfaceFilter,
+    BookableSlot, BookableSlotSnapshot, Court, CourtAttributes, CourtCatalog, CourtFilter,
+    CourtLocation, CourtSurface, ProviderUserRef, Schedule, Sport, Venue, VenueId, VenueIdentity,
+    VenueRegistry,
 };
 use crate::ports::BookableSlotSnapshotRepository;
 use crate::store::SqliteStore;
@@ -23,22 +24,108 @@ pub(super) fn uref(id: &str) -> ProviderUserRef {
 
 pub(super) const SYNTHETIC_COURT: &str = "Court 19 - Synthetic";
 
-pub(super) fn catalog() -> Arc<CourtCatalog> {
-    Arc::new(CourtCatalog::new(vec![
-        Court::new(Uuid::from_u128(2), "Court 2".into(), CourtSurface::Clay),
-        Court::new(Uuid::from_u128(5), "Court 5".into(), CourtSurface::Clay),
+pub(super) fn venue_id() -> VenueId {
+    VenueId::new("zhs-munich")
+}
+
+pub(super) fn padel_venue_id() -> VenueId {
+    VenueId::new("casa-padel")
+}
+
+pub(super) const PADEL_CLUB_NAME: &str = "Casa Padel";
+pub(super) const INDOOR_COURT: &str = "Court 1 (Indoor)";
+pub(super) const OUTDOOR_COURT: &str = "Court 6 (Outdoor)";
+
+fn tennis_venue() -> Venue {
+    Venue {
+        id: venue_id(),
+        display_name: "ZHS München".into(),
+        sport: Sport::Tennis,
+        identity: VenueIdentity::Zhs {
+            base_url: "https://example.test".into(),
+        },
+        poll_interval_secs: None,
+        lookahead_days: None,
+        operating_window: None,
+    }
+}
+
+fn padel_venue() -> Venue {
+    Venue {
+        id: padel_venue_id(),
+        display_name: PADEL_CLUB_NAME.into(),
+        sport: Sport::Padel,
+        identity: VenueIdentity::Playtomic {
+            tenant_id: Uuid::nil(),
+            slug: "casa-padel".into(),
+        },
+        poll_interval_secs: None,
+        lookahead_days: None,
+        operating_window: None,
+    }
+}
+
+pub(super) fn padel_catalog() -> CourtCatalog {
+    CourtCatalog::new(vec![
+        Court::new(
+            Uuid::from_u128(101),
+            INDOOR_COURT.into(),
+            CourtAttributes::padel(Some(CourtLocation::Indoor)),
+        ),
+        Court::new(
+            Uuid::from_u128(106),
+            OUTDOOR_COURT.into(),
+            CourtAttributes::padel(Some(CourtLocation::Outdoor)),
+        ),
+    ])
+}
+
+pub(super) fn catalog() -> CourtCatalog {
+    CourtCatalog::new(vec![
+        Court::new(
+            Uuid::from_u128(2),
+            "Court 2".into(),
+            CourtAttributes::tennis(CourtSurface::Clay),
+        ),
+        Court::new(
+            Uuid::from_u128(5),
+            "Court 5".into(),
+            CourtAttributes::tennis(CourtSurface::Clay),
+        ),
         Court::new(
             Uuid::from_u128(19),
             SYNTHETIC_COURT.into(),
-            CourtSurface::Synthetic,
+            CourtAttributes::tennis(CourtSurface::Synthetic),
         ),
-    ]))
+    ])
+}
+
+pub(super) fn registry() -> Arc<RwLock<VenueRegistry>> {
+    let mut registry = VenueRegistry::new();
+    registry.register(&tennis_venue());
+    registry.set_catalog(&venue_id(), catalog());
+    registry.register(&padel_venue());
+    registry.set_catalog(&padel_venue_id(), padel_catalog());
+    Arc::new(RwLock::new(registry))
+}
+
+pub(super) fn tennis_only_registry() -> Arc<RwLock<VenueRegistry>> {
+    let mut registry = VenueRegistry::new();
+    registry.register(&tennis_venue());
+    registry.set_catalog(&venue_id(), catalog());
+    Arc::new(RwLock::new(registry))
 }
 
 pub(super) fn court_id(name: &str) -> Uuid {
     catalog()
         .find_by_name(name)
-        .map_or_else(Uuid::new_v4, Court::id)
+        .map_or_else(Uuid::new_v4, |court| court.id())
+}
+
+pub(super) fn padel_court_id(name: &str) -> Uuid {
+    padel_catalog()
+        .find_by_name(name)
+        .map_or_else(Uuid::new_v4, |court| court.id())
 }
 
 pub(super) struct FixedClock(pub(super) DateTime<Utc>);
@@ -66,8 +153,8 @@ fn build(
         store.clone(),
         store,
         admins,
-        catalog(),
-        SurfaceFilter::All,
+        registry(),
+        CourtFilter::Any,
         clock,
     ))
 }
@@ -82,8 +169,8 @@ pub(super) async fn service_defaulting_to_clay() -> Arc<SubscriptionService> {
         store.clone(),
         store,
         HashSet::new(),
-        catalog(),
-        SurfaceFilter::CLAY,
+        registry(),
+        CourtFilter::CLAY,
         Arc::new(BerlinClock),
     ))
 }
@@ -116,26 +203,31 @@ pub(super) async fn service_with_admin() -> Arc<SubscriptionService> {
 
 pub(super) fn subscribe_cmd(from: u32, to: u32) -> SubscriptionCommand {
     SubscriptionCommand::Subscribe {
+        sport: Sport::Tennis,
+        venue: None,
         schedule: Schedule::Weekday(Weekday::Tue),
         start_minute: from,
         end_minute: to,
         courts: None,
-        surface: None,
+        filter: None,
     }
 }
 
 pub(super) fn date_subscribe_cmd(date: NaiveDate, from: u32, to: u32) -> SubscriptionCommand {
     SubscriptionCommand::Subscribe {
+        sport: Sport::Tennis,
+        venue: None,
         schedule: Schedule::Date(date),
         start_minute: from,
         end_minute: to,
         courts: None,
-        surface: None,
+        filter: None,
     }
 }
 
 pub(super) fn open_slot(court: &str, starts_at: DateTime<Utc>) -> BookableSlot {
     BookableSlot {
+        venue_id: venue_id(),
         court_id: court_id(court),
         court_name: court.into(),
         starts_at,
@@ -149,13 +241,16 @@ pub(super) async fn service_with_slots(
     slots: Vec<BookableSlot>,
 ) -> Arc<SubscriptionService> {
     let store = store().await;
-    store.replace_snapshot(slots).await.unwrap();
+    store
+        .replace_venue_snapshot(&venue_id(), slots)
+        .await
+        .unwrap();
     Arc::new(SubscriptionService::new(
         store.clone(),
         store,
         HashSet::new(),
-        catalog(),
-        SurfaceFilter::All,
+        registry(),
+        CourtFilter::Any,
         Arc::new(FixedClock(now)),
     ))
 }
@@ -168,9 +263,36 @@ impl BookableSlotSnapshotRepository for FailingSlotSnapshotRepository {
         anyhow::bail!("simulated slot-snapshot failure")
     }
 
-    async fn replace_snapshot(&self, _slots: Vec<BookableSlot>) -> anyhow::Result<()> {
+    async fn load_venue_snapshot(
+        &self,
+        _venue_id: &VenueId,
+    ) -> anyhow::Result<BookableSlotSnapshot> {
         anyhow::bail!("simulated slot-snapshot failure")
     }
+
+    async fn replace_venue_snapshot(
+        &self,
+        _venue_id: &VenueId,
+        _slots: Vec<BookableSlot>,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("simulated slot-snapshot failure")
+    }
+
+    async fn delete_snapshots_except(&self, _venue_ids: &[VenueId]) -> anyhow::Result<u64> {
+        anyhow::bail!("simulated slot-snapshot failure")
+    }
+}
+
+pub(super) async fn service_without_padel() -> Arc<SubscriptionService> {
+    let store = store().await;
+    Arc::new(SubscriptionService::new(
+        store.clone(),
+        store,
+        HashSet::new(),
+        tennis_only_registry(),
+        CourtFilter::Any,
+        Arc::new(BerlinClock),
+    ))
 }
 
 pub(super) async fn service_with_failing_slot_snapshot() -> Arc<SubscriptionService> {
@@ -178,8 +300,8 @@ pub(super) async fn service_with_failing_slot_snapshot() -> Arc<SubscriptionServ
         store().await,
         Arc::new(FailingSlotSnapshotRepository),
         HashSet::new(),
-        catalog(),
-        SurfaceFilter::All,
+        registry(),
+        CourtFilter::Any,
         Arc::new(BerlinClock),
     ))
 }

@@ -1,15 +1,17 @@
-use crate::model::{Schedule, SurfaceFilter};
+use crate::model::{CourtFilter, Schedule, Sport, VenueId};
 
 use super::{AvailableSlotSummary, OwnedSubscriptionSummary, SubscriptionSummary};
 
 #[derive(Debug, Clone)]
 pub enum SubscriptionCommand {
     Subscribe {
+        sport: Sport,
+        venue: Option<VenueId>,
         schedule: Schedule,
         start_minute: u32,
         end_minute: u32,
         courts: Option<Vec<String>>,
-        surface: Option<SurfaceFilter>,
+        filter: Option<CourtFilter>,
     },
     List,
     Unsubscribe {
@@ -37,9 +39,16 @@ pub enum SubscriptionResult {
         unknown: Vec<String>,
         available: Vec<String>,
     },
-    SurfaceExcludesCourts {
+    UnknownClub {
+        unknown: String,
+        available: Vec<String>,
+    },
+    NoClubsConfigured {
+        sport: Sport,
+    },
+    FilterExcludesCourts {
         courts: Vec<String>,
-        surface: SurfaceFilter,
+        filter: CourtFilter,
     },
     AllSubscriptions(Vec<OwnedSubscriptionSummary>),
     NotAuthorized,

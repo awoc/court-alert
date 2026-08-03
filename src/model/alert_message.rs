@@ -45,6 +45,7 @@ mod tests {
     fn a_line_built_from_a_slot_starts_unstruck() {
         let starts_at = Utc.with_ymd_and_hms(2026, 6, 2, 18, 0, 0).unwrap();
         let slot = BookableSlot {
+            venue_id: crate::model::VenueId::new("zhs-munich"),
             court_id: Uuid::nil(),
             court_name: "Court 2".into(),
             starts_at,
