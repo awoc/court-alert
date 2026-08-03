@@ -101,7 +101,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "Court 2 : Tue, 02.06.2026 20:00–21:00\nCourt 5 : Tue, 02.06.2026 14:00–15:00"
+            "Court 02: Tue, 02.06.2026 20:00–21:00\nCourt 05: Tue, 02.06.2026 14:00–15:00"
         );
         assert!(!rendered.contains("Newly available"), "the header is gone");
     }
@@ -116,7 +116,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "Court 2 : Tue, 02.06.2026 20:00–21:00\n~~Court 5 : Tue, 02.06.2026 14:00–15:00~~"
+            "Court 02: Tue, 02.06.2026 20:00–21:00\n~~Court 05: Tue, 02.06.2026 14:00–15:00~~"
         );
     }
 

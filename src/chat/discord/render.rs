@@ -308,7 +308,7 @@ mod tests {
             open_slots: vec![slot_info("Court 2")],
         });
         assert!(text.contains("**Currently free:**"));
-        assert!(text.contains("ZHS München — Court 2 : Tue, 02.06.2026 20:00–21:00"));
+        assert!(text.contains("ZHS München — Court 02: Tue, 02.06.2026 20:00–21:00"));
     }
 
     #[test]
@@ -496,7 +496,7 @@ mod tests {
             slots: vec![slot_info("Court 2")],
         });
         assert_eq!(msgs.len(), 1);
-        assert!(msgs[0].contains("ZHS München — Court 2 : Tue, 02.06.2026 20:00–21:00"));
+        assert!(msgs[0].contains("ZHS München — Court 02: Tue, 02.06.2026 20:00–21:00"));
         assert!(!msgs[0].contains("<@"));
     }
 
@@ -521,8 +521,8 @@ mod tests {
         });
         assert_eq!(msgs.len(), 1);
         let lines: Vec<&str> = msgs[0].lines().collect();
-        assert!(lines[0].starts_with("ZHS München — Court 2 : "));
-        assert!(lines[1].starts_with("ZHS München — Court 5 : "));
+        assert!(lines[0].starts_with("ZHS München — Court 02: "));
+        assert!(lines[1].starts_with("ZHS München — Court 05: "));
     }
 
     #[test]
