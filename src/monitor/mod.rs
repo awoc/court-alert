@@ -17,10 +17,10 @@ use crate::ports::{
 };
 use crate::time::utc_day_window;
 
-use self::logging::log_changes;
+use self::report::report_changes;
 use self::snapshot::build_snapshot;
 
-mod logging;
+mod report;
 mod snapshot;
 #[cfg(test)]
 mod tests;
@@ -248,7 +248,7 @@ impl VenueLoop {
 
         let changes = diff_availability(&state.previous, &current);
         self.persist_if_changed(&state.previous, &current).await?;
-        log_changes(&self.venue, &changes, current.len());
+        report_changes(&self.venue, &changes, current.len());
 
         if state.suppress_next_publish {
             info!(

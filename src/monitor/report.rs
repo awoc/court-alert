@@ -3,7 +3,7 @@ use tracing::info;
 use crate::model::{AvailabilityChange, Venue};
 use crate::time::fmt_berlin_log;
 
-pub(super) fn log_changes(venue: &Venue, changes: &[AvailabilityChange], total_bookable: usize) {
+pub(super) fn report_changes(venue: &Venue, changes: &[AvailabilityChange], total_bookable: usize) {
     let (added, removed) = changes
         .iter()
         .fold((0usize, 0usize), |counts, change| match change {
