@@ -8,7 +8,7 @@
 use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA: &str = include_str!("../../../sql/schema.sql");
 
@@ -64,9 +64,7 @@ mod tests {
         include_str!("../../../sql/migrations/0002_alert_message_slots.sql");
     const UPGRADE_TO_V3: &str =
         include_str!("../../../sql/migrations/0003_subscription_surface.sql");
-    const UPGRADE_TO_V4: &str = include_str!("../../../sql/migrations/0004_venue_scoped_slots.sql");
-    const UPGRADE_TO_V5: &str =
-        include_str!("../../../sql/migrations/0005_subscription_sport_and_venue.sql");
+    const UPGRADE_TO_V4: &str = include_str!("../../../sql/migrations/0004_multi_venue.sql");
 
     const LEGACY_SCHEMA: &str = "
         CREATE TABLE subscriptions (
@@ -113,7 +111,6 @@ mod tests {
         conn.execute_batch(UPGRADE_TO_V2).unwrap();
         conn.execute_batch(UPGRADE_TO_V3).unwrap();
         conn.execute_batch(UPGRADE_TO_V4).unwrap();
-        conn.execute_batch(UPGRADE_TO_V5).unwrap();
         ensure_current(conn).unwrap();
     }
 
@@ -180,7 +177,6 @@ mod tests {
         conn.execute_batch(UPGRADE_TO_V2).unwrap();
         conn.execute_batch(UPGRADE_TO_V3).unwrap();
         conn.execute_batch(UPGRADE_TO_V4).unwrap();
-        conn.execute_batch(UPGRADE_TO_V5).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         assert!(table_sql(&conn, "bookable_slots").is_none());
         assert!(table_sql(&conn, "venue_state").is_none());
@@ -249,14 +245,6 @@ mod tests {
         migrate_by_hand(&mut conn);
 
         assert!(conn.execute_batch(UPGRADE_TO_V3).is_err());
-    }
-
-    #[test]
-    fn fifth_migration_refuses_to_run_twice() {
-        let mut conn = legacy_database();
-        migrate_by_hand(&mut conn);
-
-        assert!(conn.execute_batch(UPGRADE_TO_V5).is_err());
     }
 
     #[test]
