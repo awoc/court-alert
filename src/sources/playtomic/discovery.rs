@@ -89,9 +89,7 @@ fn location_from(features: &[String]) -> Option<CourtLocation> {
     };
     if has("outdoor") {
         Some(CourtLocation::Outdoor)
-    } else if has("indoor") {
-        Some(CourtLocation::Indoor)
-    } else if has("roofed") {
+    } else if has("indoor") || has("roofed") {
         Some(CourtLocation::Indoor)
     } else {
         None
