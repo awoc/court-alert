@@ -419,10 +419,10 @@ mod tests {
     async fn the_edit_body_contains_the_struck_line() {
         let server = MockServer::start().await;
         let gone = slot("Court 2", 18);
-        let struck = format!("~~{}~~", "• Court 2 : Tue, 02.06.2026 20:00–21:00");
+        let struck = "~~Court 2 : Tue, 02.06.2026 20:00–21:00~~";
         Mock::given(method("PATCH"))
             .and(path("/api/webhooks/123/token/messages/1408"))
-            .and(body_string_contains(&struck))
+            .and(body_string_contains(struck))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
             .expect(1)
             .mount(&server)
@@ -443,7 +443,7 @@ mod tests {
         let gone = slot("Court 2", 18);
         Mock::given(method("PATCH"))
             .and(body_string_contains(
-                "• Court 1 : Tue, 02.06.2026 10:00–11:00\\n~~",
+                "Court 1 : Tue, 02.06.2026 10:00–11:00\\n~~",
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
             .expect(1)

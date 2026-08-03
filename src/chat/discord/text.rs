@@ -5,12 +5,7 @@ use crate::time::{fmt_berlin, fmt_berlin_time};
 pub(super) const DISCORD_CHUNK_BUDGET: usize = 1800;
 
 pub(super) fn fmt_slot_line(court: &str, start: DateTime<Utc>, end: DateTime<Utc>) -> String {
-    format!(
-        "• {} : {}–{}",
-        court,
-        fmt_berlin(start),
-        fmt_berlin_time(end)
-    )
+    format!("{} : {}–{}", court, fmt_berlin(start), fmt_berlin_time(end))
 }
 
 pub(super) fn fmt_club_slot_line(
@@ -20,7 +15,7 @@ pub(super) fn fmt_club_slot_line(
     end: DateTime<Utc>,
 ) -> String {
     format!(
-        "• {} — {} : {}–{}",
+        "{} — {} : {}–{}",
         club,
         court,
         fmt_berlin(start),
@@ -80,7 +75,7 @@ mod tests {
         let end = start + chrono::Duration::hours(1);
         assert_eq!(
             fmt_slot_line("Court 2", start, end),
-            "• Court 2 : Tue, 02.06.2026 20:00–21:00"
+            "Court 2 : Tue, 02.06.2026 20:00–21:00"
         );
     }
 

@@ -111,7 +111,7 @@ fn text_messages(lines: Vec<String>) -> Vec<ReplyMessage> {
 }
 
 fn reminder_messages(entries: Vec<(String, i64)>) -> Vec<ReplyMessage> {
-    let mut messages = text_messages(vec![]);
+    let mut messages = Vec::new();
     let (with_button, rest) = entries.split_at(entries.len().min(MAX_UNSUBSCRIBE_BUTTONS));
     for (line, id) in with_button {
         let mut chunks = text_messages(vec![line.clone()]);
@@ -308,7 +308,7 @@ mod tests {
             open_slots: vec![slot_info("Court 2")],
         });
         assert!(text.contains("**Currently free:**"));
-        assert!(text.contains("• ZHS München — Court 2 : Tue, 02.06.2026 20:00–21:00"));
+        assert!(text.contains("ZHS München — Court 2 : Tue, 02.06.2026 20:00–21:00"));
     }
 
     #[test]
@@ -333,9 +333,8 @@ mod tests {
     fn every_listed_reminder_gets_its_own_message_with_an_unsubscribe_button() {
         let messages = render_reply(&SubscriptionResult::SubscriptionList(summaries(3)));
 
-        assert_eq!(messages.len(), 4); // one per reminder
-        assert_eq!(messages[0].unsubscribe_id, None); // the header has no button
-        for (message, id) in messages[1..].iter().zip(1..=3) {
+        assert_eq!(messages.len(), 3); // one per reminder
+        for (message, id) in messages.iter().zip(1..=3) {
             assert!(message.content.starts_with(&format!("#{id} – ")));
             assert_eq!(message.unsubscribe_id, Some(id));
         }
@@ -364,7 +363,7 @@ mod tests {
         s.courts = Some(vec!["ä".repeat(DISCORD_CHUNK_BUDGET + 1)]);
         let messages = render_reply(&SubscriptionResult::SubscriptionList(vec![s]));
 
-        assert!(messages.len() > 2);
+        assert!(messages.len() > 1);
         assert_eq!(buttons(&messages), vec![7]);
         assert_eq!(messages.last().unwrap().unsubscribe_id, Some(7));
         assert!(
@@ -497,7 +496,7 @@ mod tests {
             slots: vec![slot_info("Court 2")],
         });
         assert_eq!(msgs.len(), 1);
-        assert!(msgs[0].contains("• ZHS München — Court 2 : Tue, 02.06.2026 20:00–21:00"));
+        assert!(msgs[0].contains("ZHS München — Court 2 : Tue, 02.06.2026 20:00–21:00"));
         assert!(!msgs[0].contains("<@"));
     }
 
@@ -516,14 +515,14 @@ mod tests {
     }
 
     #[test]
-    fn alert_renders_multiple_slots_as_ordered_bullet_lines() {
+    fn alert_renders_multiple_slots_as_ordered_lines() {
         let msgs = render_alert(&AvailabilityAlert {
             slots: vec![slot_info("Court 2"), slot_info("Court 5")],
         });
         assert_eq!(msgs.len(), 1);
         let lines: Vec<&str> = msgs[0].lines().collect();
-        assert!(lines[0].starts_with("• ZHS München — Court 2 : "));
-        assert!(lines[1].starts_with("• ZHS München — Court 5 : "));
+        assert!(lines[0].starts_with("ZHS München — Court 2 : "));
+        assert!(lines[1].starts_with("ZHS München — Court 5 : "));
     }
 
     #[test]
