@@ -27,7 +27,7 @@ pub(super) fn parse_component(custom_id: &str) -> Result<SubscriptionCommand> {
 
 pub(super) fn parse_interaction(cmd: &CommandInteraction) -> Result<SubscriptionCommand> {
     match cmd.data.name.as_str() {
-        "subscribe" => {
+        "tennis" => {
             let (schedule, start_minute, end_minute) = parse_when(cmd)?;
             Ok(SubscriptionCommand::Subscribe {
                 sport: Sport::Tennis,

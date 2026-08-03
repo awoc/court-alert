@@ -15,7 +15,7 @@ pub(super) async fn register_commands(
     padel_clubs: &[(VenueId, String)],
 ) -> Result<()> {
     let cmds = vec![
-        build_subscribe_cmd(),
+        build_tennis_cmd(),
         build_padel_cmd(padel_clubs),
         build_list_cmd(),
         build_unsubscribe_cmd(),
@@ -62,9 +62,9 @@ fn with_day_from_to(command: CreateCommand) -> CreateCommand {
         )
 }
 
-fn build_subscribe_cmd() -> CreateCommand {
+fn build_tennis_cmd() -> CreateCommand {
     with_day_from_to(
-        CreateCommand::new("subscribe")
+        CreateCommand::new("tennis")
             .description("Get a DM when tennis courts become free in a time window"),
     )
     .add_option(
@@ -220,7 +220,14 @@ mod tests {
     #[test]
     fn padel_has_no_courts_option() {
         assert!(!option_names(&build_padel_cmd(&clubs(1))).contains(&"courts".to_string()));
-        assert!(option_names(&build_subscribe_cmd()).contains(&"courts".to_string()));
+        assert!(option_names(&build_tennis_cmd()).contains(&"courts".to_string()));
+    }
+
+    #[test]
+    fn tennis_command_is_named_tennis() {
+        let json = serde_json::to_value(build_tennis_cmd()).unwrap();
+
+        assert_eq!(json["name"], "tennis");
     }
 
     #[test]

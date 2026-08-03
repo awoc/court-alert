@@ -28,7 +28,7 @@ CREATE TABLE subscriptions (
     CHECK (start_minute < end_minute)
 ) STRICT;
 
--- Existing rows are given the surface `/subscribe` would resolve for them
+-- Existing rows are given the surface `/tennis` would resolve for them
 -- today: a subscription that names courts means those courts whatever they are
 -- made of, and one that names none follows the clay default.
 INSERT INTO subscriptions

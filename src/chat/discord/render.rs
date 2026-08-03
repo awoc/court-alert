@@ -51,7 +51,7 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
             lines
         }
         SubscriptionResult::SubscriptionList(_) => {
-            vec!["No reminders yet. Create one with `/subscribe`.".to_string()]
+            vec!["No reminders yet. Create one with `/tennis`.".to_string()]
         }
         SubscriptionResult::Unsubscribed { id } => vec![format!("Reminder #{id} deleted.")],
         SubscriptionResult::NotFound { id } => {
@@ -139,7 +139,7 @@ fn reminder_messages(header: &str, entries: Vec<(String, i64)>) -> Vec<ReplyMess
 pub(super) fn render_help() -> Vec<ReplyMessage> {
     let lines = [
         "**Court reminders — commands:**",
-        "`/subscribe day from to [courts] [surface]` — get a DM when a matching \
+        "`/tennis day from to [courts] [surface]` — get a DM when a matching \
          **tennis** court becomes free",
         "• `day`: weekday for every week (e.g. `Thu`), or a date for one day \
          (e.g. `23.06.2026`; year optional)",
@@ -323,7 +323,7 @@ mod tests {
     #[test]
     fn renders_empty_list_hint() {
         let text = reply_text(&SubscriptionResult::SubscriptionList(vec![]));
-        assert!(text.contains("/subscribe"));
+        assert!(text.contains("/tennis"));
     }
 
     #[test]
@@ -477,9 +477,9 @@ mod tests {
     }
 
     #[test]
-    fn help_covers_padel_as_well_as_subscribe() {
+    fn help_covers_both_tennis_and_padel() {
         let text = join(&render_help());
-        for cmd in ["/subscribe", "/padel", "/list", "/unsubscribe", "/listall"] {
+        for cmd in ["/tennis", "/padel", "/list", "/unsubscribe", "/listall"] {
             assert!(text.contains(cmd), "help is missing {cmd}");
         }
         assert!(text.contains("indoor"));
@@ -575,7 +575,7 @@ mod tests {
     #[test]
     fn help_explains_every_command() {
         let text = join(&render_help());
-        for cmd in ["/subscribe", "/list", "/unsubscribe", "/listall", "/help"] {
+        for cmd in ["/tennis", "/list", "/unsubscribe", "/listall", "/help"] {
             assert!(text.contains(cmd), "help is missing {cmd}");
         }
         assert!(text.contains("Thu"));

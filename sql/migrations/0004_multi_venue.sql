@@ -30,7 +30,7 @@ CREATE TABLE subscriptions (
     CHECK (start_minute < end_minute)
 ) STRICT;
 
--- Existing rows came from /subscribe and covered every tennis venue.
+-- Existing rows came from the tennis reminder command and covered every tennis venue.
 INSERT INTO subscriptions
     (id, provider, user_id, sport, venue, weekday, on_date, start_minute, end_minute,
      courts, court_filter, created_at)
