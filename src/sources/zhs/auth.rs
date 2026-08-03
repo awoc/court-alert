@@ -239,7 +239,9 @@ mod tests {
         assert_eq!(flow.csrf_token(), Some("the-token".to_string()));
     }
 
-    use crate::zhs::testing::{CSRF, FLOW_ID, install_login_flow_mocks, login_success_response};
+    use crate::sources::zhs::testing::{
+        CSRF, FLOW_ID, install_login_flow_mocks, login_success_response,
+    };
     use serde_json::json;
     use wiremock::matchers::{body_string_contains, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};

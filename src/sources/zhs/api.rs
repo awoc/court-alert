@@ -230,7 +230,7 @@ async fn post_query(
 mod tests {
     use super::*;
     use crate::config::Credentials;
-    use crate::zhs::testing::{install_login_flow_mocks, login_success_response};
+    use crate::sources::zhs::testing::{install_login_flow_mocks, login_success_response};
     use chrono::TimeZone;
     use serde_json::json;
     use std::collections::HashSet;

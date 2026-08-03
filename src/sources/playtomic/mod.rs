@@ -23,6 +23,7 @@ use tracing::debug;
 use uuid::Uuid;
 
 use crate::model::{Sport, Venue, VenueId, VenueIdentity};
+use crate::ports::{CourtCatalogSource, VenueAvailabilitySource};
 
 const BASE_URL: &str = "https://playtomic.com";
 
@@ -192,6 +193,27 @@ impl ClubDirectory {
             .get(venue_id)
             .cloned()
     }
+}
+
+/// Builds both Playtomic adapters.
+///
+/// They share a client, so every club reuses one connection pool, and a
+/// directory, so the availability fetch can see the opening hours discovery
+/// reads off the club page. Constructing them separately would quietly undo
+/// both.
+pub(super) fn build() -> Result<(
+    Arc<dyn VenueAvailabilitySource>,
+    Arc<dyn CourtCatalogSource>,
+)> {
+    let client = PlaytomicClient::new()?;
+    let directory = ClubDirectory::new();
+    Ok((
+        Arc::new(PlaytomicAvailabilitySource::new(
+            client.clone(),
+            directory.clone(),
+        )),
+        Arc::new(PlaytomicCatalogSource::new(client, directory)),
+    ))
 }
 
 fn playtomic_sport_id(sport: Sport) -> &'static str {

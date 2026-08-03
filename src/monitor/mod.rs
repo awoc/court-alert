@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -9,12 +8,12 @@ use tracing::{debug, info, warn};
 
 use crate::config::Config;
 use crate::model::{
-    AvailabilityChange, BookableSlotSnapshot, CourtCatalog, OperatingWindow, Provider, Venue,
-    VenueRegistry, diff_availability,
+    AvailabilityChange, BookableSlotSnapshot, CourtCatalog, OperatingWindow, Venue, VenueRegistry,
+    diff_availability,
 };
 use crate::ports::{
-    AvailabilityChangeSink, BookableSlotSnapshotRepository, CourtCatalogSource,
-    VenueAvailabilitySource, VenueStateRepository,
+    AvailabilityChangeSink, BookableSlotSnapshotRepository, ProviderAdapters, ProviderSources,
+    VenueStateRepository,
 };
 use crate::time::utc_day_window;
 
@@ -25,42 +24,6 @@ mod logging;
 mod snapshot;
 #[cfg(test)]
 mod tests;
-
-/// The adapters serving one provider.
-#[derive(Clone)]
-pub struct ProviderAdapters {
-    pub availability: Arc<dyn VenueAvailabilitySource>,
-    pub catalogs: Arc<dyn CourtCatalogSource>,
-}
-
-/// Which adapters serve which provider.
-#[derive(Default)]
-pub struct ProviderSources(HashMap<Provider, ProviderAdapters>);
-
-impl ProviderSources {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn insert(
-        &mut self,
-        provider: Provider,
-        availability: Arc<dyn VenueAvailabilitySource>,
-        catalogs: Arc<dyn CourtCatalogSource>,
-    ) {
-        self.0.insert(
-            provider,
-            ProviderAdapters {
-                availability,
-                catalogs,
-            },
-        );
-    }
-
-    fn get(&self, provider: Provider) -> Option<&ProviderAdapters> {
-        self.0.get(&provider)
-    }
-}
 
 /// Owns one poll loop per venue.
 ///

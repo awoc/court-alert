@@ -10,9 +10,9 @@ use serenity::all::{
 use serenity::async_trait;
 use tracing::{error, info, warn};
 
+use crate::chat::ReadySignal;
 use crate::model::ProviderUserRef;
 use crate::model::Sport;
-use crate::providers::ReadySignal;
 use crate::subscriptions::SubscriptionService;
 use crate::subscriptions::contract::{SubscriptionCommand, SubscriptionResult};
 

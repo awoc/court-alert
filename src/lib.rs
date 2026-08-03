@@ -1,15 +1,13 @@
 pub mod app;
-pub mod catalog;
+pub mod chat;
 pub mod config;
 pub mod model;
 pub mod monitor;
 pub mod notify;
 pub mod parsing;
-pub mod playtomic;
 pub mod ports;
-pub mod providers;
+pub mod sources;
 pub mod store;
 pub mod subscriptions;
 mod text;
 pub mod time;
-pub mod zhs;

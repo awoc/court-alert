@@ -1,3 +1,5 @@
+//! The systems people are reached through.
+
 pub mod discord;
 
 use std::collections::HashSet;
@@ -8,8 +10,8 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tokio::sync::watch;
 
-use crate::config::Settings;
-use crate::model::ProviderUserRef;
+use crate::config::{Config, Settings};
+use crate::model::{ProviderUserRef, Sport};
 use crate::subscriptions::SubscriptionService;
 
 #[async_trait]
@@ -61,6 +63,25 @@ pub fn readiness(n: usize) -> (Vec<ReadySignal>, ReadyBarrier) {
     (signals, ReadyBarrier { expected: n, rx })
 }
 
+/// Rejects a configuration the chat frontend cannot present.
+pub fn validate_configuration(config: &Config) -> Result<()> {
+    // Beyond this, `/padel` could not offer every club by name, and quietly
+    // dropping the rest would leave them selectable only through "all clubs".
+    let padel_venues = config
+        .venues()
+        .iter()
+        .filter(|venue| venue.sport == Sport::Padel)
+        .count();
+    anyhow::ensure!(
+        padel_venues <= discord::MAX_CLUB_CHOICES,
+        "{padel_venues} padel venues are configured, but Discord allows at most {} \
+         club choices on /padel; monitoring more would leave the rest selectable \
+         only through \"all clubs\"",
+        discord::MAX_CLUB_CHOICES
+    );
+    Ok(())
+}
+
 pub fn build(settings: &Settings) -> Vec<Box<dyn ChatProvider>> {
     let mut providers: Vec<Box<dyn ChatProvider>> = Vec::new();
     if let Some(discord) = &settings.discord_bot {
@@ -87,6 +108,51 @@ pub async fn run_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ZHS: &str = r#"
+poll_interval_secs = 300
+lookahead_days = 7
+
+[[venues]]
+id = "zhs-munich"
+display_name = "ZHS München"
+sport = "tennis"
+provider = "zhs"
+base_url = "https://kurse.zhs-muenchen.de"
+
+  [[venues.courts]]
+  id = "92db7384-2dec-4888-a92a-4c2b6faac5f7"
+  name = "Tennis Court 1"
+"#;
+
+    /// Discord caps a command option at 25 choices, so beyond that `/padel`
+    /// could not offer every club by name — and quietly dropping the rest would
+    /// leave them selectable only through "all clubs".
+    #[test]
+    fn more_padel_venues_than_discord_can_offer_are_rejected() {
+        let limit = discord::MAX_CLUB_CHOICES;
+        let club = |i: usize| {
+            format!(
+                "\n[[venues]]\nid = \"club-{i}\"\ndisplay_name = \"Club {i}\"\n\
+                 sport = \"padel\"\nprovider = \"playtomic\"\n\
+                 tenant_id = \"f8483f72-1d14-49eb-a98b-e4b89d969c78\"\n\
+                 slug = \"club-{i}\"\nlookahead_days = 15\n"
+            )
+        };
+        let with = |count: usize| {
+            let clubs: String = (0..count).map(club).collect();
+            let config = Config::parse(&format!("{ZHS}{clubs}")).expect("parse");
+            validate_configuration(&config)
+        };
+
+        assert!(with(limit).is_ok(), "{limit} clubs must still be accepted");
+
+        let error = with(limit + 1).expect_err("more clubs than Discord can offer");
+        assert!(
+            format!("{error:#}").contains(&limit.to_string()),
+            "the limit is not named: {error:#}"
+        );
+    }
     use crate::store::SqliteStore;
     use crate::subscriptions::{BerlinClock, SubscriptionService};
     use std::time::Duration;
