@@ -143,7 +143,8 @@ pub(super) fn render_help() -> Vec<ReplyMessage> {
          **tennis** court becomes free",
         "• `day`: weekday for every week (e.g. `Thu`), or a date for one day \
          (e.g. `23.06.2026`; year optional)",
-        "• `from`/`to`: time window as HH:MM, Berlin time (e.g. `18:00`, `20:00`)",
+        "• `from`/`to`: time window as HH:MM or a whole hour, Berlin time \
+         (e.g. `18:30`, `9`, `22`)",
         "• `courts`: optional comma-separated court numbers (e.g. `2, 19`); \
          omit to watch a whole surface",
         "• `surface`: `clay`, `synthetic` or `all`; defaults to clay, or to the \

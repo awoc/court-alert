@@ -50,15 +50,19 @@ fn with_day_from_to(command: CreateCommand) -> CreateCommand {
             CreateCommandOption::new(
                 CommandOptionType::String,
                 "from",
-                "From (HH:MM, Berlin time)",
+                "From (HH:MM or whole hour, Berlin time)",
             )
             .max_length(5)
             .required(true),
         )
         .add_option(
-            CreateCommandOption::new(CommandOptionType::String, "to", "To (HH:MM, Berlin time)")
-                .max_length(5)
-                .required(true),
+            CreateCommandOption::new(
+                CommandOptionType::String,
+                "to",
+                "To (HH:MM or whole hour, Berlin time)",
+            )
+            .max_length(5)
+            .required(true),
         )
 }
 
