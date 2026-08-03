@@ -2,9 +2,9 @@ use chrono::{DateTime, Utc};
 
 use crate::time::{fmt_berlin, fmt_berlin_time};
 
-pub(crate) const DISCORD_CHUNK_BUDGET: usize = 1800;
+pub(super) const DISCORD_CHUNK_BUDGET: usize = 1800;
 
-pub(crate) fn fmt_slot_line(court: &str, start: DateTime<Utc>, end: DateTime<Utc>) -> String {
+pub(super) fn fmt_slot_line(court: &str, start: DateTime<Utc>, end: DateTime<Utc>) -> String {
     format!(
         "• {} : {}–{}",
         court,
@@ -18,7 +18,7 @@ pub(crate) fn fmt_slot_line(court: &str, start: DateTime<Utc>, end: DateTime<Utc
 /// Direct messages can span clubs — `/padel` without a club watches all of
 /// them — and "Court 1" is not a unique name across padel clubs. The broadcast
 /// webhook stays with the unlabelled form: it carries one venue by construction.
-pub(crate) fn fmt_club_slot_line(
+pub(super) fn fmt_club_slot_line(
     club: &str,
     court: &str,
     start: DateTime<Utc>,
@@ -33,7 +33,7 @@ pub(crate) fn fmt_club_slot_line(
     )
 }
 
-pub(crate) fn chunk_lines(lines: &[String], max_chars: usize) -> Vec<String> {
+pub(super) fn chunk_lines(lines: &[String], max_chars: usize) -> Vec<String> {
     assert!(max_chars > 0, "chunk size must be non-zero");
     let mut out = Vec::new();
     let mut cur = String::new();

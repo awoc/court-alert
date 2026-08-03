@@ -1,5 +1,5 @@
+use super::text::{DISCORD_CHUNK_BUDGET, fmt_slot_line};
 use crate::model::{AlertLine, AvailabilityChange, BookableSlot, BookableSlotId};
-use crate::text::{DISCORD_CHUNK_BUDGET, fmt_slot_line};
 
 const STRIKE_MARKUP_CHARS: usize = 4;
 

@@ -1,8 +1,8 @@
+use super::text::{DISCORD_CHUNK_BUDGET, chunk_lines, fmt_club_slot_line};
 use crate::model::{CourtFilter, Schedule, TimeRange};
 use crate::subscriptions::contract::{
     AvailabilityAlert, OwnedSubscriptionSummary, SubscriptionResult, SubscriptionSummary,
 };
-use crate::text::{DISCORD_CHUNK_BUDGET, chunk_lines, fmt_club_slot_line};
 use crate::time::fmt_hhmm;
 
 const MAX_UNSUBSCRIBE_BUTTONS: usize = 20;

@@ -19,6 +19,7 @@ mod handler;
 mod http;
 mod parse;
 mod render;
+mod text;
 mod webhook;
 
 pub use error_webhook::DiscordErrorLayer;
