@@ -32,8 +32,6 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         info!(user = %ready.user.name, "discord provider connected");
         self.ready.ready();
-        // `/padel`'s club choices come from the configured padel venues, which
-        // the service reads out of the shared registry.
         let padel_clubs = self.service.clubs_of(Sport::Padel);
         if let Err(e) = register_commands(&ctx, self.guild_id, &padel_clubs).await {
             error!(error = %format!("{e:#}"), "failed to register slash commands");

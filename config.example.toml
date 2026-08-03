@@ -1,4 +1,4 @@
-# Copy this file to config.toml, then replace the venues below.
+# Copy this file to config.toml, then replace the venues.
 poll_interval_secs = 300
 lookahead_days = 7
 quiet_first_poll = true
@@ -9,7 +9,7 @@ operating_window_end_hour = 24
 surface_filter = "clay"
 
 [[venues]]
-id           = "zhs-munich"       # stable: the join key for slots and subscriptions
+id           = "zhs-munich"
 display_name = "ZHS München"
 sport        = "tennis"
 provider     = "zhs"
@@ -25,14 +25,12 @@ base_url     = "https://kurse.zhs-muenchen.de"
   name = "Example court 2 - Synthetic"
   surface = "synthetic"
 
-# A Playtomic club. It needs no credentials, and declares no courts: those are
-# discovered from the club page and refreshed daily.
 [[venues]]
 id                 = "example-padel-club"
 display_name       = "Example Padel Club"
 sport              = "padel"
 provider           = "playtomic"
 tenant_id          = "00000000-0000-0000-0000-000000000002"
-slug               = "example-padel-club"   # the /clubs/<slug> path on playtomic.com
-lookahead_days     = 15   # Playtomic's full horizon; 16 or more is rejected
+slug               = "example-padel-club"
+lookahead_days     = 15
 operating_window_start_hour = 7

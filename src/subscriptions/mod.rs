@@ -65,11 +65,6 @@ impl SubscriptionService {
         self.admins.contains(user)
     }
 
-    /// The court catalogs a command operates over, narrowed to one club when
-    /// the subscription names one.
-    ///
-    /// Cloned out of the registry so the guard is released before the caller
-    /// does anything slow.
     fn catalogs_for(
         &self,
         sport: Sport,
@@ -92,7 +87,6 @@ impl SubscriptionService {
             .collect()
     }
 
-    /// Labels a slot with its club, so an alert names where the court is.
     fn slot_summary(&self, slot: &crate::model::BookableSlot) -> contract::AvailableSlotSummary {
         contract::AvailableSlotSummary {
             club: self
@@ -106,7 +100,6 @@ impl SubscriptionService {
         }
     }
 
-    /// The clubs a sport's command offers, as (id, display name) pairs.
     pub fn clubs_of(&self, sport: Sport) -> Vec<(VenueId, String)> {
         let registry = self.registry.read().expect("venue registry poisoned");
         registry

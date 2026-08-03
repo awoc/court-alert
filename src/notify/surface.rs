@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use crate::model::{AvailabilityChange, CourtFilter, VenueRegistry};
 use crate::ports::AvailabilityChangeSink;
 
-/// Keeps the broadcast channel to the courts it is meant to cover.
 pub struct SurfaceFilteredSink {
     inner: Box<dyn AvailabilityChangeSink>,
     registry: Arc<RwLock<VenueRegistry>>,
@@ -209,8 +208,6 @@ mod tests {
         assert!(published(&recorder).is_empty());
     }
 
-    /// Attributes are resolved through the slot's own venue, so a court id that
-    /// only exists at another club is unknown here.
     #[tokio::test]
     async fn slots_from_an_unregistered_venue_are_dropped() {
         let (sink, recorder) = sink(CourtFilter::CLAY);

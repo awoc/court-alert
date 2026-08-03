@@ -29,8 +29,6 @@ pub struct App {
 impl App {
     pub async fn assemble(settings: Settings) -> Result<Self> {
         let config = Config::load(&settings.config_path)?;
-        // Each adapter states its own limits; the composition root is simply
-        // where both are consulted.
         let describe = || format!("validating config file {}", settings.config_path.display());
         sources::validate_configuration(&config).with_context(describe)?;
         chat::validate_configuration(&config).with_context(describe)?;
@@ -41,9 +39,6 @@ impl App {
 
         let mut sinks: Vec<Arc<dyn AvailabilityChangeSink>> = Vec::new();
         match &settings.discord_webhook {
-            // The sport scope is the outer wrapper and is never a no-op: padel
-            // is DM-only, and the surface filter would let it through whenever
-            // `surface_filter = "all"` removes that filter from the chain.
             Some(url) => sinks.push(
                 SportScopedSink::wrap(
                     SurfaceFilteredSink::wrap(
@@ -60,8 +55,6 @@ impl App {
         }
         info!(
             venues = config.venues().len(),
-            // Only the ones config declares; Playtomic venues discover theirs
-            // on their first poll and would otherwise read as zero courts.
             configured_courts = config
                 .venues()
                 .iter()
@@ -165,8 +158,6 @@ impl App {
     }
 }
 
-/// Seeds the registry from config: ZHS venues arrive with their catalog, and
-/// every other venue starts `Unresolved` for its own loop to fill in.
 fn build_registry(config: &Config) -> VenueRegistry {
     let mut registry = VenueRegistry::new();
     for venue in config.venues() {

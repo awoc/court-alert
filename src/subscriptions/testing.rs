@@ -100,8 +100,6 @@ pub(super) fn catalog() -> CourtCatalog {
     ])
 }
 
-/// Both sports, so a test can show that "all clubs" of one never reaches the
-/// other.
 pub(super) fn registry() -> Arc<RwLock<VenueRegistry>> {
     let mut registry = VenueRegistry::new();
     registry.register(&tennis_venue());
@@ -111,7 +109,6 @@ pub(super) fn registry() -> Arc<RwLock<VenueRegistry>> {
     Arc::new(RwLock::new(registry))
 }
 
-/// A registry with no padel club at all, for the `/padel`-with-nothing case.
 pub(super) fn tennis_only_registry() -> Arc<RwLock<VenueRegistry>> {
     let mut registry = VenueRegistry::new();
     registry.register(&tennis_venue());
@@ -286,7 +283,6 @@ impl BookableSlotSnapshotRepository for FailingSlotSnapshotRepository {
     }
 }
 
-/// A service that knows about tennis only, so `/padel` has nothing to watch.
 pub(super) async fn service_without_padel() -> Arc<SubscriptionService> {
     let store = store().await;
     Arc::new(SubscriptionService::new(

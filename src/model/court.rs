@@ -91,23 +91,10 @@ impl<'de> Deserialize<'de> for CourtLocation {
     }
 }
 
-/// The filterable properties of a court, scoped to its sport.
-///
-/// A sum type rather than a flat `{surface, location}` pair because the axes
-/// genuinely differ: padel carries no playing-surface descriptor at all
-/// (`crystal`/`panoramic` describe the walls), so a shared surface field would
-/// model padel as having a permanently-empty one.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CourtAttributes {
-    Tennis {
-        surface: CourtSurface,
-    },
-    Padel {
-        /// `None` when the provider gave no usable location. Modelled as
-        /// unknown rather than defaulted, so a specific filter excludes it
-        /// instead of silently mislabelling it.
-        location: Option<CourtLocation>,
-    },
+    Tennis { surface: CourtSurface },
+    Padel { location: Option<CourtLocation> },
 }
 
 impl CourtAttributes {
@@ -141,7 +128,6 @@ impl CourtAttributes {
     }
 }
 
-/// What a subscription — or the broadcast channel — is willing to be told about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CourtFilter {
     Any,
@@ -152,9 +138,6 @@ pub enum CourtFilter {
 impl CourtFilter {
     pub const CLAY: Self = Self::Surface(CourtSurface::Clay);
 
-    /// Evaluated against accessors rather than variants, so the day a Playtomic
-    /// tennis venue arrives and `Tennis` gains a location, an indoor filter
-    /// starts working for tennis without touching this function.
     pub fn allows(self, attributes: Option<&CourtAttributes>) -> bool {
         match self {
             Self::Any => true,
@@ -183,8 +166,6 @@ impl fmt::Display for CourtFilter {
 impl FromStr for CourtFilter {
     type Err = anyhow::Error;
 
-    /// `all` is accepted alongside `any` because it is the wording the
-    /// `/subscribe` surface option has always used.
     fn from_str(raw: &str) -> anyhow::Result<Self> {
         let trimmed = raw.trim();
         if trimmed.eq_ignore_ascii_case("any") || trimmed.eq_ignore_ascii_case("all") {
@@ -253,8 +234,6 @@ fn first_number(text: &str) -> Option<u32> {
         .ok()
 }
 
-/// One venue's courts. Catalogs are strictly per-venue, which is what makes
-/// "Court 1" unambiguous once several clubs are monitored.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CourtCatalog {
     courts: Vec<Court>,
@@ -393,8 +372,6 @@ mod tests {
         assert!(CourtFilter::Any.allows(Some(&outdoor)));
     }
 
-    /// A tennis filter against a padel court is `false`, and vice versa — the
-    /// correct answer, since neither court has the attribute being asked about.
     #[test]
     fn filters_and_courts_from_different_sports_never_match() {
         let padel = CourtAttributes::padel(Some(CourtLocation::Indoor));
@@ -411,8 +388,6 @@ mod tests {
         assert!(!CourtFilter::Location(CourtLocation::Indoor).allows(None));
     }
 
-    /// A padel court whose location could not be determined is surfaced by
-    /// `Any` and excluded by a specific filter, never silently mislabelled.
     #[test]
     fn a_padel_court_of_unknown_location_passes_only_the_any_filter() {
         let unknown = CourtAttributes::padel(None);

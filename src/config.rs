@@ -25,8 +25,6 @@ pub struct Config {
     operating_window: OperatingWindow,
     surface_filter: CourtFilter,
     venues: Vec<Venue>,
-    /// Catalogs declared in config, i.e. ZHS venues only. Playtomic venues
-    /// discover theirs at runtime and are absent here.
     catalogs: HashMap<VenueId, CourtCatalog>,
 }
 
@@ -44,10 +42,8 @@ struct ConfigFile {
     surface_filter: CourtFilter,
     #[serde(default)]
     venues: Vec<VenueEntry>,
-    /// Retired in favour of `[[venues]]`; kept only to name the fix.
     #[serde(default)]
     products: Option<toml::Value>,
-    /// Retired in favour of `[[venues]]`; kept only to name the fix.
     #[serde(default)]
     base_url: Option<String>,
 }
@@ -157,10 +153,6 @@ impl Config {
             self.poll_interval_secs > 0,
             "poll_interval_secs must be greater than zero"
         );
-        // `surface_filter` governs the tennis broadcast channel and the default
-        // for new `/subscribe` reminders. A location filter parses but matches
-        // no tennis court, so it would silently mute the channel and hand every
-        // new reminder a filter that can never fire.
         anyhow::ensure!(
             matches!(
                 self.surface_filter,
@@ -209,8 +201,6 @@ impl Config {
         self.operating_window
     }
 
-    /// The broadcast (webhook) channel's filter. Tennis-only: padel alerts go
-    /// out solely as `/padel` direct messages.
     pub fn surface_filter(&self) -> CourtFilter {
         self.surface_filter
     }
@@ -223,7 +213,6 @@ impl Config {
         self.catalogs.get(venue_id)
     }
 
-    /// Every catalog declared in config, i.e. the ZHS venues'.
     pub fn catalogs(&self) -> &HashMap<VenueId, CourtCatalog> {
         &self.catalogs
     }
@@ -232,7 +221,6 @@ impl Config {
         self.venues.iter().any(|venue| venue.provider() == provider)
     }
 
-    /// A venue's effective poll interval, its override or the global default.
     pub fn poll_interval_for(&self, venue: &Venue) -> u64 {
         venue.poll_interval_secs.unwrap_or(self.poll_interval_secs)
     }
@@ -277,8 +265,6 @@ fn validated_venue(entry: VenueEntry) -> Result<(Venue, Option<CourtCatalog>)> {
     };
 
     let catalog = match identity {
-        // Playtomic venues declare only `tenant_id` + `slug`; their courts are
-        // discovered at runtime, so a court list here is a mistake worth naming.
         VenueIdentity::Playtomic { .. } => {
             anyhow::ensure!(
                 entry.courts.is_empty(),
@@ -353,8 +339,6 @@ fn validated_courts(
     Ok(CourtCatalog::new(courts))
 }
 
-/// A court's attributes must belong to its venue's sport: a `surface` key on a
-/// padel venue is a config error, not something to ignore silently.
 fn court_attributes(sport: Sport, entry: &CourtEntry) -> Result<CourtAttributes> {
     match sport {
         Sport::Tennis => {
@@ -384,8 +368,6 @@ pub struct Credentials {
 pub struct Settings {
     pub config_path: PathBuf,
     pub db_path: PathBuf,
-    /// `None` when the ZHS variables are unset. Only a ZHS venue needs them,
-    /// and a Playtomic-only deployment has nothing to authenticate.
     pub credentials: Option<Credentials>,
     pub discord_webhook: Option<reqwest::Url>,
     pub discord_error_webhook: Option<reqwest::Url>,
@@ -412,8 +394,6 @@ impl Settings {
     }
 }
 
-/// Both or neither: half a credential pair is a configuration mistake worth
-/// surfacing where it is used, not silently treated as absent.
 fn credentials_from_env() -> Option<Credentials> {
     let email = std::env::var("COURT_ALERT_EMAIL")
         .ok()
@@ -636,8 +616,6 @@ name = "Tennis Court 1"
         );
     }
 
-    /// The example is what a new deployment copies, so a change to the config
-    /// schema that forgets it would hand out a file that refuses to start.
     #[test]
     fn the_shipped_example_config_is_valid() {
         Config::parse(include_str!("../config.example.toml")).expect("config.example.toml");
@@ -665,8 +643,6 @@ name = "Tennis Court 1"
             "a tennis court must not take `location`"
         );
 
-        // The mirror case cannot arise through config today, because Playtomic
-        // venues (the only padel ones) declare no courts at all.
         let padel_with_surface = format!(
             "{SAMPLE}\n[[venues]]\nid = \"padel-hall\"\ndisplay_name = \"Padel Hall\"\n\
              sport = \"padel\"\nprovider = \"zhs\"\nbase_url = \"https://example.test\"\n\n  \
@@ -758,8 +734,6 @@ name = "Tennis Court 1"
         );
     }
 
-    /// Court numbers only have to be unique within a venue — two clubs may both
-    /// have a "Court 1".
     #[test]
     fn the_same_court_number_may_appear_at_two_venues() {
         let second = format!(
@@ -818,10 +792,6 @@ name = "Tennis Court 1"
         assert!(validated(&format!("surface_filter = \"grass\"\n{SAMPLE}")).is_err());
     }
 
-    /// `surface_filter` drives the tennis broadcast channel and the default for
-    /// new `/subscribe` reminders. A location parses as a `CourtFilter` but
-    /// matches no tennis court, so accepting one would silently mute the
-    /// channel and give every new reminder a filter that can never fire.
     #[test]
     fn surface_filter_rejects_a_padel_location() {
         for raw in ["indoor", "outdoor"] {

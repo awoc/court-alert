@@ -43,8 +43,6 @@ pub(super) fn parse_interaction(cmd: &CommandInteraction) -> Result<Subscription
             let (schedule, start_minute, end_minute) = parse_when(cmd)?;
             Ok(SubscriptionCommand::Subscribe {
                 sport: Sport::Padel,
-                // Omitted means every padel club; `sport` is what keeps that
-                // from spilling onto tennis courts.
                 venue: get_string_opt(cmd, "club")
                     .filter(|raw| !raw.trim().is_empty())
                     .map(|raw| VenueId::new(raw.trim())),
@@ -68,7 +66,6 @@ pub(super) fn parse_interaction(cmd: &CommandInteraction) -> Result<Subscription
     }
 }
 
-/// The `day`/`from`/`to` trio both subscription commands require.
 fn parse_when(cmd: &CommandInteraction) -> Result<(Schedule, u32, u32)> {
     let day = get_string_opt(cmd, "day").context("missing 'day'")?;
     let from = get_string_opt(cmd, "from").context("missing 'from'")?;
@@ -107,20 +104,12 @@ fn parse_courts(input: Option<String>) -> Result<Option<Vec<String>>> {
     Ok((!courts.is_empty()).then_some(courts))
 }
 
-/// `/subscribe`'s `surface`, which is tennis vocabulary.
-///
-/// `CourtFilter` parses all five values, so without this a `location=clay` —
-/// or a `surface=indoor` — would be stored as a reminder that can never fire.
-/// Discord's own choice validation blocks it in practice, but the same
-/// reasoning already guards `surface_filter` in config, and the command
-/// boundary is where a client that is not Discord would come in.
 fn parse_surface(input: Option<String>) -> Result<Option<CourtFilter>> {
     parse_filter(input, "surface", |filter| {
         matches!(filter, CourtFilter::Any | CourtFilter::Surface(_))
     })
 }
 
-/// `/padel`'s `location`, which is padel vocabulary.
 fn parse_location(input: Option<String>) -> Result<Option<CourtFilter>> {
     parse_filter(input, "location", |filter| {
         matches!(filter, CourtFilter::Any | CourtFilter::Location(_))
@@ -262,8 +251,6 @@ mod tests {
         assert!(parse_surface(Some("grass".into())).is_err());
     }
 
-    /// Each option takes only its own sport's vocabulary. `CourtFilter` spans
-    /// both, so a reminder that can never fire would otherwise be storable.
     #[test]
     fn an_option_rejects_the_other_sports_vocabulary() {
         for raw in ["indoor", "outdoor"] {
@@ -287,7 +274,6 @@ mod tests {
             parse_location(Some("indoor".into())).unwrap(),
             Some(CourtFilter::Location(crate::model::CourtLocation::Indoor))
         );
-        // `any` belongs to both: it is the default each command hands out.
         assert_eq!(
             parse_location(Some("any".into())).unwrap(),
             Some(CourtFilter::Any)
@@ -417,20 +403,20 @@ mod tests {
     #[test]
     fn parse_date_rejects_odd_year_widths() {
         let today = d(2026, 1, 1);
-        assert!(parse_date("23.6.026", today).is_err()); // 3 digits
-        assert!(parse_date("23.6.20260", today).is_err()); // 5 digits
-        assert!(parse_date("23.6.6", today).is_err()); // 1 digit
+        assert!(parse_date("23.6.026", today).is_err());
+        assert!(parse_date("23.6.20260", today).is_err());
+        assert!(parse_date("23.6.6", today).is_err());
     }
 
     #[test]
     fn parse_date_rejects_malformed() {
         let today = d(2026, 1, 1);
-        assert!(parse_date("2026-06-23", today).is_err()); // ISO, wrong separator
+        assert!(parse_date("2026-06-23", today).is_err());
         assert!(parse_date("foo", today).is_err());
-        assert!(parse_date("32.13.2026", today).is_err()); // out of range
-        assert!(parse_date("23", today).is_err()); // no month
+        assert!(parse_date("32.13.2026", today).is_err());
+        assert!(parse_date("23", today).is_err());
         assert!(parse_date("", today).is_err());
-        assert!(parse_date("23.6.", today).is_err()); // trailing dot
-        assert!(parse_date("23..2026", today).is_err()); // empty month
+        assert!(parse_date("23.6.", today).is_err());
+        assert!(parse_date("23..2026", today).is_err());
     }
 }

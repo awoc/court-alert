@@ -14,15 +14,12 @@ use crate::ports::ProviderSources;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities {
-    /// The furthest ahead the provider will answer for, when it publishes a
-    /// horizon. `None` means it does not, so only the global limit applies.
     pub max_lookahead_days: Option<i64>,
 }
 
 impl Provider {
     pub fn capabilities(self) -> Capabilities {
         match self {
-            // ZHS publishes no horizon; the booking window closes per slot.
             Provider::Zhs => Capabilities {
                 max_lookahead_days: None,
             },
@@ -51,8 +48,6 @@ pub fn build(config: &Config, credentials: Option<Credentials>) -> Result<Provid
 
 pub fn validate_configuration(config: &Config) -> Result<()> {
     for venue in config.venues() {
-        // Beyond a provider's own horizon every extra day is a request that can
-        // only come back empty.
         let Some(cap) = venue.provider().capabilities().max_lookahead_days else {
             continue;
         };
@@ -67,8 +62,6 @@ pub fn validate_configuration(config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// ZHS is per-deployment rather than per-club: one set of credentials, one
-/// base URL, so a second venue would need its own of both.
 fn only_venue(config: &Config, provider: Provider) -> Result<&crate::model::Venue> {
     let mut venues = config
         .venues()
@@ -137,8 +130,6 @@ slug = "casa-padel"
     fn a_zhs_venue_without_credentials_names_the_missing_variables() {
         let config = Config::parse(ZHS_ONLY).expect("parse");
 
-        // Not `expect_err`: `ProviderSources` holds trait objects and has no
-        // `Debug`, so the success arm cannot be formatted.
         let error = match build(&config, None) {
             Ok(_) => panic!("missing credentials must be rejected"),
             Err(error) => error,
@@ -155,9 +146,6 @@ slug = "casa-padel"
         assert!(build(&config, Some(credentials())).is_ok());
     }
 
-    /// By the number, not by prose: Playtomic serves today…today+14
-    /// *inclusive*, and the window is half-open, so 15 covers exactly the
-    /// horizon and 16 adds a guaranteed-empty request.
     #[test]
     fn a_playtomic_venue_may_look_ahead_fifteen_days_but_not_sixteen() {
         let with = |days: i64| {

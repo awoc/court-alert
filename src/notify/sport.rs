@@ -6,14 +6,6 @@ use async_trait::async_trait;
 use crate::model::{AvailabilityChange, Sport, VenueRegistry};
 use crate::ports::AvailabilityChangeSink;
 
-/// Keeps the broadcast webhook to one sport's venues.
-///
-/// The surface filter must not be relied on for this. It only excludes padel by
-/// accident — padel courts have no tennis surface, so a `clay` filter drops
-/// them — and with `surface_filter = "all"` there is no filter object in the
-/// chain at all, which would send every padel slot straight to the tennis
-/// channel. This wrapper is never a no-op, and an unregistered venue fails
-/// closed.
 pub struct SportScopedSink {
     inner: Box<dyn AvailabilityChangeSink>,
     registry: Arc<RwLock<VenueRegistry>>,
@@ -147,7 +139,6 @@ mod tests {
         recorder.0.lock().unwrap().clone()
     }
 
-    /// The chain `App::assemble` builds for the webhook.
     fn broadcast_chain(
         filter: CourtFilter,
     ) -> (Box<dyn AvailabilityChangeSink>, Arc<RecordingSink>) {
@@ -161,9 +152,6 @@ mod tests {
         (sink, recorder)
     }
 
-    /// The failure this guard exists for: with `surface_filter = "all"` the
-    /// surface filter is not in the chain at all, so nothing else would stop a
-    /// padel slot reaching the tennis channel.
     #[tokio::test]
     async fn padel_never_reaches_the_broadcast_channel_even_with_the_any_filter() {
         for filter in [CourtFilter::Any, CourtFilter::CLAY] {
@@ -196,8 +184,6 @@ mod tests {
         assert_eq!(published(&recorder), vec![vec![tennis_slot()]]);
     }
 
-    /// Fails closed: a slot whose venue the registry does not know is dropped
-    /// rather than broadcast on the assumption that it is tennis.
     #[tokio::test]
     async fn a_slot_from_an_unregistered_venue_is_dropped() {
         let (sink, recorder) = broadcast_chain(CourtFilter::Any);

@@ -25,11 +25,6 @@ mod snapshot;
 #[cfg(test)]
 mod tests;
 
-/// Owns one poll loop per venue.
-///
-/// Independent loops rather than one global tick: staggering becomes free, a
-/// venue that fails to fetch simply skips its own tick and touches nothing, and
-/// per-venue intervals become possible.
 pub struct Monitor {
     config: Config,
     registry: Arc<RwLock<VenueRegistry>>,
@@ -99,13 +94,6 @@ impl Monitor {
         Ok(())
     }
 
-    /// Scoped replacement only ever touches a venue's own rows, so a club
-    /// removed from config would keep its slots forever — and the subscribe
-    /// preview would keep offering them.
-    ///
-    /// The slots and the "has polled" markers are swept together. Dropping only
-    /// the slots would leave a re-added venue looking established but with an
-    /// empty snapshot, so its first poll would announce its entire horizon.
     async fn sweep_removed_venues(&self) {
         let configured: Vec<_> = self
             .config
@@ -136,9 +124,6 @@ impl Monitor {
     }
 }
 
-/// Spreads venue *i* of *n* evenly across the interval, so their bursts do not
-/// land together. An optimisation, not a guarantee: a slow venue's retry can
-/// still overlap the next one.
 fn phase_offset(index: usize, count: usize, interval_secs: u64) -> Duration {
     if count <= 1 {
         return Duration::ZERO;
@@ -191,9 +176,6 @@ impl VenueLoop {
             interval.tick().await;
             match self.tick(&mut state, &mut catalog).await {
                 Ok(TickOutcome::Polled) => failures.succeeded(&self.venue),
-                // A tick that never ran is neither: counting it as a success
-                // would report "recovered" in the middle of an outage, and the
-                // next failure would warn all over again.
                 Ok(TickOutcome::Skipped) => {}
                 Err(error) => failures.failed(&self.venue, &error),
             }
@@ -215,9 +197,6 @@ impl VenueLoop {
             return Ok(TickOutcome::Skipped);
         }
 
-        // The loop owns the sequence: discover, then fetch. It is therefore
-        // the only writer of this venue's registry entry, and the write is a
-        // short, await-free swap.
         let Some(courts) = self.resolve_catalog(catalog).await? else {
             return Ok(TickOutcome::Skipped);
         };
@@ -230,9 +209,6 @@ impl VenueLoop {
             .await
             .with_context(|| format!("fetching availability for venue {}", self.venue.id))?;
 
-        // The cheapest re-discovery trigger there is: the loop already holds
-        // the catalog it passed in, so a court it does not know means the club
-        // has changed its resources.
         if observations
             .iter()
             .any(|observation| courts.attributes_of(observation.court_id).is_none())
@@ -260,15 +236,9 @@ impl VenueLoop {
             self.publish(&changes).await;
         }
 
-        // Committed before the marker write, and the marker write cannot fail
-        // the tick: leaving `previous` stale after publishing would recompute
-        // the identical changes next tick and send every alert twice. A marker
-        // that never lands only means the venue starts quiet after a restart,
-        // which is the harmless direction.
+        // Commit before the marker write so its failure cannot republish changes.
         state.commit(current);
 
-        // Recorded only after a successful poll, so a venue that never manages
-        // one stays quiet rather than announcing its whole horizon later.
         if let Err(error) = self.venue_state.mark_initialised(&self.venue.id).await {
             warn!(
                 venue = %self.venue.id,
@@ -279,12 +249,6 @@ impl VenueLoop {
         Ok(TickOutcome::Polled)
     }
 
-    /// The venue's catalog, discovering or refreshing it when due.
-    ///
-    /// `Ok(None)` means "not this tick": there is no catalog at all and
-    /// discovery is backing off. The backoff gates the discovery *attempt*, not
-    /// the poll — a cached catalog is always usable, however stale, because
-    /// names drifting is a far smaller problem than a venue going quiet.
     async fn resolve_catalog(
         &self,
         state: &mut DiscoveryState,
@@ -320,8 +284,6 @@ impl VenueLoop {
                     .expect("venue registry poisoned")
                     .set_catalog(&self.venue.id, discovered);
                 state.succeeded();
-                // `None` means this venue was never registered, which is a
-                // wiring bug: its loop exists but nothing else can see it.
                 stored
                     .with_context(|| format!("venue {} is not in the registry", self.venue.id))
                     .map(Some)
@@ -329,8 +291,6 @@ impl VenueLoop {
             Err(error) => {
                 state.failed();
                 match cached {
-                    // A stale catalog beats none: names may drift, but the
-                    // venue keeps alerting while the club page is unreachable.
                     Some(catalog) => {
                         warn!(
                             venue = %self.venue.id,
@@ -378,11 +338,6 @@ fn is_within_operating_window(now: chrono::DateTime<Utc>, window: OperatingWindo
     window.contains_hour(now.with_timezone(&Berlin).hour())
 }
 
-/// Reports the *transitions* into and out of failure rather than every tick
-/// inside one.
-///
-/// `DiscordErrorLayer` forwards WARN events carrying an `error` field, so a
-/// provider outage would otherwise be one message per venue per tick, forever.
 #[derive(Default)]
 struct FailureRun {
     failing: bool,
@@ -410,25 +365,16 @@ impl FailureRun {
     }
 }
 
-/// Whether a tick actually polled, or bowed out before doing anything.
 #[derive(Debug, PartialEq, Eq)]
 enum TickOutcome {
     Polled,
     Skipped,
 }
 
-/// Discovered catalogs go stale — a club renames or adds a court and nobody
-/// tells us — so they are refreshed on a cadence rather than resolved once.
 const CATALOG_REFRESH: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Ticks to skip after consecutive discovery failures, doubling to a cap.
 const MAX_DISCOVERY_BACKOFF_TICKS: u32 = 16;
 
-/// When a venue's catalog was last resolved, and how hard discovery is
-/// currently failing.
-///
-/// Distinct from `model::CatalogState`, which is about whether a catalog exists
-/// at all; this is the loop's own bookkeeping about fetching one.
 #[derive(Default)]
 struct DiscoveryState {
     resolved_at: Option<Instant>,
@@ -442,7 +388,6 @@ impl DiscoveryState {
             .is_none_or(|at| at.elapsed() >= CATALOG_REFRESH)
     }
 
-    /// Consumes one tick of backoff; `false` means "still waiting".
     fn may_attempt(&mut self) -> bool {
         if self.ticks_to_skip == 0 {
             return true;
@@ -463,7 +408,6 @@ impl DiscoveryState {
             (1u32 << (self.consecutive_failures - 1).min(31)).min(MAX_DISCOVERY_BACKOFF_TICKS);
     }
 
-    /// Forces a refresh on the next tick, without disturbing the backoff.
     fn invalidate(&mut self) {
         self.resolved_at = None;
     }
@@ -475,9 +419,6 @@ struct MonitorState {
 }
 
 impl MonitorState {
-    /// Suppression keys on the venue never having polled, not on the slice
-    /// being empty: a single club can legitimately be fully booked across its
-    /// whole horizon, and inferring would swallow its next batch of free slots.
     fn new(previous: BookableSlotSnapshot, suppress_next_publish: bool) -> Self {
         Self {
             previous,

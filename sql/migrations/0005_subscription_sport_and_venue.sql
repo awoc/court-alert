@@ -1,14 +1,10 @@
---   sqlite3 -bail data/court-alert.db < sql/migrations/0005_subscription_sport_and_venue.sql
+-- Run with: sqlite3 -bail data/court-alert.db < sql/migrations/0005_subscription_sport_and_venue.sql
 
 BEGIN;
 
--- Refuse to run against anything but a version 4 database: the CHECK fails,
--- the script aborts, and the transaction is rolled back.
 CREATE TEMP TABLE migration_guard (expected_version INTEGER CHECK (expected_version = 4));
 INSERT INTO migration_guard SELECT user_version FROM pragma_user_version;
 
--- `surface` is renamed to `court_filter` and its CHECK widened to span both
--- sports, so the table is rebuilt the way 0001 and 0003 rebuilt it.
 ALTER TABLE subscriptions RENAME TO subscriptions_legacy;
 
 CREATE TABLE subscriptions (
@@ -30,13 +26,7 @@ CREATE TABLE subscriptions (
     CHECK (start_minute < end_minute)
 ) STRICT;
 
--- Every existing subscription came from `/subscribe`, so it is tennis. It is
--- back-filled with `venue = NULL` — "all tennis venues" — rather than an
--- invented venue id: with exactly one ZHS venue that preserves today's
--- behaviour precisely, and it keeps working if a second tennis club appears.
---
--- `'all'` becomes `'any'`: the same meaning under the wider vocabulary, where
--- "all surfaces" would have read as a tennis-only answer.
+-- Existing rows came from /subscribe and covered every tennis venue.
 INSERT INTO subscriptions
     (id, provider, user_id, sport, venue, weekday, on_date, start_minute, end_minute,
      courts, court_filter, created_at)
@@ -46,8 +36,7 @@ SELECT id, provider, user_id, 'tennis', NULL, weekday, on_date, start_minute, en
        created_at
 FROM subscriptions_legacy;
 
--- Copying ids only advances the new AUTOINCREMENT counter to the highest
--- surviving id, so the legacy counter is carried over to keep ids retired.
+-- Preserve retired AUTOINCREMENT ids.
 DELETE FROM sqlite_sequence WHERE name = 'subscriptions';
 INSERT INTO sqlite_sequence (name, seq)
     SELECT 'subscriptions', seq FROM sqlite_sequence WHERE name = 'subscriptions_legacy';

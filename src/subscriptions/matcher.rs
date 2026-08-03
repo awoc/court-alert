@@ -11,8 +11,6 @@ pub(super) fn slot_matches(
     slot: &BookableSlot,
     registry: &VenueRegistry,
 ) -> bool {
-    // Sport first: a subscription with no club watches every venue of *its*
-    // sport, so without this a "all clubs" padel row would match tennis courts.
     if registry.sport(&slot.venue_id) != Some(sub.sport) {
         return false;
     }
@@ -30,8 +28,6 @@ pub(super) fn slot_matches(
     if !matches_schedule || !sub.time_range.contains(local.minute_of_day) {
         return false;
     }
-    // The attributes come from the slot's own venue: two clubs may both have a
-    // "Court 1", and only the venue tells them apart.
     let attributes = registry.attributes_of(&slot.venue_id, slot.court_id);
     if !sub.filter.allows(attributes.as_ref()) {
         return false;
@@ -162,8 +158,6 @@ mod tests {
         assert!(match_subscriptions(&[], &[]).is_empty());
     }
 
-    /// The hole `sport` exists to close: "every padel club" must not mean
-    /// "every court anywhere".
     #[test]
     fn a_padel_subscription_for_all_clubs_never_matches_a_tennis_court() {
         let changes = vec![
@@ -177,7 +171,6 @@ mod tests {
         assert_eq!(m[&uref("1")][0].court_name, INDOOR_COURT);
     }
 
-    /// …and the mirror: `/subscribe` stays off padel courts.
     #[test]
     fn a_tennis_subscription_never_matches_a_padel_court() {
         let changes = vec![AvailabilityChange::BecameBookable(padel_slot(

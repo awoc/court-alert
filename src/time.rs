@@ -51,11 +51,6 @@ fn berlin_day_window_at(now: DateTime<Utc>, lookahead_days: i64) -> (DateTime<Ut
     (start, end)
 }
 
-/// The Berlin calendar days a half-open UTC window covers.
-///
-/// Providers that are queried per date need the days, not the instants. The
-/// window's own bounds are Berlin midnights, so this is exactly the range that
-/// built it: `lookahead_days` days, with the end date excluded.
 pub(crate) fn berlin_dates_in(starts_at: DateTime<Utc>, ends_at: DateTime<Utc>) -> Vec<NaiveDate> {
     let end = berlin_date(ends_at);
     let mut dates = Vec::new();

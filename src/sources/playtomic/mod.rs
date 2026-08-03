@@ -1,9 +1,4 @@
-//! Playtomic padel clubs.
-//!
-//! Two surfaces, neither of them an offered public API (`robots.txt` disallows
-//! `/api`): the availability JSON route the club page's own frontend calls, and
-//! the page itself, which is the only place a `resource_id` is given a name.
-//! Both are pinned behind tests so a payload change fails loudly.
+//! Adapter for Playtomic's private availability endpoint and RSC club payload.
 
 mod availability;
 mod discovery;
@@ -27,25 +22,15 @@ use crate::ports::{CourtCatalogSource, VenueAvailabilitySource};
 
 const BASE_URL: &str = "https://playtomic.com";
 
-/// The site serves the flight payload only to something that looks like a
-/// browser; this is the string the investigation used throughout.
+// The RSC endpoint serves a different payload to non-browser clients.
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
      AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-/// Between the sequential per-date requests within one club.
-///
-/// This is not a public API and publishes no quota, so the poll stays
-/// deliberately unhurried. At the low end of the useful range: 15 dates cost
-/// ~7.5 s of wall clock per club per tick, which is nothing against a 300 s
-/// interval but is why it should not be raised casually.
+// Throttle the undocumented API, which publishes no rate limit.
 const INTER_DATE_DELAY: Duration = Duration::from_millis(500);
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// One shared HTTP client across every Playtomic venue.
-///
-/// A client per venue would give each its own connection pool and defeat the
-/// cross-club reuse the scheduling design depends on.
 #[derive(Clone)]
 pub struct PlaytomicClient {
     http: Arc<reqwest::Client>,
@@ -81,15 +66,12 @@ impl PlaytomicClient {
         tokio::time::sleep(self.inter_date_delay).await;
     }
 
-    /// The club page as its raw RSC flight payload.
-    ///
-    /// `RSC: 1` matters: the plain HTML is 2.6× larger and carries the same
-    /// JSON backslash-escaped and split across `self.__next_f` chunks.
     async fn club_page(&self, slug: &str) -> Result<String> {
         let url = format!("{}/clubs/{slug}", self.base_url);
         let response = self
             .http
             .get(&url)
+            // Request the raw flight payload instead of HTML.
             .header("RSC", "1")
             .send()
             .await
@@ -115,8 +97,7 @@ impl PlaytomicClient {
         url.query_pairs_mut()
             .append_pair("tenant_id", &tenant_id.to_string())
             .append_pair("date", &date.to_string())
-            // Always sent explicitly: it defaults to PADEL, so a Playtomic
-            // tennis club would otherwise silently return padel courts.
+            // The endpoint defaults to PADEL when this is omitted.
             .append_pair("sport_id", sport_id);
         let response = self
             .http
@@ -138,11 +119,9 @@ impl PlaytomicClient {
     }
 }
 
-/// What the club page says about a venue beyond its courts.
 #[derive(Debug, Clone)]
 struct ClubMeta {
     timezone: String,
-    /// Opening time per upper-case weekday name, as the payload spells it.
     opening_hours: HashMap<String, String>,
 }
 
@@ -166,11 +145,6 @@ fn weekday_key(date: NaiveDate) -> &'static str {
     }
 }
 
-/// Carries the club-page facts the availability adapter needs but cannot see.
-///
-/// Discovery writes it; the availability fetch reads it to run the
-/// opening-hours canary. A side channel rather than a wider
-/// `CourtCatalogSource` return type, so the port stays about catalogs.
 #[derive(Clone, Default)]
 pub struct ClubDirectory(Arc<RwLock<HashMap<VenueId, ClubMeta>>>);
 
@@ -195,12 +169,6 @@ impl ClubDirectory {
     }
 }
 
-/// Builds both Playtomic adapters.
-///
-/// They share a client, so every club reuses one connection pool, and a
-/// directory, so the availability fetch can see the opening hours discovery
-/// reads off the club page. Constructing them separately would quietly undo
-/// both.
 pub(super) fn build() -> Result<(
     Arc<dyn VenueAvailabilitySource>,
     Arc<dyn CourtCatalogSource>,
@@ -234,11 +202,7 @@ fn playtomic_identity(venue: &Venue) -> Result<(Uuid, &str)> {
     }
 }
 
-/// Playtomic serves today through today+14 inclusive: 15 distinct dates.
-///
-/// Stated as a number because "the 14-day horizon" invites an off-by-one, and
-/// because `berlin_day_window_at` builds a half-open range — so `15` covers
-/// exactly the horizon and `16` adds a guaranteed-empty request.
+/// Today through today + 14, inclusive.
 pub const MAX_LOOKAHEAD_DAYS: i64 = 15;
 
 #[cfg(test)]
@@ -306,8 +270,6 @@ mod tests {
         );
     }
 
-    /// Multi-sport clubs are real, and an unfiltered catalog would put beach
-    /// volleyball courts in a padel venue.
     #[tokio::test]
     async fn discovery_keeps_only_the_venues_own_sport() {
         let mixed = CLUB_PAGE.replace(
@@ -327,8 +289,6 @@ mod tests {
         assert!(!catalog.names().contains(&"Beach 1".to_string()));
     }
 
-    /// A slug can be re-pointed at a different club, and monitoring the wrong
-    /// venue under the right name would be invisible.
     #[tokio::test]
     async fn discovery_rejects_a_club_page_for_a_different_tenant() {
         let elsewhere = CLUB_PAGE.replace(TENANT, "11111111-2222-3333-4444-555555555555");
@@ -354,7 +314,6 @@ mod tests {
             ClubDirectory::new(),
         );
 
-        // The fixture club is padel-only.
         assert!(source.discover(&venue(Sport::Tennis)).await.is_err());
     }
 
@@ -381,8 +340,6 @@ mod tests {
                 .and(path("/api/clubs/availability"))
                 .and(query_param("tenant_id", TENANT))
                 .and(query_param("date", date))
-                // Sent explicitly: the endpoint defaults to PADEL, so a tennis
-                // club would silently come back with padel courts.
                 .and(query_param("sport_id", "PADEL"))
                 .respond_with(
                     ResponseTemplate::new(200).set_body_string(if date == "2026-08-05" {
@@ -400,7 +357,6 @@ mod tests {
             ClubDirectory::new(),
         );
 
-        // Berlin-midnight bounds spanning exactly 5 and 6 August.
         let observations = source
             .fetch(
                 &venue(Sport::Padel),
@@ -419,8 +375,6 @@ mod tests {
         );
     }
 
-    /// One club's outage must surface as an error rather than an empty poll,
-    /// which the monitor would read as "everything got booked".
     #[tokio::test]
     async fn a_failing_date_fails_the_whole_venue_fetch() {
         let server = MockServer::start().await;
@@ -447,10 +401,6 @@ mod tests {
         assert!(format!("{error:#}").contains("429"), "got: {error:#}");
     }
 
-    /// A wrong-date response must fail the venue fetch, not yield a short day.
-    /// The monitor retains the previous snapshot on failure, which is what
-    /// keeps a date-semantics change from becoming a wave of false
-    /// "became unbookable" DMs followed by a wave of duplicates.
     #[tokio::test]
     async fn a_response_for_the_wrong_date_fails_the_venue_fetch() {
         let server = MockServer::start().await;

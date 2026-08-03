@@ -30,9 +30,6 @@ use render::render_alert;
 
 pub const PROVIDER_NAME: &str = "discord";
 
-/// Discord caps a string command option at 25 choices, which bounds how many
-/// clubs `/padel` can offer by name. Config refuses to start beyond it rather
-/// than registering a command that silently omits the rest.
 pub const MAX_CLUB_CHOICES: usize = 25;
 
 pub struct DiscordProvider {

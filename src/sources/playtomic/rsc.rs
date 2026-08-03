@@ -1,13 +1,4 @@
-//! Extraction from the club page's React Server Components flight payload.
-//!
-//! Playtomic exposes no JSON route that names a court, so the resource →
-//! name mapping is read out of the club page. Requested with the `RSC: 1`
-//! header the page comes back as the raw flight payload, where the JSON is not
-//! backslash-escaped and not split across `self.__next_f` script chunks.
-//!
-//! This is a reverse-engineered private surface with no stability guarantees,
-//! so every extraction failure is loud and specific rather than a silent empty
-//! result.
+//! Parses the private RSC club payload used because no JSON endpoint names courts.
 
 use std::collections::HashMap;
 
@@ -30,25 +21,17 @@ pub(super) struct OpeningHoursDto {
     pub(super) opening_time: String,
 }
 
-/// What the club page tells us about a venue.
 #[derive(Debug)]
 pub(super) struct ClubPage {
     pub(super) tenant_id: Uuid,
-    /// The club's own timezone, used to compare advertised local opening hours
-    /// against the UTC slot starts the availability API returns.
     pub(super) timezone: String,
     pub(super) resources: Vec<ResourceDto>,
-    /// Keyed by upper-case weekday name, as the payload spells it.
     pub(super) opening_hours: HashMap<String, OpeningHoursDto>,
 }
 
 impl ClubPage {
     pub(super) fn parse(body: &str) -> Result<Self> {
-        // Everything below is a field of the tenant object, so the search
-        // starts there. `timezone` in particular is not unique in a flight
-        // payload — a locale or user block earlier in the document would
-        // otherwise silently win, and the canary would then compare slot starts
-        // against opening hours in the wrong zone.
+        // Keys such as timezone also occur outside the tenant object.
         let tenant_at = body
             .find("\"tenant_id\":")
             .context("club page has no tenant object; the payload shape changed")?;
@@ -73,7 +56,6 @@ impl ClubPage {
     }
 }
 
-/// The JSON value following the first `"key":` at or after `from`.
 fn value_after_key<'a>(body: &'a str, key: &str, from: usize) -> Result<&'a str> {
     let needle = format!("\"{key}\":");
     let at = body[from..]
@@ -84,13 +66,8 @@ fn value_after_key<'a>(body: &'a str, key: &str, from: usize) -> Result<&'a str>
     slice_value(body, at).with_context(|| format!("reading the value of {needle:?}"))
 }
 
-/// Bracket-matches the JSON value starting at `start`.
-///
-/// A regex would do for a flat object, but `features` is a nested array and
-/// court names contain punctuation, so the nesting has to be tracked. Scanning
-/// bytes is safe here: every structural character is ASCII, and UTF-8
-/// continuation bytes never collide with ASCII.
 fn slice_value(body: &str, start: usize) -> Result<&str> {
+    // JSON delimiters are ASCII, so returned offsets remain UTF-8 boundaries.
     let bytes = body.as_bytes();
     match bytes.get(start) {
         Some(b'[') | Some(b'{') => {}
@@ -168,8 +145,6 @@ mod tests {
         assert_eq!(page.opening_hours["MONDAY"].opening_time, "07:00");
     }
 
-    /// The whole point of bracket-matching: `features` is nested, so a regex
-    /// stopping at the first `]` would truncate the array.
     #[test]
     fn a_nested_array_is_not_truncated() {
         let body = r#"junk"resources":[{"resourceId":"x","name":"a","features":["indoor","double"]}],"next":1"#;
@@ -179,7 +154,6 @@ mod tests {
         );
     }
 
-    /// Court names carry punctuation, including brackets and escaped quotes.
     #[test]
     fn structural_characters_inside_strings_are_ignored() {
         let body = r#""resources":[{"name":"Court [1] {\"Centre\"}"}]tail"#;
@@ -189,10 +163,6 @@ mod tests {
         );
     }
 
-    /// `timezone` is not unique in a flight payload. Scoping the search to the
-    /// tenant object is what stops an unrelated earlier block from deciding the
-    /// club's zone — which would make the opening-hours canary compare against
-    /// the wrong offset and cry wolf about an API change.
     #[test]
     fn the_club_timezone_is_read_from_the_tenant_not_an_earlier_block() {
         let decoy = format!(
@@ -232,8 +202,6 @@ mod tests {
         );
     }
 
-    /// A payload change has to fail loudly and by name, not yield an empty
-    /// catalog that silently drops every court.
     #[test]
     fn a_missing_key_names_itself() {
         let error = value_after_key(r#"{"other":1}"#, "resources", 0).unwrap_err();

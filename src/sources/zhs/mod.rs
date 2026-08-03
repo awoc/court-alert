@@ -15,10 +15,6 @@ use crate::config::{Config, Credentials};
 use crate::model::{Provider, VenueIdentity};
 use crate::ports::{CourtCatalogSource, VenueAvailabilitySource};
 
-/// Builds the adapters for the configured ZHS venue.
-///
-/// Its courts come from config, so the catalog source is the shared
-/// config-backed one rather than anything ZHS-specific.
 pub(super) fn build(
     config: &Config,
     credentials: Option<Credentials>,
@@ -34,17 +30,12 @@ pub(super) fn build(
     ))
 }
 
-/// The session every ZHS request is made under.
-///
-/// The credentials are demanded here rather than at startup, so a deployment
-/// with no ZHS venue needs none — which is why they arrive as an `Option`.
 fn authenticate(config: &Config, credentials: Option<Credentials>) -> Result<Auth> {
     let credentials = credentials.context(
         "a ZHS venue is configured, so COURT_ALERT_EMAIL and COURT_ALERT_PASSWORD must be set",
     )?;
     let venue = super::only_venue(config, Provider::Zhs)?;
     let VenueIdentity::Zhs { base_url } = &venue.identity else {
-        // `only_venue` filtered on the provider, which the identity defines.
         unreachable!("a ZHS venue always carries a ZHS identity");
     };
     Auth::new(base_url.clone(), credentials)

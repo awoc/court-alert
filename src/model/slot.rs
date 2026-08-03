@@ -40,12 +40,6 @@ impl SlotObservation {
     }
 }
 
-/// Every slot carries its venue.
-///
-/// Deriving it by looking `court_id` up in the registry fails exactly where it
-/// matters: a slot loaded from SQLite for a court that has since been renamed
-/// away has no registry entry, and subscription matching, webhook filtering and
-/// club labels all need the venue regardless.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BookableSlot {
     pub venue_id: VenueId,

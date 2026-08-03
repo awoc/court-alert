@@ -25,8 +25,6 @@ struct ResourceAvailabilityDto {
 #[derive(Debug, Deserialize)]
 struct SlotDto {
     start_time: NaiveTime,
-    /// Minutes. `price` is also present but has nowhere to live on the slot
-    /// model, and neither the DM nor the message-edit path uses it.
     duration: i64,
 }
 
@@ -56,8 +54,6 @@ impl VenueAvailabilitySource for PlaytomicAvailabilitySource {
 
         let mut observations = Vec::new();
         for (index, date) in dates.iter().enumerate() {
-            // Sequentially, so the pooled TLS connection is reused: on the
-            // armv7 deploy target the handshake dominates the CPU cost.
             if index > 0 {
                 self.client.pause_between_dates().await;
             }
@@ -69,8 +65,7 @@ impl VenueAvailabilitySource for PlaytomicAvailabilitySource {
                     format!("fetching availability for venue {} on {date}", venue.id)
                 })?;
             let for_date = observations_for(venue, catalog, *date, resources)?;
-            // Only the first date: a genuine break would otherwise warn once
-            // per date, fifteen times a tick.
+            // Run once per poll to avoid duplicate canary warnings.
             if index == 0
                 && let Some(meta) = self.directory.get(&venue.id)
             {
@@ -95,25 +90,16 @@ impl VenueAvailabilitySource for PlaytomicAvailabilitySource {
     }
 }
 
-/// ⚠️ A date mismatch fails the whole fetch rather than dropping the offending
-/// resource. Returning a partial day would be worse than returning nothing: the
-/// monitor would diff the gap as "these slots became unbookable", DM everyone
-/// watching them, and then DM everyone again when the next poll brought them
-/// back. A failed fetch simply retains the previous snapshot.
 fn observations_for(
     venue: &Venue,
     catalog: &CourtCatalog,
     requested: NaiveDate,
     resources: Vec<ResourceAvailabilityDto>,
 ) -> Result<Vec<SlotObservation>> {
-    // Keyed on the composed UTC instant, not on `(resource_id, start_time)`:
-    // "18:00" recurs on every date, so the latter would fold a whole week of
-    // fetches onto one slot. BTreeMap so the output order is deterministic.
     let mut shortest: BTreeMap<(Uuid, DateTime<Utc>), i64> = BTreeMap::new();
 
     for resource in resources {
-        // The cheap guard that turns a date-semantics change into a visible
-        // error rather than a silent off-by-one-day.
+        // Partial days look like newly booked slots to the monitor.
         anyhow::ensure!(
             resource.start_date == requested,
             "venue {}: asked playtomic for {requested} but resource {} came back for {}",
@@ -125,8 +111,7 @@ fn observations_for(
             if slot.duration <= 0 {
                 continue;
             }
-            // `start_time` is already UTC — no timezone conversion. Reading it
-            // as club-local would shift every alert by the club's offset.
+            // start_time is UTC even though requests are keyed by a club-local date.
             let starts_at = Utc.from_utc_datetime(&resource.start_date.and_time(slot.start_time));
             shortest
                 .entry((resource.resource_id, starts_at))
@@ -140,21 +125,14 @@ fn observations_for(
         .map(|((resource_id, starts_at), duration)| SlotObservation {
             venue_id: venue.id.clone(),
             court_id: resource_id,
-            // An unknown resource keeps its bare UUID rather than vanishing, so
-            // a newly added court still alerts — ugly but visible.
             court_name: catalog
                 .courts()
                 .iter()
                 .find(|court| court.id() == resource_id)
                 .map_or_else(|| resource_id.to_string(), |court| court.name().to_owned()),
             starts_at,
-            // `ends_at` is the *shortest* bookable duration at this start, not
-            // a fixed hour: a fifth of starts cannot be booked for 60 minutes,
-            // and advertising 18:00–19:00 for one of those would be a lie.
             ends_at: starts_at + Duration::minutes(duration),
-            // The API only lists what is free, so there is no booking deadline
-            // to model — but a slot that has already started cannot be booked,
-            // and this is the field `into_bookable` already checks for that.
+            // No deadline is provided; started slots are no longer bookable.
             booking_closes_at: Some(starts_at),
             available_places: 1,
             already_booked: false,
@@ -165,7 +143,6 @@ fn observations_for(
         .collect())
 }
 
-/// Runs the opening-hours canary over a day's observations.
 pub(super) fn run_canary(
     venue_id: &str,
     timezone: &str,
@@ -181,8 +158,6 @@ pub(super) fn run_canary(
         .iter()
         .map(|observation| observation.starts_at.with_timezone(&tz))
         .min()
-        // Comparing a time-of-day only makes sense if the slot lands on the
-        // day it was requested for; a club open past local midnight would not.
         .filter(|local| local.date_naive() == date)
         .map(|local| local.time());
     check_opening_hours(venue_id, timezone, opening_time, earliest);
@@ -251,8 +226,6 @@ mod tests {
             .find(|o| o.court_id == court_id(court) && o.starts_at == wanted)
     }
 
-    /// The regression test for the two-hour bug: `start_time` is UTC, so
-    /// 05:00:00 is 07:00 Berlin — exactly when the club opens.
     #[test]
     fn a_start_time_is_utc_and_renders_as_berlin_wall_clock() {
         let first = at(COURT_1, 5, 0).expect("05:00 UTC slot");
@@ -263,8 +236,6 @@ mod tests {
         );
     }
 
-    /// Measured on a real day: a fifth of starts cannot be booked for an hour,
-    /// so a hardcoded 60 would advertise a slot that does not exist.
     #[test]
     fn ends_at_uses_the_shortest_bookable_duration_at_that_start() {
         let hour = at(COURT_1, 5, 0).expect("05:00 slot offers 60");
@@ -279,8 +250,6 @@ mod tests {
 
     #[test]
     fn durations_collapse_to_one_slot_per_start() {
-        // The fixture holds more rows than starts precisely because most starts
-        // offer several durations.
         let rows: usize = parse(SAMPLE).iter().map(|r| r.slots.len()).sum();
         let starts = observations().len();
 
@@ -288,9 +257,6 @@ mod tests {
         assert_eq!(starts, 5);
     }
 
-    /// The bug the composed-instant key exists to prevent: "18:00" recurs on
-    /// every date, so keying on `(resource_id, start_time)` would fold a week
-    /// of fetches onto a single slot.
     #[test]
     fn the_same_start_time_on_two_dates_stays_two_slots() {
         let monday = NaiveDate::from_ymd_opt(2026, 8, 10).unwrap();
@@ -315,8 +281,6 @@ mod tests {
         assert_eq!(at(COURT_1, 5, 0).unwrap().court_name, "Court 1 (Indoor)");
     }
 
-    /// A newly added court must still alert, ugly but visible, rather than
-    /// silently vanishing from the poll.
     #[test]
     fn an_unknown_resource_keeps_its_bare_uuid() {
         let unknown = Uuid::from_u128(4242);
@@ -332,10 +296,6 @@ mod tests {
         assert_eq!(observations[0].court_name, unknown.to_string());
     }
 
-    /// A mismatched `start_date` fails the fetch rather than yielding a
-    /// partial day. Silently dropping the resource would leave a gap the
-    /// monitor reads as "these slots became unbookable", DMing everyone
-    /// watching them and DMing them again when the next poll restored them.
     #[test]
     fn a_response_for_the_wrong_date_fails_the_fetch() {
         let raw = format!(
@@ -351,8 +311,6 @@ mod tests {
         assert!(message.contains("2026-08-06"), "got: {message}");
     }
 
-    /// The mismatch must fail the day even when other resources look fine —
-    /// a partially correct day is exactly the shape that causes false alerts.
     #[test]
     fn one_wrong_date_among_several_still_fails_the_fetch() {
         let raw = format!(
@@ -365,8 +323,6 @@ mod tests {
         assert!(observations_for(&venue(), &catalog(), sample_date(), parse(&raw)).is_err());
     }
 
-    /// The API lists only what is free, so there is no booking deadline — but a
-    /// slot that has already started cannot be booked either.
     #[test]
     fn a_slot_that_has_already_started_is_not_bookable() {
         let slot = at(COURT_1, 5, 0).unwrap();

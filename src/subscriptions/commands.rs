@@ -95,11 +95,6 @@ impl SubscriptionService {
         }
     }
 
-    /// Everything that has to hold before a reminder is worth storing.
-    ///
-    /// `Err` carries the reply explaining why, not a failure: each of these is
-    /// a normal answer to the user, so they are separated from the `Result` the
-    /// storage call returns.
     #[allow(clippy::too_many_arguments)]
     fn validate_subscribe(
         &self,
@@ -141,8 +136,6 @@ impl SubscriptionService {
                 available: self.court_names(sport, venue.as_ref()),
             })?;
 
-        // A filter the user asked for explicitly is checked against the courts
-        // they named; a defaulted one is not, since it was not their choice.
         if let Some(chosen) = filter
             && let Some(excluded) =
                 self.courts_excluded_by(sport, venue.as_ref(), chosen, courts.as_deref())
@@ -164,7 +157,6 @@ impl SubscriptionService {
         })
     }
 
-    /// Resolves a stored subscription for display, naming its club.
     fn summarize(&self, sub: Subscription) -> SubscriptionSummary {
         let club = sub.venue.as_ref().map(|venue_id| {
             self.registry
@@ -213,9 +205,6 @@ impl SubscriptionService {
         }
     }
 
-    /// The default is per sport, not one shared field: `surface_filter` is a
-    /// tennis setting, and letting `/padel` inherit it would hand every padel
-    /// subscription a clay filter that can never match.
     fn resolve_filter(
         &self,
         sport: Sport,
@@ -223,7 +212,6 @@ impl SubscriptionService {
         courts: Option<&[String]>,
     ) -> CourtFilter {
         chosen.unwrap_or(match (sport, courts) {
-            // Naming courts means those courts, whatever they are made of.
             (_, Some(_)) => CourtFilter::Any,
             (Sport::Tennis, None) => self.tennis_default_filter,
             (Sport::Padel, None) => CourtFilter::Any,
@@ -752,8 +740,6 @@ mod tests {
         }
     }
 
-    /// `surface_filter` is a tennis setting. Inheriting it would hand every
-    /// padel subscription a clay filter, which can never match a padel court.
     #[tokio::test]
     async fn padel_does_not_inherit_the_configured_tennis_default() {
         let svc = service_defaulting_to_clay().await;
@@ -814,9 +800,6 @@ mod tests {
         );
     }
 
-    /// The state at build-order step 4: `/padel` exists before any padel venue
-    /// does, and has to say so rather than storing a subscription that can
-    /// never fire.
     #[tokio::test]
     async fn padel_with_no_configured_club_says_so_and_stores_nothing() {
         let svc = service_without_padel().await;
@@ -837,7 +820,6 @@ mod tests {
         );
     }
 
-    /// `/subscribe` keeps its own default, unaffected by the split.
     #[tokio::test]
     async fn tennis_still_takes_the_configured_default() {
         let svc = service_defaulting_to_clay().await;

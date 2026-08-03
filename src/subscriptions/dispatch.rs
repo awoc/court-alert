@@ -169,9 +169,6 @@ mod tests {
         assert_eq!(sent[0].1.slots[0].court, "Court 2");
     }
 
-    /// The gap venue-scoping stopped short of everywhere else: a subscriber to
-    /// "all clubs" gets alerts for courts that are all called "Court 1", so the
-    /// club has to be on the alert or the DM is unactionable.
     #[tokio::test]
     async fn an_alert_names_the_club_each_court_belongs_to() {
         let svc = service().await;
@@ -187,7 +184,6 @@ mod tests {
         assert_eq!(sent[0].1.slots[0].club, "ZHS München");
     }
 
-    /// Two clubs, two courts of the same name: the alert has to tell them apart.
     #[tokio::test]
     async fn courts_of_the_same_name_at_different_clubs_are_distinguishable() {
         let svc = service().await;
@@ -197,7 +193,7 @@ mod tests {
             &uref("1"),
             SubscriptionCommand::Subscribe {
                 sport: Sport::Padel,
-                venue: None, // every padel club
+                venue: None,
                 schedule: Schedule::Weekday(chrono::Weekday::Tue),
                 start_minute: 18 * 60,
                 end_minute: 22 * 60,

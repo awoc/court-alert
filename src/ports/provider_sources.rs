@@ -5,17 +5,12 @@ use crate::model::Provider;
 
 use super::{CourtCatalogSource, VenueAvailabilitySource};
 
-/// The adapters serving one provider.
 #[derive(Clone)]
 pub struct ProviderAdapters {
     pub availability: Arc<dyn VenueAvailabilitySource>,
     pub catalogs: Arc<dyn CourtCatalogSource>,
 }
 
-/// Which adapters serve which provider.
-///
-/// Lives with the ports rather than with either side: the monitor consumes it
-/// and the booking adapters fill it, so neither has to depend on the other.
 #[derive(Default)]
 pub struct ProviderSources(HashMap<Provider, ProviderAdapters>);
 

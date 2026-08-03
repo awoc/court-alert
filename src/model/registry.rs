@@ -5,23 +5,12 @@ use uuid::Uuid;
 
 use super::{CourtAttributes, CourtCatalog, Sport, Venue, VenueId};
 
-/// Whether a venue's court catalog is known yet.
-///
-/// ZHS catalogs come from config and are `Ready` from the first moment.
-/// Playtomic catalogs are scraped at runtime, so a venue starts `Unresolved`
-/// and its loop is what fills it in — which is why the registry is shared
-/// mutable state rather than a value handed out at startup.
 #[derive(Debug, Clone)]
 pub enum CatalogState {
     Unresolved,
     Ready(Arc<CourtCatalog>),
 }
 
-/// Written only by a venue's own loop after discovery; read by everything else.
-///
-/// One map, not one per fact: a catalog and a sport belong to the same venue,
-/// and parallel maps would let them drift — a catalog under a venue with no
-/// sport would be dropped silently by every sport-scoped consumer.
 #[derive(Debug, Default)]
 pub struct VenueRegistry {
     venues: HashMap<VenueId, VenueInfo>,
@@ -39,7 +28,6 @@ impl VenueRegistry {
         Self::default()
     }
 
-    /// Registers a venue, keeping any catalog it has already resolved.
     pub fn register(&mut self, venue: &Venue) {
         let catalog = self
             .venues
@@ -55,13 +43,6 @@ impl VenueRegistry {
         );
     }
 
-    /// Records a venue's courts and hands the stored catalog back, so a caller
-    /// that needs it does not have to take a second lock to read its own write.
-    ///
-    /// `None` means the venue was never registered. That is a wiring bug rather
-    /// than a runtime condition — inventing an entry for it would produce a
-    /// venue with courts but no sport, which every sport-scoped consumer would
-    /// then discard without saying why.
     pub fn set_catalog(
         &mut self,
         venue_id: &VenueId,
@@ -77,9 +58,6 @@ impl VenueRegistry {
         self.venues.get(venue_id).map(|venue| &venue.catalog)
     }
 
-    /// Returns an owned `Arc` so callers can drop the registry guard before
-    /// awaiting: holding a read lock across a slow HTTP call would stall every
-    /// other venue's loop.
     pub fn catalog(&self, venue_id: &VenueId) -> Option<Arc<CourtCatalog>> {
         match self.venues.get(venue_id).map(|venue| &venue.catalog) {
             Some(CatalogState::Ready(catalog)) => Some(catalog.clone()),
@@ -97,15 +75,12 @@ impl VenueRegistry {
             .map(|venue| venue.display_name.as_str())
     }
 
-    /// The club's name for a message, falling back to its id so an alert is
-    /// never labelled with a blank.
     pub fn club_label(&self, venue_id: &VenueId) -> String {
         self.display_name(venue_id)
             .unwrap_or_else(|| venue_id.as_str())
             .to_owned()
     }
 
-    /// Every venue of a sport, resolved or not, in stable venue-id order.
     pub fn venues_of_sport(&self, sport: Sport) -> Vec<VenueId> {
         let mut found: Vec<VenueId> = self
             .venues
@@ -124,7 +99,6 @@ impl VenueRegistry {
         }
     }
 
-    /// Every resolved venue of a sport, in stable venue-id order.
     pub fn catalogs_for_sport(&self, sport: Sport) -> Vec<(VenueId, Arc<CourtCatalog>)> {
         self.venues_of_sport(sport)
             .into_iter()
@@ -218,10 +192,6 @@ mod tests {
         assert!(registry.catalog(&venue()).is_some());
     }
 
-    /// The invariant the single map exists to hold: courts and a sport belong
-    /// to the same venue. Accepting a catalog for an unregistered venue would
-    /// create one with courts but no sport, which every sport-scoped consumer
-    /// — the broadcast guard, the matcher — would then discard without a word.
     #[test]
     fn a_catalog_cannot_be_stored_for_an_unregistered_venue() {
         let mut registry = VenueRegistry::new();

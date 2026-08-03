@@ -4,11 +4,6 @@ use std::str::FromStr;
 use serde::{Deserialize, Deserializer};
 use uuid::Uuid;
 
-/// A venue's stable configuration key.
-///
-/// It is deliberately explicit rather than derived from the display name, slug
-/// or tenant id, all of which can change: it is the join key for
-/// `bookable_slots.venue_id`, so renaming a club must never orphan its rows.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VenueId(String);
 
@@ -102,11 +97,6 @@ impl fmt::Display for Provider {
     }
 }
 
-/// What it takes to talk to a venue's provider.
-///
-/// `provider` is the tag rather than a separate field so that a ZHS venue
-/// carrying a `tenant_id` is a parse error instead of a contradiction the
-/// validator has to catch later.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "provider", rename_all = "lowercase")]
 pub enum VenueIdentity {
@@ -123,19 +113,12 @@ impl VenueIdentity {
     }
 }
 
-/// The unit of monitoring: one club, at one provider, for one sport.
-///
-/// `sport` is a separate axis from the provider because Playtomic serves
-/// tennis, football and beach volleyball clubs too. It supplies Playtomic's
-/// `sport_id` parameter, decides which slash command targets a venue, and
-/// decides which attribute vocabulary the venue's courts may use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Venue {
     pub id: VenueId,
     pub display_name: String,
     pub sport: Sport,
     pub identity: VenueIdentity,
-    /// Per-venue overrides; `None` falls back to the global setting.
     pub poll_interval_secs: Option<u64>,
     pub lookahead_days: Option<i64>,
     pub operating_window: Option<OperatingWindow>,
@@ -147,7 +130,7 @@ impl Venue {
     }
 }
 
-/// Berlin-local hours during which a venue is worth polling, half-open.
+/// Half-open Berlin-local operating hours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OperatingWindow {
     pub start_hour: u32,
@@ -209,8 +192,6 @@ mod tests {
             }
         );
 
-        // A ZHS venue carrying Playtomic fields fails to parse rather than
-        // silently ignoring them.
         assert!(
             toml::from_str::<VenueIdentity>(
                 "provider = \"zhs\"\ntenant_id = \"00000000-0000-0000-0000-000000000000\"\nslug = \"x\""

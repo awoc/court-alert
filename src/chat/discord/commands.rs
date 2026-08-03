@@ -89,18 +89,12 @@ fn build_subscribe_cmd() -> CreateCommand {
     )
 }
 
-/// `/padel` deliberately has no `courts` option: padel court names are
-/// discovered and periodically refreshed, so a name-based selector would
-/// silently stop matching when a club renames a court. It arrives with the
-/// switch to UUID selectors.
 fn build_padel_cmd(clubs: &[(VenueId, String)]) -> CreateCommand {
     let command = with_day_from_to(
         CreateCommand::new("padel")
             .description("Get a DM when padel courts become free in a time window"),
     );
 
-    // With no clubs configured the option is omitted rather than offered as
-    // free text that would accept anything; the handler explains instead.
     let command = if clubs.is_empty() {
         command
     } else {
@@ -110,9 +104,6 @@ fn build_padel_cmd(clubs: &[(VenueId, String)]) -> CreateCommand {
             "Club to watch; defaults to all clubs",
         )
         .required(false);
-        // Config rejects anything beyond the limit, so this cannot truncate
-        // silently; the guard is belt-and-braces against an over-long list
-        // reaching Discord and having the whole registration rejected.
         for (id, display_name) in clubs.iter().take(MAX_CLUB_CHOICES) {
             club = club.add_string_choice(display_name, id.as_str());
         }
@@ -204,8 +195,6 @@ mod tests {
         );
     }
 
-    /// A choice-less string option would silently accept any text, so with no
-    /// clubs the option is left out and the handler explains why.
     #[test]
     fn padel_omits_the_club_option_when_no_club_is_configured() {
         let names = option_names(&build_padel_cmd(&[]));
@@ -214,9 +203,6 @@ mod tests {
         assert!(names.contains(&"location".to_string()));
     }
 
-    /// Config refuses a configuration this large, so reaching the cap here
-    /// should be impossible — but registering an over-long option would have
-    /// Discord reject every command, so the list is clamped regardless.
     #[test]
     fn padel_never_exceeds_discords_choice_limit() {
         let command = build_padel_cmd(&clubs(MAX_CLUB_CHOICES + 5));
@@ -231,7 +217,6 @@ mod tests {
         assert_eq!(choice_values(&command, "club").len(), MAX_CLUB_CHOICES);
     }
 
-    /// Court selectors stay tennis-only for now — see `build_padel_cmd`.
     #[test]
     fn padel_has_no_courts_option() {
         assert!(!option_names(&build_padel_cmd(&clubs(1))).contains(&"courts".to_string()));

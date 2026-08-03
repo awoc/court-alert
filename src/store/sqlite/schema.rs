@@ -199,8 +199,6 @@ mod tests {
         assert!(conn.execute_batch(UPGRADE_TO_V4).is_err());
     }
 
-    /// 0004 drops the cache rather than migrating it, because there is no venue
-    /// to attribute pre-existing rows to.
     #[test]
     fn fourth_migration_drops_the_snapshot_cache() {
         let mut conn = legacy_database();
@@ -275,15 +273,12 @@ mod tests {
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
 
-        // 'all' becomes 'any' under the wider vocabulary; 'clay' is unchanged.
         assert_eq!(
             rows,
             vec![(false, "any".to_string()), (true, "clay".to_string())]
         );
     }
 
-    /// Existing rows all came from `/subscribe`, and "all tennis venues"
-    /// preserves today's behaviour without inventing a venue id.
     #[test]
     fn migration_back_fills_existing_subscriptions_as_tennis_at_every_venue() {
         let mut conn = legacy_database();
@@ -360,11 +355,9 @@ mod tests {
             "INSERT INTO subscriptions
              (provider, user_id, sport, weekday, start_minute, end_minute, courts, court_filter)
              VALUES ('discord', '12345', 'tennis', 2, 1080, 1320, 'Court 2', 'clay')",
-            // court_filter outside the known domain
             "INSERT INTO subscriptions
              (provider, user_id, sport, weekday, start_minute, end_minute, court_filter)
              VALUES ('discord', '12345', 'tennis', 2, 1080, 1320, 'grass')",
-            // sport outside the known domain
             "INSERT INTO subscriptions
              (provider, user_id, sport, weekday, start_minute, end_minute, court_filter)
              VALUES ('discord', '12345', 'squash', 2, 1080, 1320, 'any')",
@@ -376,7 +369,6 @@ mod tests {
             "INSERT INTO bookable_slots
              VALUES ('zhs-munich', '123e4567-e89b-12d3-a456-426614174000', 'Court 1',
                      '2026-07-13T09:00:00.000Z', '2026-07-13T08:00:00.000Z', 2)",
-            // slot with no venue to scope its replacement by
             "INSERT INTO bookable_slots
              VALUES ('', '123e4567-e89b-12d3-a456-426614174000', 'Court 1',
                      '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z', 2)",

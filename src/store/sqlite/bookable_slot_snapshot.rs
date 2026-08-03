@@ -54,11 +54,6 @@ impl BookableSlotSnapshotRepository for SqliteStore {
         venue_id: &VenueId,
         slots: Vec<BookableSlot>,
     ) -> Result<()> {
-        // The delete is scoped to one venue but the insert takes each row's own
-        // `venue_id`, so a foreign slot would be written under a venue this
-        // call never clears — invisible to both loops' `load_venue_snapshot`,
-        // re-inserted every tick, and lingering in the global snapshot that
-        // feeds the subscribe preview.
         if let Some(foreign) = slots.iter().find(|slot| slot.venue_id != *venue_id) {
             anyhow::bail!(
                 "slot for court {} belongs to venue {} but is being written under {venue_id}",
@@ -107,8 +102,6 @@ impl BookableSlotSnapshotRepository for SqliteStore {
     async fn delete_snapshots_except(&self, venue_ids: &[VenueId]) -> Result<u64> {
         let kept: Vec<String> = venue_ids.iter().map(VenueId::to_string).collect();
         self.with_conn("sweep_removed_venue_slots", move |connection| {
-            // `NOT IN ()` is not valid SQL, so an empty configuration — which
-            // startup rejects anyway — clears the table rather than crashing.
             let placeholders = (1..=kept.len())
                 .map(|i| format!("?{i}"))
                 .collect::<Vec<_>>()
@@ -298,8 +291,6 @@ mod tests {
         assert_eq!(store.load_snapshot().await.unwrap().len(), 1);
     }
 
-    /// The failure mode scoped replacement exists to prevent: one venue's
-    /// blip must not delete another's rows and have them re-announced.
     #[tokio::test]
     async fn a_venue_snapshot_load_sees_only_its_own_slots() {
         let store = SqliteStore::open_in_memory().await.unwrap();
@@ -353,9 +344,6 @@ mod tests {
         assert!(!store.is_initialised(&padel()).await.unwrap());
     }
 
-    /// Swept alongside the slots. A marker that outlived its slots would make a
-    /// re-added venue look established with an empty snapshot, so its first
-    /// poll would announce its entire horizon at once.
     #[tokio::test]
     async fn the_sweep_forgets_venues_no_longer_configured() {
         let store = SqliteStore::open_in_memory().await.unwrap();
@@ -371,8 +359,6 @@ mod tests {
         );
     }
 
-    /// The method replaces *one* venue's slots, so it has to refuse a slot that
-    /// is not that venue's rather than writing it somewhere neither loop sweeps.
     #[tokio::test]
     async fn a_slot_from_another_venue_is_refused() {
         let store = SqliteStore::open_in_memory().await.unwrap();
@@ -393,7 +379,6 @@ mod tests {
         );
     }
 
-    /// Marked on every successful poll, so it has to be idempotent.
     #[tokio::test]
     async fn marking_a_venue_twice_is_harmless() {
         let store = SqliteStore::open_in_memory().await.unwrap();

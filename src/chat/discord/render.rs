@@ -173,8 +173,6 @@ fn summary_line(s: &SubscriptionSummary) -> String {
     )
 }
 
-/// A subscription with no club watches every club of its sport, and that has
-/// to read as such — a blank would be indistinguishable from one named club.
 fn club_label(s: &SubscriptionSummary) -> String {
     match &s.club {
         Some(club) => club.clone(),
@@ -447,9 +445,6 @@ mod tests {
         assert!(text.contains("`clay`"));
     }
 
-    /// A blank would be indistinguishable from a named club, so "all clubs"
-    /// has to be spelled out — and it names the sport, since that is what
-    /// bounds it.
     #[test]
     fn a_subscription_without_a_club_reads_as_all_clubs_of_its_sport() {
         let mut s = summary();

@@ -5,9 +5,7 @@ use super::{AvailableSlotSummary, OwnedSubscriptionSummary, SubscriptionSummary}
 #[derive(Debug, Clone)]
 pub enum SubscriptionCommand {
     Subscribe {
-        /// Which command this came from: `/subscribe` is tennis, `/padel` padel.
         sport: Sport,
-        /// `None` = every club of that sport.
         venue: Option<VenueId>,
         schedule: Schedule,
         start_minute: u32,
@@ -45,8 +43,6 @@ pub enum SubscriptionResult {
         unknown: String,
         available: Vec<String>,
     },
-    /// The command exists but has nothing to watch — `/padel` with no padel
-    /// venue configured, for instance.
     NoClubsConfigured {
         sport: Sport,
     },

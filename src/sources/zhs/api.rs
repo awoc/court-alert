@@ -18,9 +18,6 @@ const BOOKING_SLOTS_QUERY: &str = "\nquery List_product_slots($productID: UUID!,
 
 const MAX_ATTEMPTS: u32 = 3;
 
-/// ZHS is per-product, so the venue fetch fans out over its courts. Kept low so
-/// the pooled TLS connection is reused: on the armv7 deploy target the
-/// handshake, not the JSON, is what costs CPU.
 const MAX_CONCURRENT_COURT_FETCHES: usize = 4;
 
 pub struct ZhsSlotAvailabilitySource {
@@ -385,8 +382,6 @@ mod tests {
         assert_eq!(slots.len(), 2);
     }
 
-    /// The port is venue-granular, so one call covers the whole catalog and
-    /// stamps every observation with the venue it came from.
     #[tokio::test]
     async fn a_venue_fetch_covers_every_court_in_its_catalog() {
         use crate::model::{
@@ -404,7 +399,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/api/query"))
             .respond_with(ResponseTemplate::new(200).set_body_json(sample_slots_response()))
-            .expect(2) // one request per court
+            .expect(2)
             .mount(&server)
             .await;
 
@@ -436,7 +431,7 @@ mod tests {
 
         let observations = source.fetch(&venue, &catalog, start, end).await.unwrap();
 
-        assert_eq!(observations.len(), 4); // 2 slots × 2 courts
+        assert_eq!(observations.len(), 4);
         assert!(observations.iter().all(|o| o.venue_id == venue.id));
         let names: HashSet<&str> = observations.iter().map(|o| o.court_name.as_str()).collect();
         assert_eq!(names, HashSet::from(["Court 2", "Court 5"]));

@@ -5,8 +5,6 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     provider     TEXT    NOT NULL CHECK (provider <> ''),
     user_id      TEXT    NOT NULL CHECK (user_id <> ''),
-    -- Which command created the row. NULL `venue` means "every venue of this
-    -- sport", so without it a padel subscription would match tennis courts.
     sport        TEXT    NOT NULL CHECK (sport IN ('tennis', 'padel')),
     venue        TEXT    CHECK (venue IS NULL OR venue <> ''),
     weekday      INTEGER CHECK (weekday BETWEEN 0 AND 6),
@@ -14,8 +12,6 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     start_minute INTEGER NOT NULL CHECK (start_minute BETWEEN 0 AND 1440),
     end_minute   INTEGER NOT NULL CHECK (end_minute BETWEEN 0 AND 1440),
     courts       TEXT    CHECK (courts IS NULL OR (json_valid(courts) AND json_type(courts) = 'array')),
-    -- Spans both sports' vocabularies, hence the name: a column called
-    -- `surface` holding 'indoor' would mislead every future reader.
     court_filter TEXT    NOT NULL
                          CHECK (court_filter IN ('any', 'clay', 'synthetic', 'indoor', 'outdoor')),
     created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -29,8 +25,6 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 CREATE INDEX IF NOT EXISTS subscriptions_user_idx ON subscriptions (provider, user_id);
 
 -- Last observed snapshot of bookable slots; rewritten per venue on every poll.
--- `venue_id` is a scope tag for that replacement, not part of the identity:
--- court ids are UUIDs and unique across venues already.
 CREATE TABLE IF NOT EXISTS bookable_slots (
     venue_id         TEXT    NOT NULL CHECK (venue_id <> ''),
     court_id         TEXT    NOT NULL CHECK (length(court_id) = 36),
@@ -42,13 +36,9 @@ CREATE TABLE IF NOT EXISTS bookable_slots (
     CHECK (ends_at > starts_at)
 ) STRICT, WITHOUT ROWID;
 
--- WITHOUT ROWID keyed on (court_id, starts_at), so a venue-scoped DELETE would
--- otherwise scan the table.
 CREATE INDEX IF NOT EXISTS bookable_slots_venue_idx ON bookable_slots (venue_id);
 
--- Records that a venue has completed a poll, so that "no rows" can be told
--- apart from "never polled". Inferring it from an empty slice would silence the
--- first batch of a club that happened to be fully booked at startup.
+-- Tracks completed polls even when a venue has no free slots.
 CREATE TABLE IF NOT EXISTS venue_state (
     venue_id       TEXT NOT NULL PRIMARY KEY CHECK (venue_id <> ''),
     initialised_at TEXT NOT NULL

@@ -13,11 +13,6 @@ pub(super) fn fmt_slot_line(court: &str, start: DateTime<Utc>, end: DateTime<Utc
     )
 }
 
-/// The same line, named by club.
-///
-/// Direct messages can span clubs — `/padel` without a club watches all of
-/// them — and "Court 1" is not a unique name across padel clubs. The broadcast
-/// webhook stays with the unlabelled form: it carries one venue by construction.
 pub(super) fn fmt_club_slot_line(
     club: &str,
     court: &str,

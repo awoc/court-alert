@@ -62,8 +62,6 @@ pub fn readiness(n: usize) -> (Vec<ReadySignal>, ReadyBarrier) {
 }
 
 pub fn validate_configuration(config: &Config) -> Result<()> {
-    // Beyond this, `/padel` could not offer every club by name, and quietly
-    // dropping the rest would leave them selectable only through "all clubs".
     let padel_venues = config
         .venues()
         .iter()

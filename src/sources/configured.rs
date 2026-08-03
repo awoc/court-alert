@@ -6,10 +6,6 @@ use async_trait::async_trait;
 use crate::model::{CourtCatalog, Venue, VenueId};
 use crate::ports::CourtCatalogSource;
 
-/// The catalog source for providers that declare their courts in config.
-///
-/// Discovery is a lookup, which keeps every venue's loop the same shape:
-/// discover, then fetch.
 pub struct ConfiguredCatalogSource {
     catalogs: HashMap<VenueId, CourtCatalog>,
 }

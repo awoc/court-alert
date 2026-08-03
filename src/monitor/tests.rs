@@ -47,9 +47,6 @@ fn observation(court: &Court) -> SlotObservation {
     }
 }
 
-/// Suppression follows the `venue_state` marker, not the slice being empty: a
-/// single club can legitimately be fully booked across its whole horizon, and
-/// inferring from emptiness would swallow its next batch of freed slots.
 #[test]
 fn a_fully_booked_venue_at_restart_is_not_treated_as_new() {
     let uninitialised = MonitorState::new(BookableSlotSnapshot::new(), true);
@@ -73,8 +70,6 @@ async fn a_venue_is_only_new_until_its_first_successful_poll() {
     assert!(store.is_initialised(&venue.id).await.unwrap());
 }
 
-/// Each loop diffs against its own slice only. Against the global snapshot it
-/// would report every other venue's slots as unbookable, every tick.
 #[tokio::test]
 async fn a_venue_loads_only_its_own_previous_slots() {
     let store = SqliteStore::open_in_memory().await.unwrap();
@@ -141,14 +136,10 @@ fn a_resolved_catalog_is_fresh_until_the_refresh_interval() {
     state.succeeded();
     assert!(!state.is_stale());
 
-    // An unknown resource id in an availability response forces a refresh
-    // without waiting for the daily cadence.
     state.invalidate();
     assert!(state.is_stale());
 }
 
-/// Invalidation must not reset the backoff, or a club that keeps returning an
-/// unknown court would retry discovery every tick.
 #[test]
 fn invalidating_a_catalog_leaves_the_backoff_alone() {
     let mut state = DiscoveryState::default();
@@ -168,8 +159,6 @@ fn venues_are_phase_offset_evenly_across_the_interval() {
     assert_eq!(phase_offset(3, 4, 300), Duration::from_secs(225));
 }
 
-/// A provider outage must not become one webhook message per venue per tick,
-/// forever: only the transitions in and out of failure are reported at WARN.
 #[test]
 fn repeated_failures_are_reported_once_per_run() {
     let venue = venue();
@@ -276,8 +265,6 @@ fn snapshot_excludes_observations_that_are_not_bookable() {
     assert!(snapshot.is_empty());
 }
 
-/// A loop wired to controllable adapters, so the failure paths around
-/// discovery can be driven directly rather than inferred from their parts.
 mod loop_harness {
     use super::*;
     use crate::model::CourtCatalog;
@@ -354,7 +341,6 @@ mod loop_harness {
                 venue: venue(),
                 interval: Duration::from_secs(300),
                 lookahead_days: 7,
-                // Always open, so the window never masks what is under test.
                 operating_window: OperatingWindow::new(0, 24).unwrap(),
                 quiet_first_poll,
                 registry: Arc::new(RwLock::new(registry)),
@@ -381,9 +367,6 @@ mod loop_harness {
         h.published.0.lock().unwrap().len()
     }
 
-    /// The failure the backoff must not cause: a club page that is down does
-    /// not stop the venue polling, because the catalog it already has is
-    /// perfectly usable.
     #[tokio::test]
     async fn a_backed_off_venue_keeps_polling_with_its_cached_catalog() {
         let h = harness(false).await;
@@ -393,8 +376,6 @@ mod loop_harness {
         h.loop_.tick(&mut state, &mut catalog).await.unwrap();
         assert_eq!(fetches(&h), 1);
 
-        // The club page goes down and the catalog is invalidated, so every
-        // later tick wants to re-discover and fails.
         h.catalogs.failing.store(true, Ordering::SeqCst);
         catalog.invalidate();
 
@@ -413,8 +394,6 @@ mod loop_harness {
         }
     }
 
-    /// With no catalog at all there is nothing to poll with, so the tick is
-    /// skipped — but it must not read as a success.
     #[tokio::test]
     async fn a_venue_that_never_resolved_skips_rather_than_succeeding() {
         let h = harness(false).await;
@@ -434,8 +413,6 @@ mod loop_harness {
         );
     }
 
-    /// A sustained outage must not flap between "failed" and "recovered" in the
-    /// error channel, which is what counting a skipped tick as a success did.
     #[test]
     fn a_skipped_tick_leaves_the_failure_run_untouched() {
         let venue = venue();
@@ -443,7 +420,6 @@ mod loop_harness {
         failures.failed(&venue, &anyhow::anyhow!("club page down"));
         assert!(failures.failing);
 
-        // What the run loop now does for TickOutcome::Skipped: nothing.
         assert!(
             failures.failing,
             "a skipped tick must not clear the failure run"
@@ -453,9 +429,6 @@ mod loop_harness {
         assert!(!failures.failing, "a real poll still clears it");
     }
 
-    /// Publishing happens once. A marker write that fails afterwards must not
-    /// leave `previous` stale, or the next tick recomputes the same changes and
-    /// sends every alert a second time.
     #[tokio::test]
     async fn a_poll_publishes_its_changes_exactly_once() {
         let h = harness(false).await;
