@@ -103,6 +103,66 @@ async fn a_venue_loads_only_its_own_previous_slots() {
     assert!(diff_availability(&previous, &ours).is_empty());
 }
 
+/// A club whose page is unreachable must not keep hammering it every tick.
+#[test]
+fn discovery_backs_off_after_consecutive_failures_and_recovers() {
+    let mut state = CatalogState::default();
+    assert!(state.may_attempt(), "the first attempt is never delayed");
+
+    state.failed();
+    assert!(
+        !state.may_attempt(),
+        "one tick is skipped after one failure"
+    );
+    assert!(state.may_attempt());
+
+    state.failed();
+    state.failed();
+    let skipped = (0..10).take_while(|_| !state.may_attempt()).count();
+    assert!(skipped >= 3, "backoff did not grow: skipped {skipped}");
+
+    state.succeeded();
+    assert!(state.may_attempt(), "a success clears the backoff");
+}
+
+#[test]
+fn the_backoff_is_capped() {
+    let mut state = CatalogState::default();
+    for _ in 0..20 {
+        state.failed();
+    }
+    assert_eq!(state.ticks_to_skip, MAX_DISCOVERY_BACKOFF_TICKS);
+}
+
+/// Startup-only discovery goes stale: a club renames or adds a court and
+/// nobody tells us.
+#[test]
+fn a_resolved_catalog_is_fresh_until_the_refresh_interval() {
+    let mut state = CatalogState::default();
+    assert!(state.is_stale(), "an unresolved catalog is always stale");
+
+    state.succeeded();
+    assert!(!state.is_stale());
+
+    // An unknown resource id in an availability response forces a refresh
+    // without waiting for the daily cadence.
+    state.invalidate();
+    assert!(state.is_stale());
+}
+
+/// Invalidation must not reset the backoff, or a club that keeps returning an
+/// unknown court would retry discovery every tick.
+#[test]
+fn invalidating_a_catalog_leaves_the_backoff_alone() {
+    let mut state = CatalogState::default();
+    state.failed();
+    state.failed();
+
+    state.invalidate();
+
+    assert!(state.ticks_to_skip > 0);
+}
+
 #[test]
 fn venues_are_phase_offset_evenly_across_the_interval() {
     assert_eq!(phase_offset(0, 1, 300), Duration::ZERO);

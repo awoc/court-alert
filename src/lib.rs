@@ -1,9 +1,11 @@
 pub mod app;
+pub mod catalog;
 pub mod config;
 pub mod model;
 pub mod monitor;
 pub mod notify;
 pub mod parsing;
+pub mod playtomic;
 pub mod ports;
 pub mod providers;
 pub mod store;

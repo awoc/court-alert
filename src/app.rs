@@ -4,11 +4,15 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use tracing::{info, warn};
 
+use crate::catalog::ConfiguredCatalogSource;
 use crate::config::{Config, Settings};
 use crate::model::{Provider, Sport, VenueIdentity, VenueRegistry};
-use crate::monitor::Monitor;
+use crate::monitor::{Monitor, ProviderSources};
 use crate::notify::{ChannelSink, DiscordNotifier, SportScopedSink, SurfaceFilteredSink};
-use crate::ports::{AvailabilityChangeSink, VenueAvailabilitySource};
+use crate::playtomic::{
+    ClubDirectory, PlaytomicAvailabilitySource, PlaytomicCatalogSource, PlaytomicClient,
+};
+use crate::ports::AvailabilityChangeSink;
 use crate::providers::{self, ChatProvider};
 use crate::store::SqliteStore;
 use crate::subscriptions::{BerlinClock, SubscriptionService};
@@ -19,7 +23,7 @@ const PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 pub struct App {
     config: Config,
     registry: Arc<RwLock<VenueRegistry>>,
-    slot_source: Arc<dyn VenueAvailabilitySource>,
+    sources: ProviderSources,
     sinks: Vec<Arc<dyn AvailabilityChangeSink>>,
     chat_providers: Vec<Box<dyn ChatProvider>>,
     store: Arc<SqliteStore>,
@@ -74,14 +78,12 @@ impl App {
             "starting court-alert"
         );
 
-        let slot_source: Arc<dyn VenueAvailabilitySource> = Arc::new(
-            ZhsSlotAvailabilitySource::new(zhs_auth(&config, settings.credentials)?),
-        );
+        let sources = build_sources(&config, settings.credentials)?;
 
         Ok(Self {
             config,
             registry,
-            slot_source,
+            sources,
             sinks,
             chat_providers,
             store,
@@ -93,7 +95,7 @@ impl App {
             Monitor::new(
                 self.config,
                 self.registry,
-                self.slot_source,
+                self.sources,
                 self.sinks,
                 self.store.clone(),
                 self.store,
@@ -109,7 +111,7 @@ impl App {
         let Self {
             config,
             registry,
-            slot_source,
+            sources,
             mut sinks,
             chat_providers,
             store,
@@ -140,7 +142,7 @@ impl App {
                         "chat providers not ready; starting monitor anyway"
                     ),
                 }
-                Monitor::new(config, registry, slot_source, sinks, store.clone(), store)
+                Monitor::new(config, registry, sources, sinks, store.clone(), store)
                     .run()
                     .await
             },
@@ -165,6 +167,45 @@ fn build_registry(config: &Config) -> VenueRegistry {
         }
     }
     registry
+}
+
+/// Wires one availability adapter and one catalog source per provider in use.
+///
+/// Playtomic's two adapters share a client, so every club reuses the same
+/// connection pool, and a directory, so the availability fetch can see the
+/// opening hours discovery read off the club page.
+fn build_sources(
+    config: &Config,
+    credentials: crate::config::Credentials,
+) -> Result<ProviderSources> {
+    let mut sources = ProviderSources::new();
+    let configured_catalogs = Arc::new(ConfiguredCatalogSource::new(config.catalogs().clone()));
+
+    if config.uses(Provider::Zhs) {
+        sources.insert(
+            Provider::Zhs,
+            Arc::new(ZhsSlotAvailabilitySource::new(zhs_auth(
+                config,
+                credentials,
+            )?)),
+            configured_catalogs.clone(),
+        );
+    }
+
+    if config.uses(Provider::Playtomic) {
+        let client = PlaytomicClient::new()?;
+        let directory = ClubDirectory::new();
+        sources.insert(
+            Provider::Playtomic,
+            Arc::new(PlaytomicAvailabilitySource::new(
+                client.clone(),
+                directory.clone(),
+            )),
+            Arc::new(PlaytomicCatalogSource::new(client, directory)),
+        );
+    }
+
+    Ok(sources)
 }
 
 /// One set of ZHS credentials covers one ZHS deployment, which is all there is.

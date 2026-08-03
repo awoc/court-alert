@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::{Timelike, Utc};
@@ -8,12 +9,12 @@ use tracing::{debug, info, warn};
 
 use crate::config::Config;
 use crate::model::{
-    AvailabilityChange, BookableSlotSnapshot, OperatingWindow, Venue, VenueRegistry,
-    diff_availability,
+    AvailabilityChange, BookableSlotSnapshot, CourtCatalog, OperatingWindow, Provider, Venue,
+    VenueRegistry, diff_availability,
 };
 use crate::ports::{
-    AvailabilityChangeSink, BookableSlotSnapshotRepository, VenueAvailabilitySource,
-    VenueStateRepository,
+    AvailabilityChangeSink, BookableSlotSnapshotRepository, CourtCatalogSource,
+    VenueAvailabilitySource, VenueStateRepository,
 };
 use crate::time::utc_day_window;
 
@@ -25,6 +26,42 @@ mod snapshot;
 #[cfg(test)]
 mod tests;
 
+/// The adapters serving one provider.
+#[derive(Clone)]
+pub struct ProviderAdapters {
+    pub availability: Arc<dyn VenueAvailabilitySource>,
+    pub catalogs: Arc<dyn CourtCatalogSource>,
+}
+
+/// Which adapters serve which provider.
+#[derive(Default)]
+pub struct ProviderSources(HashMap<Provider, ProviderAdapters>);
+
+impl ProviderSources {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(
+        &mut self,
+        provider: Provider,
+        availability: Arc<dyn VenueAvailabilitySource>,
+        catalogs: Arc<dyn CourtCatalogSource>,
+    ) {
+        self.0.insert(
+            provider,
+            ProviderAdapters {
+                availability,
+                catalogs,
+            },
+        );
+    }
+
+    fn get(&self, provider: Provider) -> Option<&ProviderAdapters> {
+        self.0.get(&provider)
+    }
+}
+
 /// Owns one poll loop per venue.
 ///
 /// Independent loops rather than one global tick: staggering becomes free, a
@@ -33,7 +70,7 @@ mod tests;
 pub struct Monitor {
     config: Config,
     registry: Arc<RwLock<VenueRegistry>>,
-    source: Arc<dyn VenueAvailabilitySource>,
+    sources: ProviderSources,
     sinks: Vec<Arc<dyn AvailabilityChangeSink>>,
     snapshots: Arc<dyn BookableSlotSnapshotRepository>,
     venue_state: Arc<dyn VenueStateRepository>,
@@ -43,7 +80,7 @@ impl Monitor {
     pub fn new(
         config: Config,
         registry: Arc<RwLock<VenueRegistry>>,
-        source: Arc<dyn VenueAvailabilitySource>,
+        sources: ProviderSources,
         sinks: Vec<Arc<dyn AvailabilityChangeSink>>,
         snapshots: Arc<dyn BookableSlotSnapshotRepository>,
         venue_state: Arc<dyn VenueStateRepository>,
@@ -51,7 +88,7 @@ impl Monitor {
         Self {
             config,
             registry,
-            source,
+            sources,
             sinks,
             snapshots,
             venue_state,
@@ -65,6 +102,17 @@ impl Monitor {
         let mut loops = tokio::task::JoinSet::new();
         for (index, venue) in self.config.venues().iter().enumerate() {
             let interval = self.config.poll_interval_for(venue);
+            let adapters = self
+                .sources
+                .get(venue.provider())
+                .with_context(|| {
+                    format!(
+                        "venue {} needs a {} adapter, which was not wired up",
+                        venue.id,
+                        venue.provider()
+                    )
+                })?
+                .clone();
             loops.spawn(
                 VenueLoop {
                     venue: venue.clone(),
@@ -73,7 +121,7 @@ impl Monitor {
                     operating_window: self.config.operating_window_for(venue),
                     quiet_first_poll: self.config.quiet_first_poll(),
                     registry: self.registry.clone(),
-                    source: self.source.clone(),
+                    adapters,
                     sinks: self.sinks.clone(),
                     snapshots: self.snapshots.clone(),
                     venue_state: self.venue_state.clone(),
@@ -126,7 +174,7 @@ struct VenueLoop {
     operating_window: OperatingWindow,
     quiet_first_poll: bool,
     registry: Arc<RwLock<VenueRegistry>>,
-    source: Arc<dyn VenueAvailabilitySource>,
+    adapters: ProviderAdapters,
     sinks: Vec<Arc<dyn AvailabilityChangeSink>>,
     snapshots: Arc<dyn BookableSlotSnapshotRepository>,
     venue_state: Arc<dyn VenueStateRepository>,
@@ -146,6 +194,7 @@ impl VenueLoop {
             .with_context(|| format!("reading the state of venue {}", self.venue.id))?;
 
         let mut state = MonitorState::new(previous, self.quiet_first_poll && !initialised);
+        let mut catalog = CatalogState::default();
         let mut failures = FailureRun::default();
 
         info!(
@@ -161,14 +210,14 @@ impl VenueLoop {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            match self.tick(&mut state).await {
+            match self.tick(&mut state, &mut catalog).await {
                 Ok(()) => failures.succeeded(&self.venue),
                 Err(error) => failures.failed(&self.venue, &error),
             }
         }
     }
 
-    async fn tick(&self, state: &mut MonitorState) -> Result<()> {
+    async fn tick(&self, state: &mut MonitorState, catalog: &mut CatalogState) -> Result<()> {
         if !is_within_operating_window(Utc::now(), self.operating_window) {
             debug!(
                 venue = %self.venue.id,
@@ -179,23 +228,35 @@ impl VenueLoop {
             return Ok(());
         }
 
-        // Cloned out of the registry so no lock is held across the fetch.
-        let Some(catalog) = self
-            .registry
-            .read()
-            .expect("venue registry poisoned")
-            .catalog(&self.venue.id)
-        else {
-            debug!(venue = %self.venue.id, "court catalog not resolved yet; skipping poll");
+        // The loop owns the sequence: discover, then fetch. It is therefore
+        // the only writer of this venue's registry entry, and the write is a
+        // short, await-free swap.
+        let Some(courts) = self.resolve_catalog(catalog).await? else {
             return Ok(());
         };
 
         let (starts_at, ends_at) = utc_day_window(self.lookahead_days);
         let observations = self
-            .source
-            .fetch(&self.venue, &catalog, starts_at, ends_at)
+            .adapters
+            .availability
+            .fetch(&self.venue, &courts, starts_at, ends_at)
             .await
             .with_context(|| format!("fetching availability for venue {}", self.venue.id))?;
+
+        // The cheapest re-discovery trigger there is: the loop already holds
+        // the catalog it passed in, so a court it does not know means the club
+        // has changed its resources.
+        if observations
+            .iter()
+            .any(|observation| courts.attributes_of(observation.court_id).is_none())
+        {
+            info!(
+                venue = %self.venue.id,
+                "availability names a court the catalog does not know; re-discovering"
+            );
+            catalog.invalidate();
+        }
+
         let current = build_snapshot(&self.venue, observations, Utc::now());
 
         let changes = diff_availability(&state.previous, &current);
@@ -221,6 +282,66 @@ impl VenueLoop {
 
         state.commit(current);
         Ok(())
+    }
+
+    /// The venue's catalog, discovering or refreshing it when due.
+    ///
+    /// `Ok(None)` means "not this tick": discovery failed and the venue is
+    /// backing off. That skips the poll rather than failing it, so the venue's
+    /// rows stay put and every other venue keeps running — a club whose page is
+    /// down must not look like a club whose courts all got booked.
+    async fn resolve_catalog(&self, state: &mut CatalogState) -> Result<Option<Arc<CourtCatalog>>> {
+        let cached = self
+            .registry
+            .read()
+            .expect("venue registry poisoned")
+            .catalog(&self.venue.id);
+        if let Some(catalog) = &cached
+            && !state.is_stale()
+        {
+            return Ok(Some(catalog.clone()));
+        }
+        if !state.may_attempt() {
+            debug!(venue = %self.venue.id, "discovery is backing off; skipping poll");
+            return Ok(None);
+        }
+
+        match self.adapters.catalogs.discover(&self.venue).await {
+            Ok(discovered) => {
+                info!(
+                    venue = %self.venue.id,
+                    courts = discovered.courts().len(),
+                    "resolved court catalog"
+                );
+                self.registry
+                    .write()
+                    .expect("venue registry poisoned")
+                    .set_catalog(self.venue.id.clone(), discovered);
+                state.succeeded();
+                Ok(self
+                    .registry
+                    .read()
+                    .expect("venue registry poisoned")
+                    .catalog(&self.venue.id))
+            }
+            Err(error) => {
+                state.failed();
+                match cached {
+                    // A stale catalog beats none: names may drift, but the
+                    // venue keeps alerting while the club page is unreachable.
+                    Some(catalog) => {
+                        warn!(
+                            venue = %self.venue.id,
+                            error = %format!("{error:#}"),
+                            "refreshing the court catalog failed; keeping the last known one"
+                        );
+                        Ok(Some(catalog))
+                    }
+                    None => Err(error)
+                        .with_context(|| format!("discovering courts of venue {}", self.venue.id)),
+                }
+            }
+        }
     }
 
     async fn persist_if_changed(
@@ -284,6 +405,55 @@ impl FailureRun {
         if std::mem::take(&mut self.failing) {
             info!(venue = %venue.id, "venue poll recovered");
         }
+    }
+}
+
+/// Discovered catalogs go stale — a club renames or adds a court and nobody
+/// tells us — so they are refreshed on a cadence rather than resolved once.
+const CATALOG_REFRESH: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Ticks to skip after consecutive discovery failures, doubling to a cap.
+const MAX_DISCOVERY_BACKOFF_TICKS: u32 = 16;
+
+/// When a venue's catalog was last resolved, and how hard it is currently
+/// failing to.
+#[derive(Default)]
+struct CatalogState {
+    resolved_at: Option<Instant>,
+    consecutive_failures: u32,
+    ticks_to_skip: u32,
+}
+
+impl CatalogState {
+    fn is_stale(&self) -> bool {
+        self.resolved_at
+            .is_none_or(|at| at.elapsed() >= CATALOG_REFRESH)
+    }
+
+    /// Consumes one tick of backoff; `false` means "still waiting".
+    fn may_attempt(&mut self) -> bool {
+        if self.ticks_to_skip == 0 {
+            return true;
+        }
+        self.ticks_to_skip -= 1;
+        false
+    }
+
+    fn succeeded(&mut self) {
+        self.resolved_at = Some(Instant::now());
+        self.consecutive_failures = 0;
+        self.ticks_to_skip = 0;
+    }
+
+    fn failed(&mut self) {
+        self.consecutive_failures += 1;
+        self.ticks_to_skip =
+            (1u32 << (self.consecutive_failures - 1).min(31)).min(MAX_DISCOVERY_BACKOFF_TICKS);
+    }
+
+    /// Forces a refresh on the next tick, without disturbing the backoff.
+    fn invalidate(&mut self) {
+        self.resolved_at = None;
     }
 }
 

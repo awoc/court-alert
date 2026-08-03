@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::model::{
     Court, CourtAttributes, CourtCatalog, CourtFilter, CourtLocation, CourtSurface,
-    OperatingWindow, Sport, Venue, VenueId, VenueIdentity,
+    OperatingWindow, Provider, Sport, Venue, VenueId, VenueIdentity,
 };
 
 const MAX_LOOKAHEAD_DAYS: i64 = 366;
@@ -176,6 +176,17 @@ impl Config {
                     venue.id
                 );
             }
+            // Beyond a provider's own horizon every extra day is a request that
+            // can only come back empty.
+            if let Some(cap) = provider_lookahead_cap(venue.provider()) {
+                anyhow::ensure!(
+                    self.lookahead_days_for(venue) <= cap,
+                    "venue {}: {} serves at most {cap} days, but lookahead_days is {}",
+                    venue.id,
+                    venue.provider(),
+                    self.lookahead_days_for(venue)
+                );
+            }
         }
         Ok(self)
     }
@@ -210,6 +221,15 @@ impl Config {
         self.catalogs.get(venue_id)
     }
 
+    /// Every catalog declared in config, i.e. the ZHS venues'.
+    pub fn catalogs(&self) -> &HashMap<VenueId, CourtCatalog> {
+        &self.catalogs
+    }
+
+    pub fn uses(&self, provider: Provider) -> bool {
+        self.venues.iter().any(|venue| venue.provider() == provider)
+    }
+
     /// A venue's effective poll interval, its override or the global default.
     pub fn poll_interval_for(&self, venue: &Venue) -> u64 {
         venue.poll_interval_secs.unwrap_or(self.poll_interval_secs)
@@ -221,6 +241,14 @@ impl Config {
 
     pub fn operating_window_for(&self, venue: &Venue) -> OperatingWindow {
         venue.operating_window.unwrap_or(self.operating_window)
+    }
+}
+
+fn provider_lookahead_cap(provider: Provider) -> Option<i64> {
+    match provider {
+        // ZHS publishes no horizon; the booking window closes per slot instead.
+        Provider::Zhs => None,
+        Provider::Playtomic => Some(crate::playtomic::MAX_LOOKAHEAD_DAYS),
     }
 }
 
@@ -446,7 +474,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Provider;
 
     const SAMPLE: &str = r#"
 poll_interval_secs = 300
@@ -602,6 +629,40 @@ name = "Tennis Court 1"
             cfg.operating_window_for(padel),
             OperatingWindow::new(7, 24).unwrap()
         );
+    }
+
+    /// By the number, not by prose: Playtomic serves today…today+14
+    /// *inclusive*, and the window is half-open, so 15 covers exactly the
+    /// horizon and 16 adds a guaranteed-empty request.
+    #[test]
+    fn a_playtomic_venue_may_look_ahead_fifteen_days_but_not_sixteen() {
+        let with =
+            |days: i64| Config::parse(&format!("{SAMPLE}{PADEL_VENUE}lookahead_days = {days}\n"));
+
+        assert!(with(15).is_ok(), "15 days is exactly the horizon");
+        let error = with(16).expect_err("16 days must be rejected");
+        assert!(
+            format!("{error:#}").contains("15"),
+            "the cap is not named: {error:#}"
+        );
+    }
+
+    /// ZHS publishes no horizon, so the global limit is the only bound.
+    #[test]
+    fn a_zhs_venue_is_not_capped_at_the_playtomic_horizon() {
+        let configured = SAMPLE.replace("lookahead_days = 7", "lookahead_days = 30");
+        assert!(Config::parse(&configured).is_ok());
+    }
+
+    #[test]
+    fn a_config_reports_which_providers_it_uses() {
+        let tennis_only = Config::parse(SAMPLE).expect("parse");
+        assert!(tennis_only.uses(Provider::Zhs));
+        assert!(!tennis_only.uses(Provider::Playtomic));
+
+        let both = Config::parse(&format!("{SAMPLE}{PADEL_VENUE}")).expect("parse");
+        assert!(both.uses(Provider::Zhs));
+        assert!(both.uses(Provider::Playtomic));
     }
 
     #[test]
