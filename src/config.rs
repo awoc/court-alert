@@ -563,7 +563,6 @@ slug = "casa-padel-pineapple-park"
                 slug: "casa-padel-pineapple-park".into(),
             }
         );
-        // Its catalog is discovered at runtime, so config supplies none.
         assert!(cfg.catalog_for(&padel.id).is_none());
     }
 

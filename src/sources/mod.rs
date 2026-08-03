@@ -1,11 +1,3 @@
-//! Where court availability is read from.
-//!
-//! One module per booking system, each supplying the two adapters the monitor
-//! needs — availability and court discovery — and describing what it can do.
-//! The application depends only on the ports in [`crate::ports`]; everything
-//! that knows a booking system by name lives in here, so adding one means
-//! adding a module and an arm to [`build`], not editing the composition root.
-
 mod configured;
 pub mod playtomic;
 pub mod zhs;
@@ -20,7 +12,6 @@ use crate::config::{Config, Credentials};
 use crate::model::Provider;
 use crate::ports::ProviderSources;
 
-/// What a booking provider can do, independent of any one venue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities {
     /// The furthest ahead the provider will answer for, when it publishes a
@@ -42,10 +33,6 @@ impl Provider {
     }
 }
 
-/// Builds one availability adapter and one catalog source per provider in use.
-///
-/// Only the providers a configuration actually names are constructed, so a
-/// deployment that uses none of ZHS needs none of its credentials.
 pub fn build(config: &Config, credentials: Option<Credentials>) -> Result<ProviderSources> {
     let mut sources = ProviderSources::new();
     let configured = Arc::new(ConfiguredCatalogSource::new(config.catalogs().clone()));
@@ -62,7 +49,6 @@ pub fn build(config: &Config, credentials: Option<Credentials>) -> Result<Provid
     Ok(sources)
 }
 
-/// Rejects a configuration that asks a provider for more than it serves.
 pub fn validate_configuration(config: &Config) -> Result<()> {
     for venue in config.venues() {
         // Beyond a provider's own horizon every extra day is a request that can
@@ -81,10 +67,8 @@ pub fn validate_configuration(config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// The single venue of a provider that only supports one.
-///
 /// ZHS is per-deployment rather than per-club: one set of credentials, one
-/// base URL. A second venue would need its own of both.
+/// base URL, so a second venue would need its own of both.
 fn only_venue(config: &Config, provider: Provider) -> Result<&crate::model::Venue> {
     let mut venues = config
         .venues()
@@ -143,15 +127,12 @@ slug = "casa-padel"
         }
     }
 
-    /// Playtomic needs no credentials, as the README says, so a deployment with
-    /// only Playtomic venues must start without the ZHS environment variables.
     #[test]
     fn a_playtomic_only_deployment_needs_no_credentials() {
         let config = Config::parse(PADEL_ONLY).expect("parse");
         assert!(build(&config, None).is_ok());
     }
 
-    /// …but a ZHS venue still demands them, and says which ones.
     #[test]
     fn a_zhs_venue_without_credentials_names_the_missing_variables() {
         let config = Config::parse(ZHS_ONLY).expect("parse");
@@ -195,7 +176,6 @@ slug = "casa-padel"
         );
     }
 
-    /// ZHS publishes no horizon, so only the global limit applies.
     #[test]
     fn a_zhs_venue_is_not_capped_at_the_playtomic_horizon() {
         let config = Config::parse(&ZHS_ONLY.replace("lookahead_days = 7", "lookahead_days = 30"))

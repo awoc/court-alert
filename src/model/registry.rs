@@ -17,10 +17,7 @@ pub enum CatalogState {
     Ready(Arc<CourtCatalog>),
 }
 
-/// Every venue the application knows about, keyed by venue.
-///
-/// Read by the monitor loops, subscription matching, command validation and
-/// rendering; written only by a venue's own loop after discovery.
+/// Written only by a venue's own loop after discovery; read by everything else.
 ///
 /// One map, not one per fact: a catalog and a sport belong to the same venue,
 /// and parallel maps would let them drift — a catalog under a venue with no
@@ -30,8 +27,6 @@ pub struct VenueRegistry {
     venues: HashMap<VenueId, VenueInfo>,
 }
 
-/// What everything outside the monitor needs to know about a venue: which
-/// command targets it, what to call it in a message, and its courts.
 #[derive(Debug, Clone)]
 struct VenueInfo {
     sport: Sport,
@@ -82,8 +77,6 @@ impl VenueRegistry {
         self.venues.get(venue_id).map(|venue| &venue.catalog)
     }
 
-    /// The venue's catalog, or `None` while it is still unresolved.
-    ///
     /// Returns an owned `Arc` so callers can drop the registry guard before
     /// awaiting: holding a read lock across a slow HTTP call would stall every
     /// other venue's loop.
@@ -113,7 +106,6 @@ impl VenueRegistry {
     }
 
     /// Every venue of a sport, resolved or not, in stable venue-id order.
-    /// Command validation needs these before any catalog exists.
     pub fn venues_of_sport(&self, sport: Sport) -> Vec<VenueId> {
         let mut found: Vec<VenueId> = self
             .venues
@@ -248,8 +240,6 @@ mod tests {
         assert!(registry.sport(&VenueId::new("never-registered")).is_none());
     }
 
-    /// The catalog comes back from the write, so a caller does not have to take
-    /// a second lock to read what it just supplied.
     #[test]
     fn setting_a_catalog_returns_it() {
         let mut registry = VenueRegistry::new();
@@ -290,8 +280,6 @@ mod tests {
         assert!(registry.catalogs_for_sport(Sport::Padel).is_empty());
     }
 
-    /// Command validation lists a sport's clubs before any catalog exists, so
-    /// this must include venues that are still unresolved.
     #[test]
     fn venues_of_sport_lists_unresolved_venues_too() {
         let mut registry = VenueRegistry::new();

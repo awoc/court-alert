@@ -103,7 +103,6 @@ async fn a_venue_loads_only_its_own_previous_slots() {
     assert!(diff_availability(&previous, &ours).is_empty());
 }
 
-/// A club whose page is unreachable must not keep hammering it every tick.
 #[test]
 fn discovery_backs_off_after_consecutive_failures_and_recovers() {
     let mut state = DiscoveryState::default();
@@ -134,8 +133,6 @@ fn the_backoff_is_capped() {
     assert_eq!(state.ticks_to_skip, MAX_DISCOVERY_BACKOFF_TICKS);
 }
 
-/// Startup-only discovery goes stale: a club renames or adds a court and
-/// nobody tells us.
 #[test]
 fn a_resolved_catalog_is_fresh_until_the_refresh_interval() {
     let mut state = DiscoveryState::default();
@@ -393,7 +390,6 @@ mod loop_harness {
         let mut state = MonitorState::new(BookableSlotSnapshot::new(), false);
         let mut catalog = DiscoveryState::default();
 
-        // First tick resolves the catalog and polls.
         h.loop_.tick(&mut state, &mut catalog).await.unwrap();
         assert_eq!(fetches(&h), 1);
 
@@ -426,10 +422,8 @@ mod loop_harness {
         let mut state = MonitorState::new(BookableSlotSnapshot::new(), false);
         let mut catalog = DiscoveryState::default();
 
-        // First attempt: a hard error, since there is no catalog to fall back on.
         assert!(h.loop_.tick(&mut state, &mut catalog).await.is_err());
 
-        // Second: backing off. Neither a poll nor a failure.
         let outcome = h.loop_.tick(&mut state, &mut catalog).await.unwrap();
         assert_eq!(outcome, TickOutcome::Skipped);
         assert_eq!(fetches(&h), 0);

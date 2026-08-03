@@ -1,5 +1,3 @@
-//! The systems people are reached through.
-
 pub mod discord;
 
 use std::collections::HashSet;
@@ -63,7 +61,6 @@ pub fn readiness(n: usize) -> (Vec<ReadySignal>, ReadyBarrier) {
     (signals, ReadyBarrier { expected: n, rx })
 }
 
-/// Rejects a configuration the chat frontend cannot present.
 pub fn validate_configuration(config: &Config) -> Result<()> {
     // Beyond this, `/padel` could not offer every club by name, and quietly
     // dropping the rest would leave them selectable only through "all clubs".
@@ -125,9 +122,6 @@ base_url = "https://kurse.zhs-muenchen.de"
   name = "Tennis Court 1"
 "#;
 
-    /// Discord caps a command option at 25 choices, so beyond that `/padel`
-    /// could not offer every club by name — and quietly dropping the rest would
-    /// leave them selectable only through "all clubs".
     #[test]
     fn more_padel_venues_than_discord_can_offer_are_rejected() {
         let limit = discord::MAX_CLUB_CHOICES;

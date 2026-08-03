@@ -1,7 +1,3 @@
-//! Discord: the slash-command bot, the direct messages it sends, and the
-//! broadcast webhook. One service, one module — the bot and the webhook share
-//! its rendering and its HTTP quirks.
-
 use std::collections::HashSet;
 use std::sync::Arc;
 

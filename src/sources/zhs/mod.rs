@@ -1,9 +1,3 @@
-//! ZHS Munich, the university sports booking system.
-//!
-//! One deployment, one set of credentials, courts declared in config. The
-//! availability API is per-product, so the venue fetch fans out over the
-//! venue's courts internally.
-
 mod api;
 mod auth;
 mod dto;
