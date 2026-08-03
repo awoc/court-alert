@@ -654,6 +654,13 @@ name = "Tennis Court 1"
         assert!(Config::parse(&configured).is_ok());
     }
 
+    /// The example is what a new deployment copies, so a change to the config
+    /// schema that forgets it would hand out a file that refuses to start.
+    #[test]
+    fn the_shipped_example_config_is_valid() {
+        Config::parse(include_str!("../config.example.toml")).expect("config.example.toml");
+    }
+
     #[test]
     fn a_config_reports_which_providers_it_uses() {
         let tennis_only = Config::parse(SAMPLE).expect("parse");

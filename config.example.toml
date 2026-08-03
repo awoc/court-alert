@@ -24,3 +24,15 @@ base_url     = "https://kurse.zhs-muenchen.de"
   id = "00000000-0000-0000-0000-000000000001"
   name = "Example court 2 - Synthetic"
   surface = "synthetic"
+
+# A Playtomic club. It needs no credentials, and declares no courts: those are
+# discovered from the club page and refreshed daily.
+[[venues]]
+id                 = "example-padel-club"
+display_name       = "Example Padel Club"
+sport              = "padel"
+provider           = "playtomic"
+tenant_id          = "00000000-0000-0000-0000-000000000002"
+slug               = "example-padel-club"   # the /clubs/<slug> path on playtomic.com
+lookahead_days     = 15   # Playtomic's full horizon; 16 or more is rejected
+operating_window_start_hour = 7
