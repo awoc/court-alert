@@ -36,7 +36,7 @@ pub(super) fn parse_interaction(cmd: &CommandInteraction) -> Result<Subscription
                 start_minute,
                 end_minute,
                 courts: parse_courts(get_string_opt(cmd, "courts"))?,
-                filter: parse_filter(get_string_opt(cmd, "surface"))?,
+                filter: parse_surface(get_string_opt(cmd, "surface"))?,
             })
         }
         "padel" => {
@@ -52,7 +52,7 @@ pub(super) fn parse_interaction(cmd: &CommandInteraction) -> Result<Subscription
                 start_minute,
                 end_minute,
                 courts: None,
-                filter: parse_filter(get_string_opt(cmd, "location"))?,
+                filter: parse_location(get_string_opt(cmd, "location"))?,
             })
         }
         "list" => Ok(SubscriptionCommand::List),
@@ -107,13 +107,37 @@ fn parse_courts(input: Option<String>) -> Result<Option<Vec<String>>> {
     Ok((!courts.is_empty()).then_some(courts))
 }
 
-/// Shared by `/subscribe`'s `surface` and `/padel`'s `location`: both narrow to
-/// a `CourtFilter`, and each command only ever offers its own vocabulary.
-fn parse_filter(input: Option<String>) -> Result<Option<CourtFilter>> {
-    input
-        .filter(|raw| !raw.trim().is_empty())
-        .map(|raw| raw.parse().context("invalid court filter"))
-        .transpose()
+/// `/subscribe`'s `surface`, which is tennis vocabulary.
+///
+/// `CourtFilter` parses all five values, so without this a `location=clay` —
+/// or a `surface=indoor` — would be stored as a reminder that can never fire.
+/// Discord's own choice validation blocks it in practice, but the same
+/// reasoning already guards `surface_filter` in config, and the command
+/// boundary is where a client that is not Discord would come in.
+fn parse_surface(input: Option<String>) -> Result<Option<CourtFilter>> {
+    parse_filter(input, "surface", |filter| {
+        matches!(filter, CourtFilter::Any | CourtFilter::Surface(_))
+    })
+}
+
+/// `/padel`'s `location`, which is padel vocabulary.
+fn parse_location(input: Option<String>) -> Result<Option<CourtFilter>> {
+    parse_filter(input, "location", |filter| {
+        matches!(filter, CourtFilter::Any | CourtFilter::Location(_))
+    })
+}
+
+fn parse_filter(
+    input: Option<String>,
+    option: &str,
+    accepted: impl Fn(CourtFilter) -> bool,
+) -> Result<Option<CourtFilter>> {
+    let Some(raw) = input.filter(|raw| !raw.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let filter: CourtFilter = raw.parse().with_context(|| format!("invalid '{option}'"))?;
+    anyhow::ensure!(accepted(filter), "'{option}' does not accept {filter:?}");
+    Ok(Some(filter))
 }
 
 fn get_string_opt(cmd: &CommandInteraction, name: &str) -> Option<String> {
@@ -172,17 +196,50 @@ mod tests {
 
     #[test]
     fn surface_is_optional_and_validated() {
-        assert_eq!(parse_filter(None).unwrap(), None);
-        assert_eq!(parse_filter(Some("  ".into())).unwrap(), None);
+        assert_eq!(parse_surface(None).unwrap(), None);
+        assert_eq!(parse_surface(Some("  ".into())).unwrap(), None);
         assert_eq!(
-            parse_filter(Some("clay".into())).unwrap(),
+            parse_surface(Some("clay".into())).unwrap(),
             Some(CourtFilter::CLAY)
         );
         assert_eq!(
-            parse_filter(Some("all".into())).unwrap(),
+            parse_surface(Some("all".into())).unwrap(),
             Some(CourtFilter::Any)
         );
-        assert!(parse_filter(Some("grass".into())).is_err());
+        assert!(parse_surface(Some("grass".into())).is_err());
+    }
+
+    /// Each option takes only its own sport's vocabulary. `CourtFilter` spans
+    /// both, so a reminder that can never fire would otherwise be storable.
+    #[test]
+    fn an_option_rejects_the_other_sports_vocabulary() {
+        for raw in ["indoor", "outdoor"] {
+            assert!(
+                parse_surface(Some(raw.into())).is_err(),
+                "surface accepted {raw:?}"
+            );
+        }
+        for raw in ["clay", "synthetic"] {
+            assert!(
+                parse_location(Some(raw.into())).is_err(),
+                "location accepted {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn location_is_optional_and_validated() {
+        assert_eq!(parse_location(None).unwrap(), None);
+        assert_eq!(
+            parse_location(Some("indoor".into())).unwrap(),
+            Some(CourtFilter::Location(crate::model::CourtLocation::Indoor))
+        );
+        // `any` belongs to both: it is the default each command hands out.
+        assert_eq!(
+            parse_location(Some("any".into())).unwrap(),
+            Some(CourtFilter::Any)
+        );
+        assert!(parse_location(Some("grass".into())).is_err());
     }
 
     #[test]

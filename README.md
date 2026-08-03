@@ -2,7 +2,7 @@
 
 `court-alert` monitors configured clubs for newly bookable court slots. It stores the last observed availability in SQLite and can post changes to a Discord webhook or send matching slot alerts as Discord DMs to subscribers.
 
-Each club is a venue with a sport: `/subscribe` covers tennis venues and `/padel` covers padel ones. Only tennis reaches the broadcast webhook channel; padel alerts go out solely as `/padel` direct messages.
+Each club is a venue with a sport: `/subscribe` covers tennis venues and `/padel` covers padel ones. Only tennis reaches the broadcast webhook channel; padel alerts go out solely as `/padel` direct messages. Direct messages name the club each court belongs to, since a reminder can span clubs and "Court 1" is not a unique name across them.
 
 `/padel` takes an optional `club` (omit it to watch every configured club) and an optional `location` of `indoor`, `outdoor` or `any`. It has no `courts` option: padel court names are discovered and refreshed, so a name-based selector would silently stop matching if a club renamed a court.
 

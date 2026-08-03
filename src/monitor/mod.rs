@@ -210,7 +210,7 @@ impl VenueLoop {
             .with_context(|| format!("reading the state of venue {}", self.venue.id))?;
 
         let mut state = MonitorState::new(previous, self.quiet_first_poll && !initialised);
-        let mut catalog = CatalogState::default();
+        let mut catalog = DiscoveryState::default();
         let mut failures = FailureRun::default();
 
         info!(
@@ -240,7 +240,7 @@ impl VenueLoop {
     async fn tick(
         &self,
         state: &mut MonitorState,
-        catalog: &mut CatalogState,
+        catalog: &mut DiscoveryState,
     ) -> Result<TickOutcome> {
         if !is_within_operating_window(Utc::now(), self.operating_window) {
             debug!(
@@ -322,7 +322,10 @@ impl VenueLoop {
     /// discovery is backing off. The backoff gates the discovery *attempt*, not
     /// the poll — a cached catalog is always usable, however stale, because
     /// names drifting is a far smaller problem than a venue going quiet.
-    async fn resolve_catalog(&self, state: &mut CatalogState) -> Result<Option<Arc<CourtCatalog>>> {
+    async fn resolve_catalog(
+        &self,
+        state: &mut DiscoveryState,
+    ) -> Result<Option<Arc<CourtCatalog>>> {
         let cached = self
             .registry
             .read()
@@ -348,16 +351,17 @@ impl VenueLoop {
                     courts = discovered.courts().len(),
                     "resolved court catalog"
                 );
-                self.registry
+                let stored = self
+                    .registry
                     .write()
                     .expect("venue registry poisoned")
-                    .set_catalog(self.venue.id.clone(), discovered);
+                    .set_catalog(&self.venue.id, discovered);
                 state.succeeded();
-                Ok(self
-                    .registry
-                    .read()
-                    .expect("venue registry poisoned")
-                    .catalog(&self.venue.id))
+                // `None` means this venue was never registered, which is a
+                // wiring bug: its loop exists but nothing else can see it.
+                stored
+                    .with_context(|| format!("venue {} is not in the registry", self.venue.id))
+                    .map(Some)
             }
             Err(error) => {
                 state.failed();
@@ -457,16 +461,19 @@ const CATALOG_REFRESH: Duration = Duration::from_secs(24 * 60 * 60);
 /// Ticks to skip after consecutive discovery failures, doubling to a cap.
 const MAX_DISCOVERY_BACKOFF_TICKS: u32 = 16;
 
-/// When a venue's catalog was last resolved, and how hard it is currently
-/// failing to.
+/// When a venue's catalog was last resolved, and how hard discovery is
+/// currently failing.
+///
+/// Distinct from `model::CatalogState`, which is about whether a catalog exists
+/// at all; this is the loop's own bookkeeping about fetching one.
 #[derive(Default)]
-struct CatalogState {
+struct DiscoveryState {
     resolved_at: Option<Instant>,
     consecutive_failures: u32,
     ticks_to_skip: u32,
 }
 
-impl CatalogState {
+impl DiscoveryState {
     fn is_stale(&self) -> bool {
         self.resolved_at
             .is_none_or(|at| at.elapsed() >= CATALOG_REFRESH)

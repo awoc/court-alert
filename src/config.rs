@@ -170,19 +170,6 @@ impl Config {
              synthetic (got {}); use /padel's location option for indoor and outdoor",
             self.surface_filter
         );
-        // Beyond this, `/padel` could not offer every club by name.
-        let padel_venues = self
-            .venues
-            .iter()
-            .filter(|venue| venue.sport == Sport::Padel)
-            .count();
-        anyhow::ensure!(
-            padel_venues <= crate::providers::discord::MAX_CLUB_CHOICES,
-            "{padel_venues} padel venues are configured, but Discord allows at most {} \
-             club choices on /padel; monitoring more would leave the rest selectable \
-             only through \"all clubs\"",
-            crate::providers::discord::MAX_CLUB_CHOICES
-        );
         anyhow::ensure!(
             (1..=MAX_LOOKAHEAD_DAYS).contains(&self.lookahead_days),
             "lookahead_days must be between 1 and {MAX_LOOKAHEAD_DAYS}"
@@ -200,17 +187,6 @@ impl Config {
                     (1..=MAX_LOOKAHEAD_DAYS).contains(&days),
                     "venue {}: lookahead_days must be between 1 and {MAX_LOOKAHEAD_DAYS}",
                     venue.id
-                );
-            }
-            // Beyond a provider's own horizon every extra day is a request that
-            // can only come back empty.
-            if let Some(cap) = provider_lookahead_cap(venue.provider()) {
-                anyhow::ensure!(
-                    self.lookahead_days_for(venue) <= cap,
-                    "venue {}: {} serves at most {cap} days, but lookahead_days is {}",
-                    venue.id,
-                    venue.provider(),
-                    self.lookahead_days_for(venue)
                 );
             }
         }
@@ -267,14 +243,6 @@ impl Config {
 
     pub fn operating_window_for(&self, venue: &Venue) -> OperatingWindow {
         venue.operating_window.unwrap_or(self.operating_window)
-    }
-}
-
-fn provider_lookahead_cap(provider: Provider) -> Option<i64> {
-    match provider {
-        // ZHS publishes no horizon; the booking window closes per slot instead.
-        Provider::Zhs => None,
-        Provider::Playtomic => Some(crate::playtomic::MAX_LOOKAHEAD_DAYS),
     }
 }
 
@@ -669,29 +637,6 @@ name = "Tennis Court 1"
         );
     }
 
-    /// By the number, not by prose: Playtomic serves today…today+14
-    /// *inclusive*, and the window is half-open, so 15 covers exactly the
-    /// horizon and 16 adds a guaranteed-empty request.
-    #[test]
-    fn a_playtomic_venue_may_look_ahead_fifteen_days_but_not_sixteen() {
-        let with =
-            |days: i64| Config::parse(&format!("{SAMPLE}{PADEL_VENUE}lookahead_days = {days}\n"));
-
-        assert!(with(15).is_ok(), "15 days is exactly the horizon");
-        let error = with(16).expect_err("16 days must be rejected");
-        assert!(
-            format!("{error:#}").contains("15"),
-            "the cap is not named: {error:#}"
-        );
-    }
-
-    /// ZHS publishes no horizon, so the global limit is the only bound.
-    #[test]
-    fn a_zhs_venue_is_not_capped_at_the_playtomic_horizon() {
-        let configured = SAMPLE.replace("lookahead_days = 7", "lookahead_days = 30");
-        assert!(Config::parse(&configured).is_ok());
-    }
-
     /// The example is what a new deployment copies, so a change to the config
     /// schema that forgets it would hand out a file that refuses to start.
     #[test]
@@ -891,35 +836,6 @@ name = "Tennis Court 1"
                 "the fix is not named: {message}"
             );
         }
-    }
-
-    /// Discord caps a command option at 25 choices, so beyond that `/padel`
-    /// could not offer every club by name — and quietly dropping the rest would
-    /// leave them selectable only through "all clubs".
-    #[test]
-    fn more_padel_venues_than_discord_can_offer_are_rejected() {
-        let limit = crate::providers::discord::MAX_CLUB_CHOICES;
-        let club = |i: usize| {
-            format!(
-                "\n[[venues]]\nid = \"club-{i}\"\ndisplay_name = \"Club {i}\"\n\
-                 sport = \"padel\"\nprovider = \"playtomic\"\n\
-                 tenant_id = \"f8483f72-1d14-49eb-a98b-e4b89d969c78\"\n\
-                 slug = \"club-{i}\"\nlookahead_days = 15\n"
-            )
-        };
-        let with = |count: usize| {
-            let clubs: String = (0..count).map(club).collect();
-            Config::parse(&format!("{SAMPLE}{clubs}"))
-        };
-
-        assert!(with(limit).is_ok(), "{limit} clubs must still be accepted");
-
-        let error =
-            with(limit + 1).expect_err("more clubs than Discord can offer must be rejected");
-        assert!(
-            format!("{error:#}").contains(&limit.to_string()),
-            "the limit is not named: {error:#}"
-        );
     }
 
     #[test]

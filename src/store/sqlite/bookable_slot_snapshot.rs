@@ -54,6 +54,18 @@ impl BookableSlotSnapshotRepository for SqliteStore {
         venue_id: &VenueId,
         slots: Vec<BookableSlot>,
     ) -> Result<()> {
+        // The delete is scoped to one venue but the insert takes each row's own
+        // `venue_id`, so a foreign slot would be written under a venue this
+        // call never clears — invisible to both loops' `load_venue_snapshot`,
+        // re-inserted every tick, and lingering in the global snapshot that
+        // feeds the subscribe preview.
+        if let Some(foreign) = slots.iter().find(|slot| slot.venue_id != *venue_id) {
+            anyhow::bail!(
+                "slot for court {} belongs to venue {} but is being written under {venue_id}",
+                foreign.court_id,
+                foreign.venue_id
+            );
+        }
         let venue_id = venue_id.to_string();
         self.with_conn("replace_venue_bookable_slot_snapshot", move |connection| {
             let transaction = connection
@@ -356,6 +368,28 @@ mod tests {
         assert!(
             !store.is_initialised(&padel()).await.unwrap(),
             "a removed venue must start quiet again if it comes back"
+        );
+    }
+
+    /// The method replaces *one* venue's slots, so it has to refuse a slot that
+    /// is not that venue's rather than writing it somewhere neither loop sweeps.
+    #[tokio::test]
+    async fn a_slot_from_another_venue_is_refused() {
+        let store = SqliteStore::open_in_memory().await.unwrap();
+        let foreign = slot_at(padel(), "Court 1", 8);
+
+        let error = store
+            .replace_venue_snapshot(&zhs(), vec![slot("Court 1", 8), foreign])
+            .await
+            .expect_err("a foreign slot must be refused");
+
+        assert!(
+            format!("{error:#}").contains("casa-padel"),
+            "got: {error:#}"
+        );
+        assert!(
+            store.load_snapshot().await.unwrap().is_empty(),
+            "the transaction must not have written anything"
         );
     }
 

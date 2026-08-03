@@ -104,7 +104,7 @@ mod tests {
         let mut registry = VenueRegistry::new();
         registry.register(&venue(tennis_id(), Sport::Tennis));
         registry.set_catalog(
-            tennis_id(),
+            &tennis_id(),
             CourtCatalog::new(vec![Court::new(
                 CLAY_ID,
                 "Court 2".into(),
@@ -113,7 +113,7 @@ mod tests {
         );
         registry.register(&venue(padel_id(), Sport::Padel));
         registry.set_catalog(
-            padel_id(),
+            &padel_id(),
             CourtCatalog::new(vec![Court::new(
                 PADEL_ID,
                 "Court 1 (Indoor)".into(),

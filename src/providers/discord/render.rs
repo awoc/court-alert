@@ -2,7 +2,7 @@ use crate::model::{CourtFilter, Schedule, TimeRange};
 use crate::subscriptions::contract::{
     AvailabilityAlert, OwnedSubscriptionSummary, SubscriptionResult, SubscriptionSummary,
 };
-use crate::text::{DISCORD_CHUNK_BUDGET, chunk_lines, fmt_slot_line};
+use crate::text::{DISCORD_CHUNK_BUDGET, chunk_lines, fmt_club_slot_line};
 use crate::time::fmt_hhmm;
 
 const MAX_UNSUBSCRIBE_BUTTONS: usize = 20;
@@ -44,11 +44,9 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
             if !open_slots.is_empty() {
                 lines.push(String::new());
                 lines.push("**Currently free:**".to_string());
-                lines.extend(
-                    open_slots
-                        .iter()
-                        .map(|slot| fmt_slot_line(&slot.court, slot.starts_at, slot.ends_at)),
-                );
+                lines.extend(open_slots.iter().map(|slot| {
+                    fmt_club_slot_line(&slot.club, &slot.court, slot.starts_at, slot.ends_at)
+                }));
             }
             lines
         }
@@ -69,8 +67,8 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
             format!("Available courts: {}.", available.join(", ")),
         ],
         SubscriptionResult::FilterExcludesCourts { courts, filter } => vec![format!(
-            "{} not on {filter}, so `surface: {filter}` would never match. \
-             Drop the surface option or pick other courts.",
+            "{} not {filter}, so `{filter}` would never match. \
+             Drop the filter or pick other courts.",
             match courts.len() {
                 1 => format!("{} is", courts[0]),
                 _ => format!("{} are", courts.join(", ")),
@@ -196,7 +194,12 @@ fn owned_summary_line(owned: &OwnedSubscriptionSummary) -> String {
 pub(super) fn render_alert(alert: &AvailabilityAlert) -> Vec<String> {
     let mut lines = vec!["**New free courts:**".to_string()];
     for s in &alert.slots {
-        lines.push(fmt_slot_line(&s.court, s.starts_at, s.ends_at));
+        lines.push(fmt_club_slot_line(
+            &s.club,
+            &s.court,
+            s.starts_at,
+            s.ends_at,
+        ));
     }
     chunk_lines(&lines, DISCORD_CHUNK_BUDGET)
 }
@@ -246,6 +249,7 @@ mod tests {
     fn slot_info(court: &str) -> AvailableSlotSummary {
         let starts_at = Utc.with_ymd_and_hms(2026, 6, 2, 18, 0, 0).unwrap();
         AvailableSlotSummary {
+            club: "ZHS München".into(),
             court: court.into(),
             starts_at,
             ends_at: starts_at + chrono::Duration::hours(1),
@@ -309,7 +313,7 @@ mod tests {
             open_slots: vec![slot_info("Court 2")],
         });
         assert!(text.contains("**Currently free:**"));
-        assert!(text.contains("• Court 2 : Tue, 02.06.2026 20:00–21:00"));
+        assert!(text.contains("• ZHS München — Court 2 : Tue, 02.06.2026 20:00–21:00"));
     }
 
     #[test]
@@ -439,8 +443,8 @@ mod tests {
             courts: vec!["Court 19 - Synthetic".into()],
             filter: CourtFilter::CLAY,
         });
-        assert!(text.contains("Court 19 - Synthetic is not on clay"));
-        assert!(text.contains("surface: clay"));
+        assert!(text.contains("Court 19 - Synthetic is not clay"));
+        assert!(text.contains("`clay`"));
     }
 
     /// A blank would be indistinguishable from a named club, so "all clubs"
@@ -504,7 +508,7 @@ mod tests {
         });
         assert_eq!(msgs.len(), 1);
         assert!(msgs[0].starts_with("**New free courts:**"));
-        assert!(msgs[0].contains("• Court 2 : Tue, 02.06.2026 20:00–21:00"));
+        assert!(msgs[0].contains("• ZHS München — Court 2 : Tue, 02.06.2026 20:00–21:00"));
         assert!(!msgs[0].contains("<@"));
     }
 
@@ -530,8 +534,8 @@ mod tests {
         assert_eq!(msgs.len(), 1);
         let lines: Vec<&str> = msgs[0].lines().collect();
         assert_eq!(lines[0], "**New free courts:**");
-        assert!(lines[1].starts_with("• Court 2 : "));
-        assert!(lines[2].starts_with("• Court 5 : "));
+        assert!(lines[1].starts_with("• ZHS München — Court 2 : "));
+        assert!(lines[2].starts_with("• ZHS München — Court 5 : "));
     }
 
     #[test]

@@ -13,6 +13,26 @@ pub(crate) fn fmt_slot_line(court: &str, start: DateTime<Utc>, end: DateTime<Utc
     )
 }
 
+/// The same line, named by club.
+///
+/// Direct messages can span clubs — `/padel` without a club watches all of
+/// them — and "Court 1" is not a unique name across padel clubs. The broadcast
+/// webhook stays with the unlabelled form: it carries one venue by construction.
+pub(crate) fn fmt_club_slot_line(
+    club: &str,
+    court: &str,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> String {
+    format!(
+        "• {} — {} : {}–{}",
+        club,
+        court,
+        fmt_berlin(start),
+        fmt_berlin_time(end)
+    )
+}
+
 pub(crate) fn chunk_lines(lines: &[String], max_chars: usize) -> Vec<String> {
     assert!(max_chars > 0, "chunk size must be non-zero");
     let mut out = Vec::new();

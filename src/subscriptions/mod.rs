@@ -92,6 +92,20 @@ impl SubscriptionService {
             .collect()
     }
 
+    /// Labels a slot with its club, so an alert names where the court is.
+    fn slot_summary(&self, slot: &crate::model::BookableSlot) -> contract::AvailableSlotSummary {
+        contract::AvailableSlotSummary {
+            club: self
+                .registry
+                .read()
+                .expect("venue registry poisoned")
+                .club_label(&slot.venue_id),
+            court: slot.court_name.clone(),
+            starts_at: slot.starts_at,
+            ends_at: slot.ends_at,
+        }
+    }
+
     /// The clubs a sport's command offers, as (id, display name) pairs.
     pub fn clubs_of(&self, sport: Sport) -> Vec<(VenueId, String)> {
         let registry = self.registry.read().expect("venue registry poisoned");

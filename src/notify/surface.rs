@@ -99,7 +99,7 @@ mod tests {
         let mut registry = VenueRegistry::new();
         registry.register(&venue());
         registry.set_catalog(
-            venue_id(),
+            &venue_id(),
             CourtCatalog::new(vec![
                 Court::new(
                     CLAY_ID,

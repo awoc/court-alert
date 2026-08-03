@@ -17,22 +17,26 @@ pub enum CatalogState {
     Ready(Arc<CourtCatalog>),
 }
 
-/// Every venue's court catalog, keyed by venue.
+/// Every venue the application knows about, keyed by venue.
 ///
 /// Read by the monitor loops, subscription matching, command validation and
 /// rendering; written only by a venue's own loop after discovery.
+///
+/// One map, not one per fact: a catalog and a sport belong to the same venue,
+/// and parallel maps would let them drift — a catalog under a venue with no
+/// sport would be dropped silently by every sport-scoped consumer.
 #[derive(Debug, Default)]
 pub struct VenueRegistry {
     venues: HashMap<VenueId, VenueInfo>,
-    catalogs: HashMap<VenueId, CatalogState>,
 }
 
 /// What everything outside the monitor needs to know about a venue: which
-/// command targets it, and what to call it in a message.
+/// command targets it, what to call it in a message, and its courts.
 #[derive(Debug, Clone)]
 struct VenueInfo {
     sport: Sport,
     display_name: String,
+    catalog: CatalogState,
 }
 
 impl VenueRegistry {
@@ -40,27 +44,42 @@ impl VenueRegistry {
         Self::default()
     }
 
-    /// Registers a venue with no catalog yet.
+    /// Registers a venue, keeping any catalog it has already resolved.
     pub fn register(&mut self, venue: &Venue) {
+        let catalog = self
+            .venues
+            .get(&venue.id)
+            .map_or(CatalogState::Unresolved, |known| known.catalog.clone());
         self.venues.insert(
             venue.id.clone(),
             VenueInfo {
                 sport: venue.sport,
                 display_name: venue.display_name.clone(),
+                catalog,
             },
         );
-        self.catalogs
-            .entry(venue.id.clone())
-            .or_insert(CatalogState::Unresolved);
     }
 
-    pub fn set_catalog(&mut self, venue_id: VenueId, catalog: CourtCatalog) {
-        self.catalogs
-            .insert(venue_id, CatalogState::Ready(Arc::new(catalog)));
+    /// Records a venue's courts and hands the stored catalog back, so a caller
+    /// that needs it does not have to take a second lock to read its own write.
+    ///
+    /// `None` means the venue was never registered. That is a wiring bug rather
+    /// than a runtime condition — inventing an entry for it would produce a
+    /// venue with courts but no sport, which every sport-scoped consumer would
+    /// then discard without saying why.
+    pub fn set_catalog(
+        &mut self,
+        venue_id: &VenueId,
+        catalog: CourtCatalog,
+    ) -> Option<Arc<CourtCatalog>> {
+        let known = self.venues.get_mut(venue_id)?;
+        let catalog = Arc::new(catalog);
+        known.catalog = CatalogState::Ready(catalog.clone());
+        Some(catalog)
     }
 
     pub fn state(&self, venue_id: &VenueId) -> Option<&CatalogState> {
-        self.catalogs.get(venue_id)
+        self.venues.get(venue_id).map(|venue| &venue.catalog)
     }
 
     /// The venue's catalog, or `None` while it is still unresolved.
@@ -69,7 +88,7 @@ impl VenueRegistry {
     /// awaiting: holding a read lock across a slow HTTP call would stall every
     /// other venue's loop.
     pub fn catalog(&self, venue_id: &VenueId) -> Option<Arc<CourtCatalog>> {
-        match self.catalogs.get(venue_id) {
+        match self.venues.get(venue_id).map(|venue| &venue.catalog) {
             Some(CatalogState::Ready(catalog)) => Some(catalog.clone()),
             _ => None,
         }
@@ -83,6 +102,14 @@ impl VenueRegistry {
         self.venues
             .get(venue_id)
             .map(|venue| venue.display_name.as_str())
+    }
+
+    /// The club's name for a message, falling back to its id so an alert is
+    /// never labelled with a blank.
+    pub fn club_label(&self, venue_id: &VenueId) -> String {
+        self.display_name(venue_id)
+            .unwrap_or_else(|| venue_id.as_str())
+            .to_owned()
     }
 
     /// Every venue of a sport, resolved or not, in stable venue-id order.
@@ -99,7 +126,7 @@ impl VenueRegistry {
     }
 
     pub fn attributes_of(&self, venue_id: &VenueId, court_id: Uuid) -> Option<CourtAttributes> {
-        match self.catalogs.get(venue_id) {
+        match self.venues.get(venue_id).map(|venue| &venue.catalog) {
             Some(CatalogState::Ready(catalog)) => catalog.attributes_of(court_id).cloned(),
             _ => None,
         }
@@ -180,7 +207,7 @@ mod tests {
     fn setting_a_catalog_resolves_the_venue() {
         let mut registry = VenueRegistry::new();
         registry.register(&tennis_venue());
-        registry.set_catalog(venue(), catalog());
+        registry.set_catalog(&venue(), catalog());
 
         assert_eq!(registry.catalog(&venue()).unwrap().courts().len(), 1);
         assert_eq!(
@@ -193,17 +220,54 @@ mod tests {
     fn re_registering_keeps_an_already_resolved_catalog() {
         let mut registry = VenueRegistry::new();
         registry.register(&tennis_venue());
-        registry.set_catalog(venue(), catalog());
+        registry.set_catalog(&venue(), catalog());
         registry.register(&tennis_venue());
 
         assert!(registry.catalog(&venue()).is_some());
+    }
+
+    /// The invariant the single map exists to hold: courts and a sport belong
+    /// to the same venue. Accepting a catalog for an unregistered venue would
+    /// create one with courts but no sport, which every sport-scoped consumer
+    /// — the broadcast guard, the matcher — would then discard without a word.
+    #[test]
+    fn a_catalog_cannot_be_stored_for_an_unregistered_venue() {
+        let mut registry = VenueRegistry::new();
+
+        assert!(
+            registry
+                .set_catalog(&VenueId::new("never-registered"), catalog())
+                .is_none()
+        );
+
+        assert!(
+            registry
+                .catalog(&VenueId::new("never-registered"))
+                .is_none()
+        );
+        assert!(registry.sport(&VenueId::new("never-registered")).is_none());
+    }
+
+    /// The catalog comes back from the write, so a caller does not have to take
+    /// a second lock to read what it just supplied.
+    #[test]
+    fn setting_a_catalog_returns_it() {
+        let mut registry = VenueRegistry::new();
+        registry.register(&tennis_venue());
+
+        let stored = registry
+            .set_catalog(&venue(), catalog())
+            .expect("registered");
+
+        assert_eq!(stored.courts().len(), 1);
+        assert_eq!(stored, registry.catalog(&venue()).unwrap());
     }
 
     #[test]
     fn unknown_venues_and_courts_resolve_to_nothing() {
         let mut registry = VenueRegistry::new();
         registry.register(&tennis_venue());
-        registry.set_catalog(venue(), catalog());
+        registry.set_catalog(&venue(), catalog());
 
         assert!(registry.attributes_of(&venue(), Uuid::nil()).is_none());
         assert!(
@@ -217,7 +281,7 @@ mod tests {
     fn catalogs_for_sport_skips_other_sports_and_unresolved_venues() {
         let mut registry = VenueRegistry::new();
         registry.register(&tennis_venue());
-        registry.set_catalog(venue(), catalog());
+        registry.set_catalog(&venue(), catalog());
         registry.register(&padel_venue());
 
         let tennis = registry.catalogs_for_sport(Sport::Tennis);

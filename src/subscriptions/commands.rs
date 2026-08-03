@@ -29,69 +29,30 @@ impl SubscriptionService {
                 courts,
                 filter,
             } => {
-                let clubs = self.clubs_of(sport);
-                if clubs.is_empty() {
-                    return Ok(SubscriptionResult::NoClubsConfigured { sport });
-                }
-                if let Some(chosen) = &venue
-                    && !clubs.iter().any(|(id, _)| id == chosen)
-                {
-                    return Ok(SubscriptionResult::UnknownClub {
-                        unknown: chosen.to_string(),
-                        available: clubs.into_iter().map(|(_, name)| name).collect(),
-                    });
-                }
-
-                let Some(time_range) = TimeRange::new(start_minute, end_minute) else {
-                    return Ok(SubscriptionResult::InvalidTimeRange);
-                };
-                if let Schedule::Date(d) = schedule
-                    && d < self.clock.today()
-                {
-                    return Ok(SubscriptionResult::InvalidSchedule);
-                }
-                let courts = match self.canonicalize_courts(sport, venue.as_ref(), courts) {
-                    Ok(courts) => courts,
-                    Err(unknown) => {
-                        return Ok(SubscriptionResult::UnknownCourts {
-                            unknown,
-                            available: self.court_names(sport, venue.as_ref()),
-                        });
-                    }
-                };
-                let chosen_filter = filter;
-                let filter = self.resolve_filter(sport, filter, courts.as_deref());
-
-                if let Some(chosen) = chosen_filter
-                    && let Some(excluded) =
-                        self.courts_excluded_by(sport, venue.as_ref(), chosen, courts.as_deref())
-                {
-                    return Ok(SubscriptionResult::FilterExcludesCourts {
-                        courts: excluded,
-                        filter: chosen,
-                    });
-                }
-                let id = self
-                    .store
-                    .add(SubscriptionDraft {
-                        user: user.clone(),
-                        sport,
-                        venue: venue.clone(),
-                        schedule,
-                        time_range,
-                        courts: courts.clone(),
-                        filter,
-                    })
-                    .await?;
-                let sub = Subscription {
-                    id,
-                    user: user.clone(),
+                let draft = match self.validate_subscribe(
+                    user,
                     sport,
                     venue,
                     schedule,
-                    time_range,
+                    start_minute,
+                    end_minute,
                     courts,
                     filter,
+                ) {
+                    Ok(draft) => draft,
+                    Err(rejection) => return Ok(rejection),
+                };
+
+                let id = self.store.add(draft.clone()).await?;
+                let sub = Subscription {
+                    id,
+                    user: draft.user,
+                    sport: draft.sport,
+                    venue: draft.venue,
+                    schedule: draft.schedule,
+                    time_range: draft.time_range,
+                    courts: draft.courts,
+                    filter: draft.filter,
                 };
                 let open_slots = self.open_slots_for(&sub).await;
                 Ok(SubscriptionResult::Subscribed {
@@ -132,6 +93,75 @@ impl SubscriptionService {
                 }
             }
         }
+    }
+
+    /// Everything that has to hold before a reminder is worth storing.
+    ///
+    /// `Err` carries the reply explaining why, not a failure: each of these is
+    /// a normal answer to the user, so they are separated from the `Result` the
+    /// storage call returns.
+    #[allow(clippy::too_many_arguments)]
+    fn validate_subscribe(
+        &self,
+        user: &ProviderUserRef,
+        sport: Sport,
+        venue: Option<VenueId>,
+        schedule: Schedule,
+        start_minute: u32,
+        end_minute: u32,
+        courts: Option<Vec<String>>,
+        filter: Option<CourtFilter>,
+    ) -> Result<SubscriptionDraft, SubscriptionResult> {
+        let clubs = self.clubs_of(sport);
+        if clubs.is_empty() {
+            return Err(SubscriptionResult::NoClubsConfigured { sport });
+        }
+        if let Some(chosen) = &venue
+            && !clubs.iter().any(|(id, _)| id == chosen)
+        {
+            return Err(SubscriptionResult::UnknownClub {
+                unknown: chosen.to_string(),
+                available: clubs.into_iter().map(|(_, name)| name).collect(),
+            });
+        }
+
+        let Some(time_range) = TimeRange::new(start_minute, end_minute) else {
+            return Err(SubscriptionResult::InvalidTimeRange);
+        };
+        if let Schedule::Date(date) = schedule
+            && date < self.clock.today()
+        {
+            return Err(SubscriptionResult::InvalidSchedule);
+        }
+
+        let courts = self
+            .canonicalize_courts(sport, venue.as_ref(), courts)
+            .map_err(|unknown| SubscriptionResult::UnknownCourts {
+                unknown,
+                available: self.court_names(sport, venue.as_ref()),
+            })?;
+
+        // A filter the user asked for explicitly is checked against the courts
+        // they named; a defaulted one is not, since it was not their choice.
+        if let Some(chosen) = filter
+            && let Some(excluded) =
+                self.courts_excluded_by(sport, venue.as_ref(), chosen, courts.as_deref())
+        {
+            return Err(SubscriptionResult::FilterExcludesCourts {
+                courts: excluded,
+                filter: chosen,
+            });
+        }
+
+        Ok(SubscriptionDraft {
+            user: user.clone(),
+            sport,
+            venue,
+            schedule,
+            time_range,
+            filter: self.resolve_filter(sport, filter, courts.as_deref()),
+            courts,
+        })
     }
 
     /// Resolves a stored subscription for display, naming its club.
@@ -240,7 +270,10 @@ impl SubscriptionService {
             .filter(|slot| slot.starts_at > now && slot_matches(sub, slot, &registry))
             .collect();
         slots.sort_by_key(|slot| slot.starts_at);
-        slots.into_iter().map(Into::into).collect()
+        slots
+            .into_iter()
+            .map(|slot| self.slot_summary(slot))
+            .collect()
     }
 }
 

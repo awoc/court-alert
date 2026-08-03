@@ -13,7 +13,7 @@ use crate::playtomic::{
     ClubDirectory, PlaytomicAvailabilitySource, PlaytomicCatalogSource, PlaytomicClient,
 };
 use crate::ports::AvailabilityChangeSink;
-use crate::providers::{self, ChatProvider};
+use crate::providers::{self, ChatProvider, discord};
 use crate::store::SqliteStore;
 use crate::subscriptions::{BerlinClock, SubscriptionService};
 use crate::zhs::{Auth, ZhsSlotAvailabilitySource};
@@ -32,6 +32,9 @@ pub struct App {
 impl App {
     pub async fn assemble(settings: Settings) -> Result<Self> {
         let config = Config::load(&settings.config_path)?;
+        validate_against_adapters(&config).with_context(|| {
+            format!("validating config file {}", settings.config_path.display())
+        })?;
         let registry = Arc::new(RwLock::new(build_registry(&config)));
         let chat_providers = providers::build(&settings);
 
@@ -58,12 +61,19 @@ impl App {
         }
         info!(
             venues = config.venues().len(),
-            courts = config
+            // Only the ones config declares; Playtomic venues discover theirs
+            // on their first poll and would otherwise read as zero courts.
+            configured_courts = config
                 .venues()
                 .iter()
                 .filter_map(|venue| config.catalog_for(&venue.id))
                 .map(|catalog| catalog.courts().len())
                 .sum::<usize>(),
+            discovering_venues = config
+                .venues()
+                .iter()
+                .filter(|venue| config.catalog_for(&venue.id).is_none())
+                .count(),
             poll_interval_secs = config.poll_interval_secs(),
             lookahead_days = config.lookahead_days(),
             surface_filter = %config.surface_filter(),
@@ -156,6 +166,52 @@ impl App {
     }
 }
 
+/// The limits the adapters impose on a configuration.
+///
+/// These live at the composition root rather than in `Config::validate`,
+/// because they are facts about the chosen adapters and not about the config
+/// file: swap the chat provider and the club-choice limit is meaningless, yet
+/// `Config` would go on enforcing it. Only this function knows both which
+/// adapters are wired up and what they can do.
+fn validate_against_adapters(config: &Config) -> Result<()> {
+    for venue in config.venues() {
+        // Beyond a provider's own horizon every extra day is a request that can
+        // only come back empty.
+        if let Some(cap) = provider_lookahead_cap(venue.provider()) {
+            let requested = config.lookahead_days_for(venue);
+            anyhow::ensure!(
+                requested <= cap,
+                "venue {}: {} serves at most {cap} days, but lookahead_days is {requested}",
+                venue.id,
+                venue.provider(),
+            );
+        }
+    }
+
+    // Beyond this, `/padel` could not offer every club by name.
+    let padel_venues = config
+        .venues()
+        .iter()
+        .filter(|venue| venue.sport == Sport::Padel)
+        .count();
+    anyhow::ensure!(
+        padel_venues <= discord::MAX_CLUB_CHOICES,
+        "{padel_venues} padel venues are configured, but Discord allows at most {} \
+         club choices on /padel; monitoring more would leave the rest selectable \
+         only through \"all clubs\"",
+        discord::MAX_CLUB_CHOICES
+    );
+    Ok(())
+}
+
+fn provider_lookahead_cap(provider: Provider) -> Option<i64> {
+    match provider {
+        // ZHS publishes no horizon; the booking window closes per slot instead.
+        Provider::Zhs => None,
+        Provider::Playtomic => Some(crate::playtomic::MAX_LOOKAHEAD_DAYS),
+    }
+}
+
 /// Seeds the registry from config: ZHS venues arrive with their catalog, and
 /// every other venue starts `Unresolved` for its own loop to fill in.
 fn build_registry(config: &Config) -> VenueRegistry {
@@ -163,7 +219,7 @@ fn build_registry(config: &Config) -> VenueRegistry {
     for venue in config.venues() {
         registry.register(venue);
         if let Some(catalog) = config.catalog_for(&venue.id) {
-            registry.set_catalog(venue.id.clone(), catalog.clone());
+            registry.set_catalog(&venue.id, catalog.clone());
         }
     }
     registry
@@ -213,24 +269,24 @@ fn zhs_auth(config: &Config, credentials: Option<Credentials>) -> Result<Auth> {
     let credentials = credentials.context(
         "a ZHS venue is configured, so COURT_ALERT_EMAIL and COURT_ALERT_PASSWORD must be set",
     )?;
-    let base_url = config
+
+    let mut zhs = config
         .venues()
         .iter()
-        .find_map(|venue| match &venue.identity {
+        .filter_map(|venue| match &venue.identity {
             VenueIdentity::Zhs { base_url } => Some(base_url.clone()),
             _ => None,
-        })
-        .context("no ZHS venue configured")?;
-
-    let extra = config
-        .venues()
-        .iter()
-        .filter(|venue| venue.provider() == Provider::Zhs)
-        .count();
+        });
+    // Exactly one, checked as one step: the caller only reaches this under
+    // `uses(Provider::Zhs)`, so "none" is a wiring bug rather than a
+    // configuration one, and a second venue would need its own credentials.
+    let base_url = zhs.next().context("no ZHS venue configured")?;
+    let extra = zhs.count();
     anyhow::ensure!(
-        extra == 1,
-        "only one ZHS venue is supported (found {extra}); \
-         a second would need its own credentials"
+        extra == 0,
+        "only one ZHS venue is supported (found {}); \
+         a second would need its own credentials",
+        extra + 1
     );
 
     Auth::new(base_url, credentials)
@@ -268,6 +324,65 @@ provider = "playtomic"
 tenant_id = "f8483f72-1d14-49eb-a98b-e4b89d969c78"
 slug = "casa-padel"
 "#;
+
+    /// By the number, not by prose: Playtomic serves today…today+14
+    /// *inclusive*, and the window is half-open, so 15 covers exactly the
+    /// horizon and 16 adds a guaranteed-empty request.
+    #[test]
+    fn a_playtomic_venue_may_look_ahead_fifteen_days_but_not_sixteen() {
+        let with = |days: i64| {
+            let config = Config::parse(
+                &PADEL.replace("lookahead_days = 15", &format!("lookahead_days = {days}")),
+            )
+            .expect("parse");
+            validate_against_adapters(&config)
+        };
+
+        assert!(with(15).is_ok(), "15 days is exactly the horizon");
+        let error = with(16).expect_err("16 days must be rejected");
+        assert!(
+            format!("{error:#}").contains("15"),
+            "the cap is not named: {error:#}"
+        );
+    }
+
+    /// ZHS publishes no horizon, so only the global limit applies.
+    #[test]
+    fn a_zhs_venue_is_not_capped_at_the_playtomic_horizon() {
+        let config = Config::parse(&ZHS.replace("lookahead_days = 7", "lookahead_days = 30"))
+            .expect("parse");
+
+        assert!(validate_against_adapters(&config).is_ok());
+    }
+
+    /// Discord caps a command option at 25 choices, so beyond that `/padel`
+    /// could not offer every club by name — and quietly dropping the rest would
+    /// leave them selectable only through "all clubs".
+    #[test]
+    fn more_padel_venues_than_discord_can_offer_are_rejected() {
+        let limit = discord::MAX_CLUB_CHOICES;
+        let club = |i: usize| {
+            format!(
+                "\n[[venues]]\nid = \"club-{i}\"\ndisplay_name = \"Club {i}\"\n\
+                 sport = \"padel\"\nprovider = \"playtomic\"\n\
+                 tenant_id = \"f8483f72-1d14-49eb-a98b-e4b89d969c78\"\n\
+                 slug = \"club-{i}\"\nlookahead_days = 15\n"
+            )
+        };
+        let with = |count: usize| {
+            let clubs: String = (0..count).map(club).collect();
+            let config = Config::parse(&format!("{ZHS}{clubs}")).expect("parse");
+            validate_against_adapters(&config)
+        };
+
+        assert!(with(limit).is_ok(), "{limit} clubs must still be accepted");
+
+        let error = with(limit + 1).expect_err("more clubs than Discord can offer");
+        assert!(
+            format!("{error:#}").contains(&limit.to_string()),
+            "the limit is not named: {error:#}"
+        );
+    }
 
     /// Playtomic needs no credentials, as the README says, so a deployment with
     /// only Playtomic venues must start without the ZHS environment variables.

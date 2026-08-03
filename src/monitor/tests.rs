@@ -106,7 +106,7 @@ async fn a_venue_loads_only_its_own_previous_slots() {
 /// A club whose page is unreachable must not keep hammering it every tick.
 #[test]
 fn discovery_backs_off_after_consecutive_failures_and_recovers() {
-    let mut state = CatalogState::default();
+    let mut state = DiscoveryState::default();
     assert!(state.may_attempt(), "the first attempt is never delayed");
 
     state.failed();
@@ -127,7 +127,7 @@ fn discovery_backs_off_after_consecutive_failures_and_recovers() {
 
 #[test]
 fn the_backoff_is_capped() {
-    let mut state = CatalogState::default();
+    let mut state = DiscoveryState::default();
     for _ in 0..20 {
         state.failed();
     }
@@ -138,7 +138,7 @@ fn the_backoff_is_capped() {
 /// nobody tells us.
 #[test]
 fn a_resolved_catalog_is_fresh_until_the_refresh_interval() {
-    let mut state = CatalogState::default();
+    let mut state = DiscoveryState::default();
     assert!(state.is_stale(), "an unresolved catalog is always stale");
 
     state.succeeded();
@@ -154,7 +154,7 @@ fn a_resolved_catalog_is_fresh_until_the_refresh_interval() {
 /// unknown court would retry discovery every tick.
 #[test]
 fn invalidating_a_catalog_leaves_the_backoff_alone() {
-    let mut state = CatalogState::default();
+    let mut state = DiscoveryState::default();
     state.failed();
     state.failed();
 
@@ -391,7 +391,7 @@ mod loop_harness {
     async fn a_backed_off_venue_keeps_polling_with_its_cached_catalog() {
         let h = harness(false).await;
         let mut state = MonitorState::new(BookableSlotSnapshot::new(), false);
-        let mut catalog = CatalogState::default();
+        let mut catalog = DiscoveryState::default();
 
         // First tick resolves the catalog and polls.
         h.loop_.tick(&mut state, &mut catalog).await.unwrap();
@@ -424,7 +424,7 @@ mod loop_harness {
         let h = harness(false).await;
         h.catalogs.failing.store(true, Ordering::SeqCst);
         let mut state = MonitorState::new(BookableSlotSnapshot::new(), false);
-        let mut catalog = CatalogState::default();
+        let mut catalog = DiscoveryState::default();
 
         // First attempt: a hard error, since there is no catalog to fall back on.
         assert!(h.loop_.tick(&mut state, &mut catalog).await.is_err());
@@ -466,7 +466,7 @@ mod loop_harness {
     async fn a_poll_publishes_its_changes_exactly_once() {
         let h = harness(false).await;
         let mut state = MonitorState::new(BookableSlotSnapshot::new(), false);
-        let mut catalog = CatalogState::default();
+        let mut catalog = DiscoveryState::default();
 
         h.loop_.tick(&mut state, &mut catalog).await.unwrap();
         assert_eq!(batches(&h), 1, "the first poll publishes its new slot");
@@ -483,7 +483,7 @@ mod loop_harness {
     async fn a_new_venue_is_quiet_and_then_records_that_it_polled() {
         let h = harness(true).await;
         let mut state = MonitorState::new(BookableSlotSnapshot::new(), true);
-        let mut catalog = CatalogState::default();
+        let mut catalog = DiscoveryState::default();
 
         h.loop_.tick(&mut state, &mut catalog).await.unwrap();
 
