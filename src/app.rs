@@ -5,10 +5,11 @@ use anyhow::{Context as _, Result};
 use tracing::{info, warn};
 
 use crate::chat;
+use crate::chat::discord::DiscordNotifier;
 use crate::config::{Config, Settings};
 use crate::model::{Sport, VenueRegistry};
 use crate::monitor::Monitor;
-use crate::notify::{ChannelSink, DiscordNotifier, SportScopedSink, SurfaceFilteredSink};
+use crate::notify::{ChannelSink, SportScopedSink, SurfaceFilteredSink};
 use crate::ports::{AvailabilityChangeSink, ProviderSources};
 use crate::sources;
 use crate::store::SqliteStore;

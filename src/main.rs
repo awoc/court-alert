@@ -7,8 +7,8 @@ use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 
 use court_alert::app::App;
+use court_alert::chat::discord::DiscordErrorLayer;
 use court_alert::config::Settings;
-use court_alert::notify::DiscordErrorLayer;
 use court_alert::time::BerlinTime;
 
 #[tokio::main]

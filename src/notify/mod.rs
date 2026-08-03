@@ -1,14 +1,15 @@
-mod discord_http;
-mod error_webhook;
-mod format;
+//! How availability changes reach the outside world.
+//!
+//! Only the parts that hold for every destination: the channel into the
+//! subscription dispatcher, and the decorators that narrow what a broadcast
+//! carries. Anything that knows a particular service lives with that service —
+//! Discord's webhook is in [`crate::chat::discord`].
+
 mod sport;
 mod surface;
-mod webhook;
 
-pub use error_webhook::DiscordErrorLayer;
 pub use sport::SportScopedSink;
 pub use surface::SurfaceFilteredSink;
-pub use webhook::DiscordNotifier;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;

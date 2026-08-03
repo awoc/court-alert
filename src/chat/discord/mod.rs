@@ -1,3 +1,7 @@
+//! Discord: the slash-command bot, the direct messages it sends, and the
+//! broadcast webhook. One service, one module — the bot and the webhook share
+//! its rendering and its HTTP quirks.
+
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -13,9 +17,16 @@ use crate::subscriptions::SubscriptionService;
 use crate::subscriptions::contract::{AvailabilityAlert, DirectMessageSender};
 
 mod commands;
+mod error_webhook;
+mod format;
 mod handler;
+mod http;
 mod parse;
 mod render;
+mod webhook;
+
+pub use error_webhook::DiscordErrorLayer;
+pub use webhook::DiscordNotifier;
 
 use handler::Handler;
 use render::render_alert;

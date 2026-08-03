@@ -10,10 +10,8 @@ use crate::model::{AlertLine, AvailabilityChange};
 use crate::ports::{AlertMessageRepository, AvailabilityChangeSink};
 use crate::time::today_berlin;
 
-use super::discord_http::{
-    HTTP_TIMEOUT, redact_discord_webhook_tokens, send_with_rate_limit_retry,
-};
 use super::format::{added_slots, chunk_slots, removed_slot_ids, render};
+use super::http::{HTTP_TIMEOUT, redact_discord_webhook_tokens, send_with_rate_limit_retry};
 
 // Other Discord 404 codes do not prove that the tracked message is gone.
 const DISCORD_UNKNOWN_MESSAGE: i64 = 10008;

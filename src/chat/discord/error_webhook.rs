@@ -9,9 +9,7 @@ use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context as LayerContext;
 
-use super::discord_http::{
-    HTTP_TIMEOUT, redact_discord_webhook_tokens, send_with_rate_limit_retry,
-};
+use super::http::{HTTP_TIMEOUT, redact_discord_webhook_tokens, send_with_rate_limit_retry};
 
 const APPLICATION_TARGET: &str = "court_alert";
 const DISCORD_MESSAGE_LIMIT: usize = 2_000;
