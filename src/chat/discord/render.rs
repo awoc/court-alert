@@ -15,14 +15,10 @@ pub(super) struct ReplyMessage {
 pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
     let lines = match reply {
         SubscriptionResult::SubscriptionList(subs) if !subs.is_empty() => {
-            return reminder_messages(
-                "**Your reminders:**",
-                subs.iter().map(|s| (summary_line(s), s.id)).collect(),
-            );
+            return reminder_messages(subs.iter().map(|s| (summary_line(s), s.id)).collect());
         }
         SubscriptionResult::AllSubscriptions(all) if !all.is_empty() => {
             return reminder_messages(
-                "**All reminders:**",
                 all.iter()
                     .map(|a| (owned_summary_line(a), a.summary.id))
                     .collect(),
@@ -114,8 +110,8 @@ fn text_messages(lines: Vec<String>) -> Vec<ReplyMessage> {
         .collect()
 }
 
-fn reminder_messages(header: &str, entries: Vec<(String, i64)>) -> Vec<ReplyMessage> {
-    let mut messages = text_messages(vec![header.to_string()]);
+fn reminder_messages(entries: Vec<(String, i64)>) -> Vec<ReplyMessage> {
+    let mut messages = text_messages(vec![]);
     let (with_button, rest) = entries.split_at(entries.len().min(MAX_UNSUBSCRIBE_BUTTONS));
     for (line, id) in with_button {
         let mut chunks = text_messages(vec![line.clone()]);
@@ -330,7 +326,6 @@ mod tests {
     #[test]
     fn renders_list_lines() {
         let text = reply_text(&SubscriptionResult::SubscriptionList(vec![summary()]));
-        assert!(text.contains("**Your reminders:**"));
         assert!(text.contains("#7 – Tue 18:00–20:00 (all courts at all tennis clubs)"));
     }
 
@@ -338,8 +333,7 @@ mod tests {
     fn every_listed_reminder_gets_its_own_message_with_an_unsubscribe_button() {
         let messages = render_reply(&SubscriptionResult::SubscriptionList(summaries(3)));
 
-        assert_eq!(messages.len(), 4); // header + one per reminder
-        assert_eq!(messages[0].content, "**Your reminders:**");
+        assert_eq!(messages.len(), 4); // one per reminder
         assert_eq!(messages[0].unsubscribe_id, None); // the header has no button
         for (message, id) in messages[1..].iter().zip(1..=3) {
             assert!(message.content.starts_with(&format!("#{id} – ")));
