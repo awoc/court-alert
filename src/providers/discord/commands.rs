@@ -7,8 +7,7 @@ use tracing::info;
 
 use crate::model::VenueId;
 
-/// Discord caps a string option at 25 choices.
-const MAX_CLUB_CHOICES: usize = 25;
+use super::MAX_CLUB_CHOICES;
 
 pub(super) async fn register_commands(
     ctx: &Context,
@@ -111,6 +110,9 @@ fn build_padel_cmd(clubs: &[(VenueId, String)]) -> CreateCommand {
             "Club to watch; defaults to all clubs",
         )
         .required(false);
+        // Config rejects anything beyond the limit, so this cannot truncate
+        // silently; the guard is belt-and-braces against an over-long list
+        // reaching Discord and having the whole registration rejected.
         for (id, display_name) in clubs.iter().take(MAX_CLUB_CHOICES) {
             club = club.add_string_choice(display_name, id.as_str());
         }
@@ -212,9 +214,19 @@ mod tests {
         assert!(names.contains(&"location".to_string()));
     }
 
+    /// Config refuses a configuration this large, so reaching the cap here
+    /// should be impossible — but registering an over-long option would have
+    /// Discord reject every command, so the list is clamped regardless.
     #[test]
     fn padel_never_exceeds_discords_choice_limit() {
         let command = build_padel_cmd(&clubs(MAX_CLUB_CHOICES + 5));
+
+        assert_eq!(choice_values(&command, "club").len(), MAX_CLUB_CHOICES);
+    }
+
+    #[test]
+    fn every_club_of_a_supported_configuration_is_offered_by_name() {
+        let command = build_padel_cmd(&clubs(MAX_CLUB_CHOICES));
 
         assert_eq!(choice_values(&command, "club").len(), MAX_CLUB_CHOICES);
     }

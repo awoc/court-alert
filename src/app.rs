@@ -282,9 +282,12 @@ slug = "casa-padel"
     fn a_zhs_venue_without_credentials_names_the_missing_variables() {
         let config = Config::parse(ZHS).expect("parse");
 
-        let error = build_sources(&config, None)
-            .err()
-            .expect("missing credentials must be rejected");
+        // Not `expect_err`: `ProviderSources` holds trait objects and has no
+        // `Debug`, so the success arm cannot be formatted.
+        let error = match build_sources(&config, None) {
+            Ok(_) => panic!("missing credentials must be rejected"),
+            Err(error) => error,
+        };
 
         let message = format!("{error:#}");
         assert!(message.contains("COURT_ALERT_EMAIL"), "got: {message}");

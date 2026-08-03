@@ -17,13 +17,13 @@ Each club is a venue with a sport: `/subscribe` covers tennis venues and `/padel
    - `lookahead_days` — booking horizon to query.
    - `quiet_first_poll` — suppress alerts for slots already open when an empty database is initialized.
    - `operating_window_start_hour` / `operating_window_end_hour` — Berlin-local half-open polling window.
-   - `surface_filter` — `clay` (default), `synthetic` or `all`. Restricts what the webhook channel posts, and is the default for new subscriptions.
+   - `surface_filter` — `clay` (default), `synthetic` or `all`. Restricts what the webhook channel posts, and is the default for new `/subscribe` reminders. It is a **tennis** setting: `indoor`/`outdoor` are rejected, since no tennis court carries a location and the filter would silently match nothing. Use `/padel`'s `location` option for those.
 
    Each monitored club is a `[[venues]]` entry:
    - `id` — a stable key of your choosing. It is the join key for stored slots, so **do not change it once set**: a rename orphans that venue's rows. The existing deployment keeps `id = "zhs-munich"`.
    - `display_name`, `sport` (`tennis` or `padel`) and `provider` (`zhs` or `playtomic`).
    - For `provider = "zhs"`: `base_url`, plus a `[[venues.courts]]` list — each court with an `id`, a `name`, and for a tennis venue a `surface` of `clay` (default) or `synthetic`.
-   - For `provider = "playtomic"`: `tenant_id` and `slug` (the `/clubs/<slug>` path on playtomic.com). **No credentials and no court list**: the courts, their indoor/outdoor location and the club's opening hours are read from the club page at startup and refreshed daily.
+   - For `provider = "playtomic"`: `tenant_id` and `slug` (the `/clubs/<slug>` path on playtomic.com). **No credentials and no court list**: the courts, their indoor/outdoor location and the club's opening hours are read from the club page at startup and refreshed daily. At most 25 padel venues can be configured, because that is how many clubs Discord lets `/padel` offer by name.
    - `poll_interval_secs`, `lookahead_days`, `operating_window_start_hour` / `operating_window_end_hour` — optional per-venue overrides of the globals above. Playtomic serves today through today+14, so `lookahead_days` above 15 is rejected for those venues.
 
    Every court is polled whatever the filter says, so subscribers can still ask for a surface the channel does not carry.

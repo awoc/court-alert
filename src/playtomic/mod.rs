@@ -425,6 +425,43 @@ mod tests {
         assert!(format!("{error:#}").contains("429"), "got: {error:#}");
     }
 
+    /// A wrong-date response must fail the venue fetch, not yield a short day.
+    /// The monitor retains the previous snapshot on failure, which is what
+    /// keeps a date-semantics change from becoming a wave of false
+    /// "became unbookable" DMs followed by a wave of duplicates.
+    #[tokio::test]
+    async fn a_response_for_the_wrong_date_fails_the_venue_fetch() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/clubs/availability"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"[{"resource_id":"b2d8552d-5794-4abc-879f-61d53f587978",
+                     "start_date":"2026-08-09",
+                     "slots":[{"start_time":"09:00:00","duration":60}]}]"#,
+            ))
+            .mount(&server)
+            .await;
+        let source = PlaytomicAvailabilitySource::new(
+            PlaytomicClient::for_test(server.uri()),
+            ClubDirectory::new(),
+        );
+
+        let error = source
+            .fetch(
+                &venue(Sport::Padel),
+                &CourtCatalog::default(),
+                Utc.with_ymd_and_hms(2026, 8, 4, 22, 0, 0).unwrap(),
+                Utc.with_ymd_and_hms(2026, 8, 5, 22, 0, 0).unwrap(),
+            )
+            .await
+            .expect_err("a wrong-date response must fail the fetch");
+
+        assert!(
+            format!("{error:#}").contains("2026-08-09"),
+            "got: {error:#}"
+        );
+    }
+
     #[test]
     fn the_sport_id_is_playtomics_own_vocabulary() {
         assert_eq!(playtomic_sport_id(Sport::Padel), "PADEL");

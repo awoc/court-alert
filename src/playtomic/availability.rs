@@ -68,7 +68,7 @@ impl VenueAvailabilitySource for PlaytomicAvailabilitySource {
                 .with_context(|| {
                     format!("fetching availability for venue {} on {date}", venue.id)
                 })?;
-            let for_date = observations_for(venue, catalog, *date, resources);
+            let for_date = observations_for(venue, catalog, *date, resources)?;
             // Only the first date: a genuine break would otherwise warn once
             // per date, fifteen times a tick.
             if index == 0
@@ -95,12 +95,17 @@ impl VenueAvailabilitySource for PlaytomicAvailabilitySource {
     }
 }
 
+/// ⚠️ A date mismatch fails the whole fetch rather than dropping the offending
+/// resource. Returning a partial day would be worse than returning nothing: the
+/// monitor would diff the gap as "these slots became unbookable", DM everyone
+/// watching them, and then DM everyone again when the next poll brought them
+/// back. A failed fetch simply retains the previous snapshot.
 fn observations_for(
     venue: &Venue,
     catalog: &CourtCatalog,
     requested: NaiveDate,
     resources: Vec<ResourceAvailabilityDto>,
-) -> Vec<SlotObservation> {
+) -> Result<Vec<SlotObservation>> {
     // Keyed on the composed UTC instant, not on `(resource_id, start_time)`:
     // "18:00" recurs on every date, so the latter would fold a whole week of
     // fetches onto one slot. BTreeMap so the output order is deterministic.
@@ -109,16 +114,13 @@ fn observations_for(
     for resource in resources {
         // The cheap guard that turns a date-semantics change into a visible
         // error rather than a silent off-by-one-day.
-        if resource.start_date != requested {
-            warn!(
-                venue = %venue.id,
-                requested = %requested,
-                returned = %resource.start_date,
-                error = "playtomic returned availability for a different date than requested",
-                "playtomic date mismatch; skipping the response"
-            );
-            continue;
-        }
+        anyhow::ensure!(
+            resource.start_date == requested,
+            "venue {}: asked playtomic for {requested} but resource {} came back for {}",
+            venue.id,
+            resource.resource_id,
+            resource.start_date
+        );
         for slot in resource.slots {
             if slot.duration <= 0 {
                 continue;
@@ -133,7 +135,7 @@ fn observations_for(
         }
     }
 
-    shortest
+    Ok(shortest
         .into_iter()
         .map(|((resource_id, starts_at), duration)| SlotObservation {
             venue_id: venue.id.clone(),
@@ -160,7 +162,7 @@ fn observations_for(
             already_on_waiting_list: false,
             blocked_by_resource: false,
         })
-        .collect()
+        .collect())
 }
 
 /// Runs the opening-hours canary over a day's observations.
@@ -239,7 +241,7 @@ mod tests {
     }
 
     fn observations() -> Vec<SlotObservation> {
-        observations_for(&venue(), &catalog(), sample_date(), parse(SAMPLE))
+        observations_for(&venue(), &catalog(), sample_date(), parse(SAMPLE)).expect("fixture day")
     }
 
     fn at(court: &str, hour: u32, minute: u32) -> Option<SlotObservation> {
@@ -298,7 +300,7 @@ mod tests {
                 r#"[{{"resource_id":"{COURT_1}","start_date":"{date}",
                      "slots":[{{"start_time":"18:00:00","duration":60,"price":"44 EUR"}}]}}]"#
             );
-            observations_for(&venue(), &catalog(), date, parse(&raw))
+            observations_for(&venue(), &catalog(), date, parse(&raw)).expect("one day")
         };
 
         let mut both = day(monday);
@@ -323,22 +325,44 @@ mod tests {
                  "slots":[{{"start_time":"09:00:00","duration":60}}]}}]"#
         );
 
-        let observations = observations_for(&venue(), &catalog(), sample_date(), parse(&raw));
+        let observations =
+            observations_for(&venue(), &catalog(), sample_date(), parse(&raw)).expect("one day");
 
         assert_eq!(observations.len(), 1);
         assert_eq!(observations[0].court_name, unknown.to_string());
     }
 
-    /// A silent off-by-one-day is worse than no data, so a mismatched
-    /// `start_date` drops the response rather than shifting every slot.
+    /// A mismatched `start_date` fails the fetch rather than yielding a
+    /// partial day. Silently dropping the resource would leave a gap the
+    /// monitor reads as "these slots became unbookable", DMing everyone
+    /// watching them and DMing them again when the next poll restored them.
     #[test]
-    fn a_response_for_the_wrong_date_is_discarded() {
+    fn a_response_for_the_wrong_date_fails_the_fetch() {
         let raw = format!(
             r#"[{{"resource_id":"{COURT_1}","start_date":"2026-08-06",
                  "slots":[{{"start_time":"09:00:00","duration":60}}]}}]"#
         );
 
-        assert!(observations_for(&venue(), &catalog(), sample_date(), parse(&raw)).is_empty());
+        let error = observations_for(&venue(), &catalog(), sample_date(), parse(&raw))
+            .expect_err("a wrong-date response must be rejected");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("2026-08-05"), "got: {message}");
+        assert!(message.contains("2026-08-06"), "got: {message}");
+    }
+
+    /// The mismatch must fail the day even when other resources look fine —
+    /// a partially correct day is exactly the shape that causes false alerts.
+    #[test]
+    fn one_wrong_date_among_several_still_fails_the_fetch() {
+        let raw = format!(
+            r#"[{{"resource_id":"{COURT_1}","start_date":"2026-08-05",
+                 "slots":[{{"start_time":"09:00:00","duration":60}}]}},
+                {{"resource_id":"{COURT_6}","start_date":"2026-08-06",
+                 "slots":[{{"start_time":"09:00:00","duration":60}}]}}]"#
+        );
+
+        assert!(observations_for(&venue(), &catalog(), sample_date(), parse(&raw)).is_err());
     }
 
     /// The API lists only what is free, so there is no booking deadline — but a
@@ -355,6 +379,10 @@ mod tests {
 
     #[test]
     fn an_empty_response_yields_no_slots() {
-        assert!(observations_for(&venue(), &catalog(), sample_date(), parse("[]")).is_empty());
+        assert!(
+            observations_for(&venue(), &catalog(), sample_date(), parse("[]"))
+                .expect("an empty day is valid")
+                .is_empty()
+        );
     }
 }

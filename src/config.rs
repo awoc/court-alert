@@ -157,6 +157,32 @@ impl Config {
             self.poll_interval_secs > 0,
             "poll_interval_secs must be greater than zero"
         );
+        // `surface_filter` governs the tennis broadcast channel and the default
+        // for new `/subscribe` reminders. A location filter parses but matches
+        // no tennis court, so it would silently mute the channel and hand every
+        // new reminder a filter that can never fire.
+        anyhow::ensure!(
+            matches!(
+                self.surface_filter,
+                CourtFilter::Any | CourtFilter::Surface(_)
+            ),
+            "surface_filter is a tennis setting and accepts only all, clay or \
+             synthetic (got {}); use /padel's location option for indoor and outdoor",
+            self.surface_filter
+        );
+        // Beyond this, `/padel` could not offer every club by name.
+        let padel_venues = self
+            .venues
+            .iter()
+            .filter(|venue| venue.sport == Sport::Padel)
+            .count();
+        anyhow::ensure!(
+            padel_venues <= crate::providers::discord::MAX_CLUB_CHOICES,
+            "{padel_venues} padel venues are configured, but Discord allows at most {} \
+             club choices on /padel; monitoring more would leave the rest selectable \
+             only through \"all clubs\"",
+            crate::providers::discord::MAX_CLUB_CHOICES
+        );
         anyhow::ensure!(
             (1..=MAX_LOOKAHEAD_DAYS).contains(&self.lookahead_days),
             "lookahead_days must be between 1 and {MAX_LOOKAHEAD_DAYS}"
@@ -846,6 +872,54 @@ name = "Tennis Court 1"
             assert_eq!(cfg.surface_filter(), expected);
         }
         assert!(validated(&format!("surface_filter = \"grass\"\n{SAMPLE}")).is_err());
+    }
+
+    /// `surface_filter` drives the tennis broadcast channel and the default for
+    /// new `/subscribe` reminders. A location parses as a `CourtFilter` but
+    /// matches no tennis court, so accepting one would silently mute the
+    /// channel and give every new reminder a filter that can never fire.
+    #[test]
+    fn surface_filter_rejects_a_padel_location() {
+        for raw in ["indoor", "outdoor"] {
+            let error = validated(&format!("surface_filter = \"{raw}\"\n{SAMPLE}"))
+                .err()
+                .unwrap_or_else(|| panic!("surface_filter = {raw:?} must be rejected"));
+            let message = format!("{error:#}");
+            assert!(message.contains("tennis"), "got: {message}");
+            assert!(
+                message.contains("/padel"),
+                "the fix is not named: {message}"
+            );
+        }
+    }
+
+    /// Discord caps a command option at 25 choices, so beyond that `/padel`
+    /// could not offer every club by name — and quietly dropping the rest would
+    /// leave them selectable only through "all clubs".
+    #[test]
+    fn more_padel_venues_than_discord_can_offer_are_rejected() {
+        let limit = crate::providers::discord::MAX_CLUB_CHOICES;
+        let club = |i: usize| {
+            format!(
+                "\n[[venues]]\nid = \"club-{i}\"\ndisplay_name = \"Club {i}\"\n\
+                 sport = \"padel\"\nprovider = \"playtomic\"\n\
+                 tenant_id = \"f8483f72-1d14-49eb-a98b-e4b89d969c78\"\n\
+                 slug = \"club-{i}\"\nlookahead_days = 15\n"
+            )
+        };
+        let with = |count: usize| {
+            let clubs: String = (0..count).map(club).collect();
+            Config::parse(&format!("{SAMPLE}{clubs}"))
+        };
+
+        assert!(with(limit).is_ok(), "{limit} clubs must still be accepted");
+
+        let error =
+            with(limit + 1).expect_err("more clubs than Discord can offer must be rejected");
+        assert!(
+            format!("{error:#}").contains(&limit.to_string()),
+            "the limit is not named: {error:#}"
+        );
     }
 
     #[test]
