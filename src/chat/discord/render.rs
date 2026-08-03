@@ -191,7 +191,7 @@ fn owned_summary_line(owned: &OwnedSubscriptionSummary) -> String {
 }
 
 pub(super) fn render_alert(alert: &AvailabilityAlert) -> Vec<String> {
-    let mut lines = vec!["**New free courts:**".to_string()];
+    let mut lines = vec![];
     for s in &alert.slots {
         lines.push(fmt_club_slot_line(
             &s.club,
@@ -503,7 +503,6 @@ mod tests {
             slots: vec![slot_info("Court 2")],
         });
         assert_eq!(msgs.len(), 1);
-        assert!(msgs[0].starts_with("**New free courts:**"));
         assert!(msgs[0].contains("• ZHS München — Court 2 : Tue, 02.06.2026 20:00–21:00"));
         assert!(!msgs[0].contains("<@"));
     }
@@ -529,9 +528,8 @@ mod tests {
         });
         assert_eq!(msgs.len(), 1);
         let lines: Vec<&str> = msgs[0].lines().collect();
-        assert_eq!(lines[0], "**New free courts:**");
-        assert!(lines[1].starts_with("• ZHS München — Court 2 : "));
-        assert!(lines[2].starts_with("• ZHS München — Court 5 : "));
+        assert!(lines[0].starts_with("• ZHS München — Court 2 : "));
+        assert!(lines[1].starts_with("• ZHS München — Court 5 : "));
     }
 
     #[test]
