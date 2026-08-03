@@ -139,6 +139,10 @@ impl Monitor {
     /// Scoped replacement only ever touches a venue's own rows, so a club
     /// removed from config would keep its slots forever — and the subscribe
     /// preview would keep offering them.
+    ///
+    /// The slots and the "has polled" markers are swept together. Dropping only
+    /// the slots would leave a re-added venue looking established but with an
+    /// empty snapshot, so its first poll would announce its entire horizon.
     async fn sweep_removed_venues(&self) {
         let configured: Vec<_> = self
             .config
@@ -152,6 +156,18 @@ impl Monitor {
             Err(error) => warn!(
                 error = %format!("{error:#}"),
                 "sweeping slots of removed venues failed"
+            ),
+        }
+        match self
+            .venue_state
+            .delete_venue_state_except(&configured)
+            .await
+        {
+            Ok(0) => {}
+            Ok(removed) => info!(removed, "dropped state of venues no longer configured"),
+            Err(error) => warn!(
+                error = %format!("{error:#}"),
+                "sweeping state of removed venues failed"
             ),
         }
     }
@@ -211,13 +227,21 @@ impl VenueLoop {
         loop {
             interval.tick().await;
             match self.tick(&mut state, &mut catalog).await {
-                Ok(()) => failures.succeeded(&self.venue),
+                Ok(TickOutcome::Polled) => failures.succeeded(&self.venue),
+                // A tick that never ran is neither: counting it as a success
+                // would report "recovered" in the middle of an outage, and the
+                // next failure would warn all over again.
+                Ok(TickOutcome::Skipped) => {}
                 Err(error) => failures.failed(&self.venue, &error),
             }
         }
     }
 
-    async fn tick(&self, state: &mut MonitorState, catalog: &mut CatalogState) -> Result<()> {
+    async fn tick(
+        &self,
+        state: &mut MonitorState,
+        catalog: &mut CatalogState,
+    ) -> Result<TickOutcome> {
         if !is_within_operating_window(Utc::now(), self.operating_window) {
             debug!(
                 venue = %self.venue.id,
@@ -225,14 +249,14 @@ impl VenueLoop {
                 end_hour = self.operating_window.end_hour,
                 "outside Berlin operating window; skipping poll"
             );
-            return Ok(());
+            return Ok(TickOutcome::Skipped);
         }
 
         // The loop owns the sequence: discover, then fetch. It is therefore
         // the only writer of this venue's registry entry, and the write is a
         // short, await-free swap.
         let Some(courts) = self.resolve_catalog(catalog).await? else {
-            return Ok(());
+            return Ok(TickOutcome::Skipped);
         };
 
         let (starts_at, ends_at) = utc_day_window(self.lookahead_days);
@@ -273,23 +297,31 @@ impl VenueLoop {
             self.publish(&changes).await;
         }
 
+        // Committed before the marker write, and the marker write cannot fail
+        // the tick: leaving `previous` stale after publishing would recompute
+        // the identical changes next tick and send every alert twice. A marker
+        // that never lands only means the venue starts quiet after a restart,
+        // which is the harmless direction.
+        state.commit(current);
+
         // Recorded only after a successful poll, so a venue that never manages
         // one stays quiet rather than announcing its whole horizon later.
-        self.venue_state
-            .mark_initialised(&self.venue.id)
-            .await
-            .with_context(|| format!("recording the state of venue {}", self.venue.id))?;
-
-        state.commit(current);
-        Ok(())
+        if let Err(error) = self.venue_state.mark_initialised(&self.venue.id).await {
+            warn!(
+                venue = %self.venue.id,
+                error = %format!("{error:#}"),
+                "recording venue state failed; the next restart may re-suppress this venue"
+            );
+        }
+        Ok(TickOutcome::Polled)
     }
 
     /// The venue's catalog, discovering or refreshing it when due.
     ///
-    /// `Ok(None)` means "not this tick": discovery failed and the venue is
-    /// backing off. That skips the poll rather than failing it, so the venue's
-    /// rows stay put and every other venue keeps running — a club whose page is
-    /// down must not look like a club whose courts all got booked.
+    /// `Ok(None)` means "not this tick": there is no catalog at all and
+    /// discovery is backing off. The backoff gates the discovery *attempt*, not
+    /// the poll — a cached catalog is always usable, however stale, because
+    /// names drifting is a far smaller problem than a venue going quiet.
     async fn resolve_catalog(&self, state: &mut CatalogState) -> Result<Option<Arc<CourtCatalog>>> {
         let cached = self
             .registry
@@ -302,8 +334,11 @@ impl VenueLoop {
             return Ok(Some(catalog.clone()));
         }
         if !state.may_attempt() {
-            debug!(venue = %self.venue.id, "discovery is backing off; skipping poll");
-            return Ok(None);
+            debug!(
+                venue = %self.venue.id,
+                "discovery is backing off; polling with the last known catalog"
+            );
+            return Ok(cached);
         }
 
         match self.adapters.catalogs.discover(&self.venue).await {
@@ -406,6 +441,13 @@ impl FailureRun {
             info!(venue = %venue.id, "venue poll recovered");
         }
     }
+}
+
+/// Whether a tick actually polled, or bowed out before doing anything.
+#[derive(Debug, PartialEq, Eq)]
+enum TickOutcome {
+    Polled,
+    Skipped,
 }
 
 /// Discovered catalogs go stale — a club renames or adds a court and nobody

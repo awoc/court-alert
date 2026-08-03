@@ -36,8 +36,8 @@ Each club is a venue with a sport: `/subscribe` covers tennis venues and `/padel
 
    | Variable                            | Required | Description                                                                                        |
    | ----------------------------------- | -------- | -------------------------------------------------------------------------------------------------- |
-   | `COURT_ALERT_EMAIL`                 | Yes      | ZHS account email address.                                                                         |
-   | `COURT_ALERT_PASSWORD`              | Yes      | ZHS account password.                                                                              |
+   | `COURT_ALERT_EMAIL`                 | ZHS only | ZHS account email address. Required only if a `zhs` venue is configured.                            |
+   | `COURT_ALERT_PASSWORD`              | ZHS only | ZHS account password. Required only if a `zhs` venue is configured.                                 |
    | `COURT_ALERT_CONFIG_PATH`           | No       | Path to the TOML configuration file. Defaults to `config.toml`.                                    |
    | `COURT_ALERT_DB_PATH`               | No       | Path to the SQLite database. Defaults to `data/court-alert.db`.                                    |
    | `COURT_ALERT_DISCORD_WEBHOOK`       | No       | Discord webhook URL that receives availability changes on the configured surfaces.                 |

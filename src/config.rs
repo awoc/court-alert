@@ -390,7 +390,9 @@ pub struct Credentials {
 pub struct Settings {
     pub config_path: PathBuf,
     pub db_path: PathBuf,
-    pub credentials: Credentials,
+    /// `None` when the ZHS variables are unset. Only a ZHS venue needs them,
+    /// and a Playtomic-only deployment has nothing to authenticate.
+    pub credentials: Option<Credentials>,
     pub discord_webhook: Option<reqwest::Url>,
     pub discord_error_webhook: Option<reqwest::Url>,
     pub discord_bot: Option<DiscordSettings>,
@@ -408,16 +410,26 @@ impl Settings {
         Ok(Self {
             config_path: env_path("COURT_ALERT_CONFIG_PATH", DEFAULT_CONFIG_PATH),
             db_path: env_path("COURT_ALERT_DB_PATH", DEFAULT_DB_PATH),
-            credentials: Credentials {
-                email: std::env::var("COURT_ALERT_EMAIL")
-                    .context("COURT_ALERT_EMAIL environment variable not set")?,
-                password: std::env::var("COURT_ALERT_PASSWORD")
-                    .context("COURT_ALERT_PASSWORD environment variable not set")?,
-            },
+            credentials: credentials_from_env(),
             discord_webhook: env_parsed("COURT_ALERT_DISCORD_WEBHOOK")?,
             discord_error_webhook: env_parsed("COURT_ALERT_DISCORD_ERROR_WEBHOOK")?,
             discord_bot: discord_from_env()?,
         })
+    }
+}
+
+/// Both or neither: half a credential pair is a configuration mistake worth
+/// surfacing where it is used, not silently treated as absent.
+fn credentials_from_env() -> Option<Credentials> {
+    let email = std::env::var("COURT_ALERT_EMAIL")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let password = std::env::var("COURT_ALERT_PASSWORD")
+        .ok()
+        .filter(|s| !s.is_empty());
+    match (email, password) {
+        (Some(email), Some(password)) => Some(Credentials { email, password }),
+        _ => None,
     }
 }
 

@@ -5,7 +5,7 @@ use anyhow::{Context as _, Result};
 use tracing::{info, warn};
 
 use crate::catalog::ConfiguredCatalogSource;
-use crate::config::{Config, Settings};
+use crate::config::{Config, Credentials, Settings};
 use crate::model::{Provider, Sport, VenueIdentity, VenueRegistry};
 use crate::monitor::{Monitor, ProviderSources};
 use crate::notify::{ChannelSink, DiscordNotifier, SportScopedSink, SurfaceFilteredSink};
@@ -174,10 +174,7 @@ fn build_registry(config: &Config) -> VenueRegistry {
 /// Playtomic's two adapters share a client, so every club reuses the same
 /// connection pool, and a directory, so the availability fetch can see the
 /// opening hours discovery read off the club page.
-fn build_sources(
-    config: &Config,
-    credentials: crate::config::Credentials,
-) -> Result<ProviderSources> {
+fn build_sources(config: &Config, credentials: Option<Credentials>) -> Result<ProviderSources> {
     let mut sources = ProviderSources::new();
     let configured_catalogs = Arc::new(ConfiguredCatalogSource::new(config.catalogs().clone()));
 
@@ -209,7 +206,13 @@ fn build_sources(
 }
 
 /// One set of ZHS credentials covers one ZHS deployment, which is all there is.
-fn zhs_auth(config: &Config, credentials: crate::config::Credentials) -> Result<Auth> {
+///
+/// The credentials are demanded here rather than at startup, so a deployment
+/// with only Playtomic venues needs none.
+fn zhs_auth(config: &Config, credentials: Option<Credentials>) -> Result<Auth> {
+    let credentials = credentials.context(
+        "a ZHS venue is configured, so COURT_ALERT_EMAIL and COURT_ALERT_PASSWORD must be set",
+    )?;
     let base_url = config
         .venues()
         .iter()
@@ -231,4 +234,71 @@ fn zhs_auth(config: &Config, credentials: crate::config::Credentials) -> Result<
     );
 
     Auth::new(base_url, credentials)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ZHS: &str = r#"
+poll_interval_secs = 300
+lookahead_days = 7
+
+[[venues]]
+id = "zhs-munich"
+display_name = "ZHS München"
+sport = "tennis"
+provider = "zhs"
+base_url = "https://kurse.zhs-muenchen.de"
+
+  [[venues.courts]]
+  id = "92db7384-2dec-4888-a92a-4c2b6faac5f7"
+  name = "Tennis Court 1"
+"#;
+
+    const PADEL: &str = r#"
+poll_interval_secs = 300
+lookahead_days = 15
+
+[[venues]]
+id = "casa-padel"
+display_name = "Casa Padel"
+sport = "padel"
+provider = "playtomic"
+tenant_id = "f8483f72-1d14-49eb-a98b-e4b89d969c78"
+slug = "casa-padel"
+"#;
+
+    /// Playtomic needs no credentials, as the README says, so a deployment with
+    /// only Playtomic venues must start without the ZHS environment variables.
+    #[test]
+    fn a_playtomic_only_deployment_needs_no_credentials() {
+        let config = Config::parse(PADEL).expect("parse");
+        assert!(build_sources(&config, None).is_ok());
+    }
+
+    /// …but a ZHS venue still demands them, and says which ones.
+    #[test]
+    fn a_zhs_venue_without_credentials_names_the_missing_variables() {
+        let config = Config::parse(ZHS).expect("parse");
+
+        let error = build_sources(&config, None)
+            .err()
+            .expect("missing credentials must be rejected");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("COURT_ALERT_EMAIL"), "got: {message}");
+        assert!(message.contains("COURT_ALERT_PASSWORD"), "got: {message}");
+    }
+
+    #[test]
+    fn a_zhs_venue_with_credentials_wires_up() {
+        let config = Config::parse(ZHS).expect("parse");
+        let credentials = Credentials {
+            email: "alice@example.com".into(),
+            password: "hunter2".into(),
+        };
+
+        assert!(build_sources(&config, Some(credentials)).is_ok());
+    }
 }

@@ -131,6 +131,26 @@ impl VenueStateRepository for SqliteStore {
         .await
     }
 
+    async fn delete_venue_state_except(&self, venue_ids: &[VenueId]) -> Result<u64> {
+        let kept: Vec<String> = venue_ids.iter().map(VenueId::to_string).collect();
+        self.with_conn("sweep_removed_venue_state", move |connection| {
+            let placeholders = (1..=kept.len())
+                .map(|i| format!("?{i}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = if kept.is_empty() {
+                "DELETE FROM venue_state".to_string()
+            } else {
+                format!("DELETE FROM venue_state WHERE venue_id NOT IN ({placeholders})")
+            };
+            let affected = connection
+                .execute(&sql, rusqlite::params_from_iter(kept.iter()))
+                .context("sweeping state of removed venues")?;
+            Ok(affected as u64)
+        })
+        .await
+    }
+
     async fn mark_initialised(&self, venue_id: &VenueId) -> Result<()> {
         let venue_id = venue_id.to_string();
         let now = Utc::now().into_db()?;
@@ -319,6 +339,24 @@ mod tests {
 
         assert!(store.is_initialised(&zhs()).await.unwrap());
         assert!(!store.is_initialised(&padel()).await.unwrap());
+    }
+
+    /// Swept alongside the slots. A marker that outlived its slots would make a
+    /// re-added venue look established with an empty snapshot, so its first
+    /// poll would announce its entire horizon at once.
+    #[tokio::test]
+    async fn the_sweep_forgets_venues_no_longer_configured() {
+        let store = SqliteStore::open_in_memory().await.unwrap();
+        store.mark_initialised(&zhs()).await.unwrap();
+        store.mark_initialised(&padel()).await.unwrap();
+
+        assert_eq!(store.delete_venue_state_except(&[zhs()]).await.unwrap(), 1);
+
+        assert!(store.is_initialised(&zhs()).await.unwrap());
+        assert!(
+            !store.is_initialised(&padel()).await.unwrap(),
+            "a removed venue must start quiet again if it comes back"
+        );
     }
 
     /// Marked on every successful poll, so it has to be idempotent.
