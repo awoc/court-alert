@@ -1,11 +1,13 @@
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context as _, Result};
 use serenity::all::{
     ButtonStyle, CommandInteraction, ComponentInteraction, Context, CreateActionRow, CreateButton,
     CreateInteractionResponse, CreateInteractionResponseFollowup, CreateInteractionResponseMessage,
-    EventHandler, GuildId, Interaction, InteractionContext, Message, Ready, UserId,
+    EditInteractionResponse, EventHandler, GuildId, Interaction, InteractionContext, Message,
+    Ready, UserId,
 };
 use serenity::async_trait;
 use tracing::{error, info, warn};
@@ -49,6 +51,15 @@ impl EventHandler for Handler {
 
 impl Handler {
     async fn handle_command(&self, ctx: &Context, cmd: &CommandInteraction) {
+        let started = Instant::now();
+        info!(command = %cmd.data.name, user = %cmd.user.id, "interaction received");
+        // Answering takes a database round trip the 3s interaction deadline
+        // cannot be relied on to cover; deferring first buys 15 minutes.
+        let ephemeral = hides_from_others(cmd.context);
+        if let Err(e) = defer(ctx, cmd, ephemeral).await {
+            error!(error = %format!("{e:#}"), "failed to acknowledge interaction");
+            return;
+        }
         let messages = if cmd.data.name == "help" {
             render_help()
         } else {
@@ -57,9 +68,15 @@ impl Handler {
                 Err(e) => render_text(&format!("Error: {e:#}")),
             }
         };
-        if let Err(e) = reply(ctx, cmd, &messages).await {
+        if let Err(e) = reply(ctx, cmd, &messages, ephemeral).await {
             error!(error = %format!("{e:#}"), "failed to send interaction response");
+            return;
         }
+        info!(
+            command = %cmd.data.name,
+            elapsed_ms = started.elapsed().as_millis(),
+            "interaction answered"
+        );
     }
 
     async fn handle_component(&self, ctx: &Context, component: &ComponentInteraction) {
@@ -103,20 +120,32 @@ impl Handler {
     }
 }
 
-async fn reply(ctx: &Context, cmd: &CommandInteraction, messages: &[ReplyMessage]) -> Result<()> {
-    let ephemeral = hides_from_others(cmd.context);
-    let first = messages
-        .first()
-        .context("cannot send an empty interaction response")?;
-    let response = CreateInteractionResponse::Message(
-        CreateInteractionResponseMessage::new()
-            .content(&first.content)
-            .components(components(first))
-            .ephemeral(ephemeral),
+async fn defer(ctx: &Context, cmd: &CommandInteraction, ephemeral: bool) -> Result<()> {
+    let response = CreateInteractionResponse::Defer(
+        CreateInteractionResponseMessage::new().ephemeral(ephemeral),
     );
     cmd.create_response(&ctx.http, response)
         .await
-        .context("sending interaction response")?;
+        .context("deferring the interaction response")
+}
+
+async fn reply(
+    ctx: &Context,
+    cmd: &CommandInteraction,
+    messages: &[ReplyMessage],
+    ephemeral: bool,
+) -> Result<()> {
+    let first = messages
+        .first()
+        .context("cannot send an empty interaction response")?;
+    cmd.edit_response(
+        &ctx.http,
+        EditInteractionResponse::new()
+            .content(&first.content)
+            .components(components(first)),
+    )
+    .await
+    .context("sending the deferred interaction response")?;
     send_followups(&messages[1..], ephemeral, |f| {
         cmd.create_followup(&ctx.http, f)
     })
