@@ -50,9 +50,16 @@ impl AlertMessageRepository for SqliteStore {
     async fn plan_strikes(&self, slots: &[BookableSlotId]) -> Result<Vec<StrikePlan>> {
         let slots = slots.to_vec();
         self.with_reader("plan_alert_message_strikes", move |connection| {
+            // One snapshot for the lookups and the loads that follow them. On a
+            // shared connection the writer's mutex gave that for free; on its
+            // own connection a venue tick committing in between would leave the
+            // plan describing a message that no longer looks like that.
+            let transaction = connection
+                .transaction()
+                .context("starting alert-message read transaction")?;
             let mut planned: BTreeMap<String, Vec<u32>> = BTreeMap::new();
             {
-                let mut find = connection
+                let mut find = transaction
                     .prepare(
                         "SELECT message_id, line_index FROM alert_message_slots
                          WHERE court_id = ?1 AND starts_at = ?2 AND struck = 0",
@@ -74,7 +81,7 @@ impl AlertMessageRepository for SqliteStore {
             }
 
             let mut plans = Vec::with_capacity(planned.len());
-            let mut load = connection
+            let mut load = transaction
                 .prepare(
                     "SELECT line_index, court_id, court_name, starts_at, ends_at, struck
                      FROM alert_message_slots WHERE message_id = ?1 ORDER BY line_index",
