@@ -39,8 +39,11 @@ impl SubscriptionService {
         if changes.is_empty() {
             return;
         }
+        self.alert_subscribers(changes).await;
         self.strike_taken(changes).await;
+    }
 
+    async fn alert_subscribers(&self, changes: &[AvailabilityChange]) {
         let subs = match self.store.list_all(self.clock.today()).await {
             Ok(s) => s,
             Err(e) => {
@@ -142,6 +145,7 @@ mod tests {
     struct RecordingSender {
         sent: Mutex<Vec<(String, AvailabilityAlert)>>,
         struck: Mutex<Vec<Vec<BookableSlotId>>>,
+        order: Mutex<Vec<&'static str>>,
         fail: bool,
     }
 
@@ -150,12 +154,17 @@ mod tests {
             Arc::new(Self {
                 sent: Mutex::new(Vec::new()),
                 struck: Mutex::new(Vec::new()),
+                order: Mutex::new(Vec::new()),
                 fail,
             })
         }
 
         fn struck(&self) -> Vec<BookableSlotId> {
             self.struck.lock().unwrap().concat()
+        }
+
+        fn order(&self) -> Vec<&'static str> {
+            self.order.lock().unwrap().clone()
         }
     }
 
@@ -166,6 +175,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((user_id.to_string(), alert.clone()));
+            self.order.lock().unwrap().push("send");
             if self.fail {
                 anyhow::bail!("simulated DM failure");
             }
@@ -174,6 +184,7 @@ mod tests {
 
         async fn strike_taken(&self, slots: &[BookableSlotId]) -> anyhow::Result<()> {
             self.struck.lock().unwrap().push(slots.to_vec());
+            self.order.lock().unwrap().push("strike");
             if self.fail {
                 anyhow::bail!("simulated strike failure");
             }
@@ -342,6 +353,21 @@ mod tests {
         svc.dispatch(std::slice::from_ref(&taken)).await;
 
         assert_eq!(sender.struck(), vec![BookableSlotId::from(taken.slot())]);
+    }
+
+    #[tokio::test]
+    async fn alerts_go_out_before_anything_is_struck() {
+        let svc = service().await;
+        let sender = RecordingSender::new(false);
+        svc.register_sender("discord", sender.clone());
+        svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
+            .await
+            .unwrap();
+
+        svc.dispatch(&[unbookable("Court 5"), bookable("Court 2")])
+            .await;
+
+        assert_eq!(sender.order(), vec!["send", "strike"]);
     }
 
     #[tokio::test]
