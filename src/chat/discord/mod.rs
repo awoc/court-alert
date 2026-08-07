@@ -25,6 +25,7 @@ mod text;
 mod webhook;
 
 pub use error_webhook::DiscordErrorLayer;
+pub use strike::DailyPruner;
 pub use webhook::DiscordNotifier;
 
 use dm::DiscordSender;
@@ -39,10 +40,15 @@ pub struct DiscordProvider {
     guild_id: Option<GuildId>,
     admin_ids: HashSet<ProviderUserRef>,
     messages: Arc<dyn AlertMessageRepository>,
+    pruner: Arc<DailyPruner>,
 }
 
 impl DiscordProvider {
-    pub fn new(settings: DiscordSettings, messages: Arc<dyn AlertMessageRepository>) -> Self {
+    pub fn new(
+        settings: DiscordSettings,
+        messages: Arc<dyn AlertMessageRepository>,
+        pruner: Arc<DailyPruner>,
+    ) -> Self {
         Self {
             token: settings.token,
             guild_id: settings.guild_id.map(GuildId::new),
@@ -55,6 +61,7 @@ impl DiscordProvider {
                 })
                 .collect(),
             messages,
+            pruner,
         }
     }
 }
@@ -85,6 +92,7 @@ impl ChatProvider for DiscordProvider {
             Arc::new(DiscordSender::new(
                 client.http.clone(),
                 self.messages.clone(),
+                self.pruner.clone(),
             )),
         );
 
@@ -106,7 +114,8 @@ mod tests {
                 guild_id: Some(42),
                 admin_ids: HashSet::from(["123".to_string()]),
             },
-            store,
+            store.clone(),
+            Arc::new(DailyPruner::new(store)),
         );
         assert_eq!(
             provider.admins(),

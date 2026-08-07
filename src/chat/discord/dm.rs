@@ -18,15 +18,19 @@ const DISCORD_UNKNOWN_MESSAGE: isize = 10008;
 pub(super) struct DiscordSender {
     http: Arc<Http>,
     messages: Arc<dyn AlertMessageRepository>,
-    pruner: DailyPruner,
+    pruner: Arc<DailyPruner>,
 }
 
 impl DiscordSender {
-    pub(super) fn new(http: Arc<Http>, messages: Arc<dyn AlertMessageRepository>) -> Self {
+    pub(super) fn new(
+        http: Arc<Http>,
+        messages: Arc<dyn AlertMessageRepository>,
+        pruner: Arc<DailyPruner>,
+    ) -> Self {
         Self {
             http,
-            pruner: DailyPruner::new(messages.clone()),
             messages,
+            pruner,
         }
     }
 
@@ -169,7 +173,11 @@ mod tests {
             .proxy(server.uri())
             .ratelimiter_disabled(true)
             .build();
-        (DiscordSender::new(Arc::new(http), store.clone()), store)
+        let pruner = Arc::new(DailyPruner::new(store.clone()));
+        (
+            DiscordSender::new(Arc::new(http), store.clone(), pruner),
+            store,
+        )
     }
 
     fn slot(court: &str) -> BookableSlot {

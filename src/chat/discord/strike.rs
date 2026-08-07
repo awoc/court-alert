@@ -9,6 +9,8 @@ use crate::model::{AlertMessage, AlertSurface, BookableSlotId};
 use crate::ports::AlertMessageRepository;
 use crate::time::today_berlin;
 
+const PRUNE_GRACE: chrono::TimeDelta = chrono::TimeDelta::hours(1);
+
 pub(super) enum EditOutcome {
     Edited,
     Gone,
@@ -77,13 +79,14 @@ where
     Ok(())
 }
 
-pub(super) struct DailyPruner {
+/// Drops tracked alert messages whose slots have all ended.
+pub struct DailyPruner {
     messages: Arc<dyn AlertMessageRepository>,
     last_pruned: Mutex<Option<NaiveDate>>,
 }
 
 impl DailyPruner {
-    pub(super) fn new(messages: Arc<dyn AlertMessageRepository>) -> Self {
+    pub fn new(messages: Arc<dyn AlertMessageRepository>) -> Self {
         Self {
             messages,
             last_pruned: Mutex::new(None),
@@ -95,7 +98,8 @@ impl DailyPruner {
         if *self.last_pruned.lock().expect("prune guard poisoned") == Some(today) {
             return;
         }
-        match self.messages.prune_ended(Utc::now()).await {
+        // Grace, so a strikethrough already in flight is not pruned out from under it.
+        match self.messages.prune_ended(Utc::now() - PRUNE_GRACE).await {
             Ok(removed) => {
                 *self.last_pruned.lock().expect("prune guard poisoned") = Some(today);
                 if removed > 0 {

@@ -81,12 +81,14 @@ pub fn validate_configuration(config: &Config) -> Result<()> {
 pub fn build(
     settings: &Settings,
     messages: Arc<dyn AlertMessageRepository>,
+    pruner: Arc<discord::DailyPruner>,
 ) -> Vec<Box<dyn ChatProvider>> {
     let mut providers: Vec<Box<dyn ChatProvider>> = Vec::new();
     if let Some(discord) = &settings.discord_bot {
         providers.push(Box::new(discord::DiscordProvider::new(
             discord.clone(),
             messages,
+            pruner,
         )));
     }
     providers

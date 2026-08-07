@@ -5,7 +5,7 @@ use anyhow::{Context as _, Result};
 use tracing::{info, warn};
 
 use crate::chat;
-use crate::chat::discord::DiscordNotifier;
+use crate::chat::discord::{DailyPruner, DiscordNotifier};
 use crate::config::{Config, Settings};
 use crate::model::{Sport, VenueRegistry};
 use crate::monitor::Monitor;
@@ -35,14 +35,19 @@ impl App {
         let registry = Arc::new(RwLock::new(build_registry(&config)));
 
         let store = Arc::new(SqliteStore::open(settings.db_path.clone()).await?);
-        let chat_providers = chat::build(&settings, store.clone());
+        let pruner = Arc::new(DailyPruner::new(store.clone()));
+        let chat_providers = chat::build(&settings, store.clone(), pruner.clone());
 
         let mut sinks: Vec<Arc<dyn AvailabilityChangeSink>> = Vec::new();
         match &settings.discord_webhook {
             Some(url) => sinks.push(
                 SportScopedSink::wrap(
                     SurfaceFilteredSink::wrap(
-                        Box::new(DiscordNotifier::new(url.clone(), store.clone())?),
+                        Box::new(DiscordNotifier::new(
+                            url.clone(),
+                            store.clone(),
+                            pruner.clone(),
+                        )?),
                         registry.clone(),
                         config.surface_filter(),
                     ),

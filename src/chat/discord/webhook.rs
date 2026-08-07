@@ -19,13 +19,14 @@ pub struct DiscordNotifier {
     webhook_url: reqwest::Url,
     client: reqwest::Client,
     messages: Arc<dyn AlertMessageRepository>,
-    pruner: DailyPruner,
+    pruner: Arc<DailyPruner>,
 }
 
 impl DiscordNotifier {
     pub fn new(
         mut webhook_url: reqwest::Url,
         messages: Arc<dyn AlertMessageRepository>,
+        pruner: Arc<DailyPruner>,
     ) -> Result<Self> {
         // Avoid producing `.../token//messages/{id}` in `edit_url`.
         webhook_url
@@ -39,8 +40,8 @@ impl DiscordNotifier {
         Ok(Self {
             webhook_url,
             client,
-            pruner: DailyPruner::new(messages.clone()),
             messages,
+            pruner,
         })
     }
 
@@ -208,7 +209,11 @@ mod tests {
         let url = format!("{}/api/webhooks/123/token", server.uri())
             .parse()
             .unwrap();
-        (DiscordNotifier::new(url, store.clone()).unwrap(), store)
+        let pruner = Arc::new(DailyPruner::new(store.clone()));
+        (
+            DiscordNotifier::new(url, store.clone(), pruner).unwrap(),
+            store,
+        )
     }
 
     fn disable_pruning_for_today(notifier: &DiscordNotifier) {
@@ -461,7 +466,8 @@ mod tests {
         let url = format!("{}/api/webhooks/123/token/", server.uri())
             .parse()
             .unwrap();
-        let notifier = DiscordNotifier::new(url, store.clone()).unwrap();
+        let pruner = Arc::new(DailyPruner::new(store.clone()));
+        let notifier = DiscordNotifier::new(url, store.clone(), pruner).unwrap();
         let gone = slot("Court 2", 18);
         seed(&store, "1408", &gone).await;
 
