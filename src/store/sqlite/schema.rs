@@ -8,7 +8,7 @@
 use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA: &str = include_str!("../../../sql/schema.sql");
 
@@ -65,6 +65,7 @@ mod tests {
     const UPGRADE_TO_V3: &str =
         include_str!("../../../sql/migrations/0003_subscription_surface.sql");
     const UPGRADE_TO_V4: &str = include_str!("../../../sql/migrations/0004_multi_venue.sql");
+    const UPGRADE_TO_V5: &str = include_str!("../../../sql/migrations/0005_dm_alert_messages.sql");
 
     const LEGACY_SCHEMA: &str = "
         CREATE TABLE subscriptions (
@@ -111,6 +112,7 @@ mod tests {
         conn.execute_batch(UPGRADE_TO_V2).unwrap();
         conn.execute_batch(UPGRADE_TO_V3).unwrap();
         conn.execute_batch(UPGRADE_TO_V4).unwrap();
+        conn.execute_batch(UPGRADE_TO_V5).unwrap();
         ensure_current(conn).unwrap();
     }
 
@@ -177,6 +179,7 @@ mod tests {
         conn.execute_batch(UPGRADE_TO_V2).unwrap();
         conn.execute_batch(UPGRADE_TO_V3).unwrap();
         conn.execute_batch(UPGRADE_TO_V4).unwrap();
+        conn.execute_batch(UPGRADE_TO_V5).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         assert!(table_sql(&conn, "bookable_slots").is_none());
         assert!(table_sql(&conn, "venue_state").is_none());
@@ -245,6 +248,50 @@ mod tests {
         migrate_by_hand(&mut conn);
 
         assert!(conn.execute_batch(UPGRADE_TO_V3).is_err());
+    }
+
+    #[test]
+    fn fifth_migration_refuses_to_run_twice() {
+        let mut conn = legacy_database();
+        migrate_by_hand(&mut conn);
+
+        assert!(conn.execute_batch(UPGRADE_TO_V5).is_err());
+    }
+
+    #[test]
+    fn fifth_migration_keeps_recorded_lines_as_channel_messages() {
+        let conn = legacy_database();
+        conn.execute_batch(UPGRADE_TO_V1).unwrap();
+        conn.execute_batch(UPGRADE_TO_V2).unwrap();
+        conn.execute_batch(UPGRADE_TO_V3).unwrap();
+        conn.execute_batch(UPGRADE_TO_V4).unwrap();
+        conn.execute(
+            "INSERT INTO alert_message_slots
+             (message_id, line_index, court_id, court_name, starts_at, ends_at, struck)
+             VALUES ('1408', 0, '92db7384-2dec-4888-a92a-4c2b6faac5f7', 'Court 1',
+                     '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z', 0)",
+            [],
+        )
+        .unwrap();
+
+        conn.execute_batch(UPGRADE_TO_V5).unwrap();
+
+        let (surface, channel_id, club, court_name): (
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT surface, channel_id, club, court_name FROM alert_message_slots",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(surface, "channel");
+        assert_eq!(channel_id, None, "the webhook addresses messages by id");
+        assert_eq!(club, None, "channel lines name no club");
+        assert_eq!(court_name, "Court 1");
     }
 
     #[test]
@@ -362,12 +409,21 @@ mod tests {
                      '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z', 2)",
             // struck outside the 0/1 domain
             "INSERT INTO alert_message_slots
-             VALUES ('1408', 0, '123e4567-e89b-12d3-a456-426614174000', 'Court 1',
-                     '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z', 2)",
+             VALUES ('channel', NULL, '1408', 0, NULL, '123e4567-e89b-12d3-a456-426614174000',
+                     'Court 1', '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z', 2)",
             // timestamp that is not canonical UTC RFC 3339
             "INSERT INTO alert_message_slots
-             VALUES ('1408', 0, '123e4567-e89b-12d3-a456-426614174000', 'Court 1',
-                     '2026-07-13T08:00:00+00:00', '2026-07-13T09:00:00.000Z', 0)",
+             VALUES ('channel', NULL, '1408', 0, NULL, '123e4567-e89b-12d3-a456-426614174000',
+                     'Court 1', '2026-07-13T08:00:00+00:00', '2026-07-13T09:00:00.000Z', 0)",
+            "INSERT INTO alert_message_slots
+             VALUES ('email', NULL, '1408', 0, NULL, '123e4567-e89b-12d3-a456-426614174000',
+                     'Court 1', '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z', 0)",
+            "INSERT INTO alert_message_slots
+             VALUES ('dm', NULL, '1408', 0, 'ZHS München', '123e4567-e89b-12d3-a456-426614174000',
+                     'Court 1', '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z', 0)",
+            "INSERT INTO alert_message_slots
+             VALUES ('channel', '99', '1408', 0, NULL, '123e4567-e89b-12d3-a456-426614174000',
+                     'Court 1', '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z', 0)",
         ];
         for statement in rejected {
             assert!(

@@ -1,10 +1,14 @@
-use super::text::{DISCORD_CHUNK_BUDGET, fmt_slot_line};
+use super::text::{DISCORD_CHUNK_BUDGET, fmt_club_slot_line, fmt_slot_line};
 use crate::model::{AlertLine, AvailabilityChange, BookableSlot, BookableSlotId};
+use crate::subscriptions::contract::AvailabilityAlert;
 
 const STRIKE_MARKUP_CHARS: usize = 4;
 
 pub(super) fn render_line(line: &AlertLine) -> String {
-    let text = fmt_slot_line(&line.court_name, line.starts_at, line.ends_at);
+    let text = match &line.club {
+        Some(club) => fmt_club_slot_line(club, &line.court_name, line.starts_at, line.ends_at),
+        None => fmt_slot_line(&line.court_name, line.starts_at, line.ends_at),
+    };
     if line.struck {
         format!("~~{text}~~")
     } else {
@@ -16,13 +20,31 @@ pub(super) fn render(lines: &[AlertLine]) -> String {
     lines.iter().map(render_line).collect::<Vec<_>>().join("\n")
 }
 
-pub(super) fn chunk_slots(slots: &[&BookableSlot]) -> Vec<Vec<AlertLine>> {
+pub(super) fn alert_lines(alert: &AvailabilityAlert) -> Vec<AlertLine> {
+    alert
+        .slots
+        .iter()
+        .map(|slot| AlertLine {
+            club: Some(slot.club.clone()),
+            court_id: slot.court_id,
+            court_name: slot.court.clone(),
+            starts_at: slot.starts_at,
+            ends_at: slot.ends_at,
+            struck: false,
+        })
+        .collect()
+}
+
+pub(super) fn channel_lines(slots: &[&BookableSlot]) -> Vec<AlertLine> {
+    slots.iter().copied().map(AlertLine::from).collect()
+}
+
+pub(super) fn chunk_lines(lines: Vec<AlertLine>) -> Vec<Vec<AlertLine>> {
     let mut chunks = Vec::new();
     let mut current: Vec<AlertLine> = Vec::new();
     let mut current_chars = 0;
 
-    for slot in slots {
-        let line = AlertLine::from(*slot);
+    for line in lines {
         // Reserve room for adding strike markers in a later edit.
         let cost = render_line(&line).chars().count() + STRIKE_MARKUP_CHARS;
         let separator = usize::from(!current.is_empty());
@@ -68,6 +90,7 @@ pub(super) fn removed_slot_ids(changes: &[AvailabilityChange]) -> Vec<BookableSl
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::subscriptions::contract::AvailableSlotSummary;
     use chrono::{TimeZone, Utc};
     use uuid::Uuid;
 
@@ -92,10 +115,29 @@ mod tests {
         }
     }
 
+    fn channel_chunks(slots: &[&BookableSlot]) -> Vec<Vec<AlertLine>> {
+        chunk_lines(channel_lines(slots))
+    }
+
+    fn alert(slots: Vec<AvailableSlotSummary>) -> AvailabilityAlert {
+        AvailabilityAlert { slots }
+    }
+
+    fn dm_slot(club: &str, court: &str, hour: u32) -> AvailableSlotSummary {
+        let announced = slot(court, hour);
+        AvailableSlotSummary {
+            club: club.into(),
+            court: announced.court_name,
+            court_id: announced.court_id,
+            starts_at: announced.starts_at,
+            ends_at: announced.ends_at,
+        }
+    }
+
     #[test]
     fn an_unstruck_message_has_no_header_and_one_line_per_slot() {
         let slots = [slot("Court 2", 18), slot("Court 5", 12)];
-        let chunks = chunk_slots(&[&slots[0], &slots[1]]);
+        let chunks = channel_chunks(&[&slots[0], &slots[1]]);
 
         let rendered = render(&chunks[0]);
 
@@ -109,7 +151,7 @@ mod tests {
     #[test]
     fn a_struck_line_is_wrapped_individually() {
         let slots = [slot("Court 2", 18), slot("Court 5", 12)];
-        let mut lines = chunk_slots(&[&slots[0], &slots[1]]).remove(0);
+        let mut lines = channel_chunks(&[&slots[0], &slots[1]]).remove(0);
         lines[1] = strike(&lines[1]);
 
         let rendered = render(&lines);
@@ -123,7 +165,7 @@ mod tests {
     #[test]
     fn every_struck_line_carries_its_own_markers() {
         let slots = [slot("Court 2", 18), slot("Court 5", 12)];
-        let lines: Vec<_> = chunk_slots(&[&slots[0], &slots[1]])
+        let lines: Vec<_> = channel_chunks(&[&slots[0], &slots[1]])
             .remove(0)
             .iter()
             .map(strike)
@@ -139,7 +181,7 @@ mod tests {
 
     #[test]
     fn no_slots_produce_no_chunks() {
-        assert!(chunk_slots(&[]).is_empty());
+        assert!(channel_chunks(&[]).is_empty());
     }
 
     #[test]
@@ -149,7 +191,7 @@ mod tests {
             .collect();
         let borrowed: Vec<_> = slots.iter().collect();
 
-        let chunks = chunk_slots(&borrowed);
+        let chunks = channel_chunks(&borrowed);
 
         assert!(chunks.len() > 1, "the fixture must actually span chunks");
         for chunk in &chunks {
@@ -159,6 +201,67 @@ mod tests {
                 "a fully struck chunk exceeded Discord's limit"
             );
         }
+    }
+
+    #[test]
+    fn a_dm_line_names_the_club_and_keeps_the_court_it_can_be_struck_by() {
+        let announced = dm_slot("ZHS München", "Court 2", 18);
+        let lines = alert_lines(&alert(vec![announced.clone()]));
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            render(&lines),
+            "ZHS München — Court 02: Tue, 02.06.2026 20:00–21:00"
+        );
+        assert_eq!(
+            lines[0].court_id, announced.court_id,
+            "without the court id the line could never be found again"
+        );
+    }
+
+    #[test]
+    fn a_struck_dm_line_wraps_the_club_too() {
+        let lines: Vec<_> = alert_lines(&alert(vec![dm_slot("ZHS München", "Court 2", 18)]))
+            .iter()
+            .map(strike)
+            .collect();
+
+        assert_eq!(
+            render(&lines),
+            "~~ZHS München — Court 02: Tue, 02.06.2026 20:00–21:00~~"
+        );
+    }
+
+    #[test]
+    fn a_dm_is_chunked_with_room_for_its_strike_markers() {
+        let slots = (0..500)
+            .map(|index| dm_slot("ZHS München", "Court 99", (index % 24) as u32))
+            .collect();
+
+        let chunks = chunk_lines(alert_lines(&alert(slots)));
+
+        assert!(chunks.len() > 1, "the fixture must actually span chunks");
+        for chunk in &chunks {
+            let struck: Vec<_> = chunk.iter().map(strike).collect();
+            assert!(
+                render(&struck).chars().count() <= DISCORD_MESSAGE_LIMIT,
+                "a fully struck chunk exceeded Discord's limit"
+            );
+        }
+    }
+
+    #[test]
+    fn dm_lines_keep_the_order_they_were_matched_in() {
+        let lines = alert_lines(&alert(vec![
+            dm_slot("ZHS München", "Court 2", 18),
+            dm_slot("Casa Padel", "Court 5", 12),
+        ]));
+
+        let rendered = render(&lines);
+        let rendered: Vec<&str> = rendered.lines().collect();
+
+        assert!(rendered[0].starts_with("ZHS München — Court 02: "));
+        assert!(rendered[1].starts_with("Casa Padel — Court 05: "));
     }
 
     #[test]

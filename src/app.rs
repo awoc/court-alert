@@ -33,9 +33,9 @@ impl App {
         sources::validate_configuration(&config).with_context(describe)?;
         chat::validate_configuration(&config).with_context(describe)?;
         let registry = Arc::new(RwLock::new(build_registry(&config)));
-        let chat_providers = chat::build(&settings);
 
         let store = Arc::new(SqliteStore::open(settings.db_path.clone()).await?);
+        let chat_providers = chat::build(&settings, store.clone());
 
         let mut sinks: Vec<Arc<dyn AvailabilityChangeSink>> = Vec::new();
         match &settings.discord_webhook {

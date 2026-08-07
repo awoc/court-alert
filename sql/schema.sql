@@ -47,16 +47,21 @@ CREATE TABLE IF NOT EXISTS venue_state (
 
 -- Posted alert lines retained after a slot becomes unbookable so its message can be edited.
 CREATE TABLE IF NOT EXISTS alert_message_slots (
+    surface    TEXT    NOT NULL CHECK (surface IN ('channel', 'dm')),
+    channel_id TEXT    CHECK (channel_id IS NULL OR channel_id <> ''),
     message_id TEXT    NOT NULL CHECK (message_id <> ''),
     line_index INTEGER NOT NULL CHECK (line_index >= 0),
+    club       TEXT    CHECK (club IS NULL OR club <> ''),
     court_id   TEXT    NOT NULL CHECK (length(court_id) = 36),
     court_name TEXT    NOT NULL CHECK (court_name <> ''),
     starts_at  TEXT    NOT NULL CHECK (starts_at IS strftime('%Y-%m-%dT%H:%M:%fZ', starts_at)),
     ends_at    TEXT    NOT NULL CHECK (ends_at IS strftime('%Y-%m-%dT%H:%M:%fZ', ends_at)),
     struck     INTEGER NOT NULL DEFAULT 0 CHECK (struck IN (0, 1)),
+    -- Discord message ids are unique across channels, so they alone identify a message.
     PRIMARY KEY (message_id, line_index),
+    CHECK ((surface = 'dm') = (channel_id IS NOT NULL)),
     CHECK (ends_at > starts_at)
 ) STRICT, WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS alert_message_slots_slot_idx
-    ON alert_message_slots (court_id, starts_at) WHERE struck = 0;
+    ON alert_message_slots (surface, court_id, starts_at) WHERE struck = 0;

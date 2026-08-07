@@ -1,7 +1,7 @@
 use super::text::{DISCORD_CHUNK_BUDGET, chunk_lines, fmt_club_slot_line};
 use crate::model::{CourtFilter, Schedule, TimeRange};
 use crate::subscriptions::contract::{
-    AvailabilityAlert, OwnedSubscriptionSummary, SubscriptionResult, SubscriptionSummary,
+    OwnedSubscriptionSummary, SubscriptionResult, SubscriptionSummary,
 };
 use crate::time::fmt_hhmm;
 
@@ -186,19 +186,6 @@ fn owned_summary_line(owned: &OwnedSubscriptionSummary) -> String {
     )
 }
 
-pub(super) fn render_alert(alert: &AvailabilityAlert) -> Vec<String> {
-    let mut lines = vec![];
-    for s in &alert.slots {
-        lines.push(fmt_club_slot_line(
-            &s.club,
-            &s.court,
-            s.starts_at,
-            s.ends_at,
-        ));
-    }
-    chunk_lines(&lines, DISCORD_CHUNK_BUDGET)
-}
-
 fn scope_label(courts: Option<&[String]>, filter: CourtFilter) -> String {
     match (courts, filter) {
         (Some(courts), _) => courts.join(", "),
@@ -246,6 +233,7 @@ mod tests {
         AvailableSlotSummary {
             club: "ZHS München".into(),
             court: court.into(),
+            court_id: uuid::Uuid::new_v4(),
             starts_at,
             ends_at: starts_at + chrono::Duration::hours(1),
         }
@@ -488,41 +476,6 @@ mod tests {
         });
         assert!(text.contains("Unknown court(s): Cort 2."));
         assert!(text.contains("Available courts: Court 2, Court 5."));
-    }
-
-    #[test]
-    fn alert_renders_localized_slots_without_mention() {
-        let msgs = render_alert(&AvailabilityAlert {
-            slots: vec![slot_info("Court 2")],
-        });
-        assert_eq!(msgs.len(), 1);
-        assert!(msgs[0].contains("ZHS München — Court 02: Tue, 02.06.2026 20:00–21:00"));
-        assert!(!msgs[0].contains("<@"));
-    }
-
-    #[test]
-    fn alert_chunks_under_discord_limit() {
-        let slots: Vec<AvailableSlotSummary> = (0..500).map(|_| slot_info("Court 99")).collect();
-        let msgs = render_alert(&AvailabilityAlert { slots });
-        assert!(msgs.len() > 1);
-        for m in &msgs {
-            assert!(
-                m.chars().count() <= DISCORD_CHUNK_BUDGET,
-                "chunk too big: {}",
-                m.chars().count()
-            );
-        }
-    }
-
-    #[test]
-    fn alert_renders_multiple_slots_as_ordered_lines() {
-        let msgs = render_alert(&AvailabilityAlert {
-            slots: vec![slot_info("Court 2"), slot_info("Court 5")],
-        });
-        assert_eq!(msgs.len(), 1);
-        let lines: Vec<&str> = msgs[0].lines().collect();
-        assert!(lines[0].starts_with("ZHS München — Court 02: "));
-        assert!(lines[1].starts_with("ZHS München — Court 05: "));
     }
 
     #[test]

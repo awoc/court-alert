@@ -3,8 +3,15 @@ use uuid::Uuid;
 
 use super::BookableSlot;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlertSurface {
+    Channel,
+    DirectMessage,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlertLine {
+    pub club: Option<String>,
     pub court_id: Uuid,
     pub court_name: String,
     pub starts_at: DateTime<Utc>,
@@ -15,6 +22,7 @@ pub struct AlertLine {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlertMessage {
     pub id: String,
+    pub channel_id: Option<String>,
     pub lines: Vec<AlertLine>,
 }
 
@@ -27,6 +35,7 @@ pub struct StrikePlan {
 impl From<&BookableSlot> for AlertLine {
     fn from(slot: &BookableSlot) -> Self {
         Self {
+            club: None,
             court_id: slot.court_id,
             court_name: slot.court_name.clone(),
             starts_at: slot.starts_at,
@@ -60,5 +69,6 @@ mod tests {
         assert_eq!(line.starts_at, starts_at);
         assert_eq!(line.ends_at, slot.ends_at);
         assert!(!line.struck, "a freshly announced line is never struck");
+        assert_eq!(line.club, None, "a slot alone does not know its club");
     }
 }
