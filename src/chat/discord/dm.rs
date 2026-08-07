@@ -2,7 +2,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use serenity::all::{ChannelId, EditMessage, Http, HttpError, MessageId, UserId};
+use serenity::all::{ChannelId, EditMessage, Http, HttpError, MessageId, StatusCode, UserId};
 use serenity::async_trait;
 use tracing::warn;
 
@@ -64,7 +64,8 @@ impl DiscordSender {
         {
             Ok(_) => Ok(EditOutcome::Edited),
             Err(serenity::Error::Http(HttpError::UnsuccessfulRequest(response)))
-                if response.error.code == DISCORD_UNKNOWN_MESSAGE =>
+                if response.status_code == StatusCode::NOT_FOUND
+                    && response.error.code == DISCORD_UNKNOWN_MESSAGE =>
             {
                 Ok(EditOutcome::Gone)
             }
@@ -350,6 +351,29 @@ mod tests {
             plans(&store, &taken).await.is_empty(),
             "rows for a message Discord no longer knows are dropped"
         );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_message_code_without_a_404_keeps_the_rows() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "message": "Unknown Message",
+                "code": 10008,
+            })))
+            .mount(&server)
+            .await;
+        let (sender, store) = sender(&server).await;
+        sender.pruner.skip_today();
+        let taken = slot("Court 2");
+        seed(&store, "1408", &taken).await;
+
+        sender
+            .strike_taken(&[crate::model::BookableSlotId::from(&taken)])
+            .await
+            .unwrap();
+
+        assert_eq!(plans(&store, &taken).await.len(), 1);
     }
 
     #[tokio::test]
