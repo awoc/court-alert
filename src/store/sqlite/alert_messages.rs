@@ -15,7 +15,7 @@ impl AlertMessageRepository for SqliteStore {
     async fn record_message(&self, message_id: &str, lines: &[AlertLine]) -> Result<()> {
         let message_id = message_id.to_owned();
         let lines = lines.to_vec();
-        self.with_conn("record_alert_message", move |connection| {
+        self.with_writer("record_alert_message", move |connection| {
             let transaction = connection
                 .transaction()
                 .context("starting alert-message insert transaction")?;
@@ -49,7 +49,7 @@ impl AlertMessageRepository for SqliteStore {
 
     async fn plan_strikes(&self, slots: &[BookableSlotId]) -> Result<Vec<StrikePlan>> {
         let slots = slots.to_vec();
-        self.with_conn("plan_alert_message_strikes", move |connection| {
+        self.with_reader("plan_alert_message_strikes", move |connection| {
             let mut planned: BTreeMap<String, Vec<u32>> = BTreeMap::new();
             {
                 let mut find = connection
@@ -111,7 +111,7 @@ impl AlertMessageRepository for SqliteStore {
     async fn commit_strikes(&self, message_id: &str, lines: &[u32]) -> Result<()> {
         let message_id = message_id.to_owned();
         let lines = lines.to_vec();
-        self.with_conn("commit_alert_message_strikes", move |connection| {
+        self.with_writer("commit_alert_message_strikes", move |connection| {
             let transaction = connection
                 .transaction()
                 .context("starting alert-message strike transaction")?;
@@ -137,7 +137,7 @@ impl AlertMessageRepository for SqliteStore {
 
     async fn forget_message(&self, message_id: &str) -> Result<()> {
         let message_id = message_id.to_owned();
-        self.with_conn("forget_alert_message", move |connection| {
+        self.with_writer("forget_alert_message", move |connection| {
             connection
                 .execute(
                     "DELETE FROM alert_message_slots WHERE message_id = ?1",
@@ -151,7 +151,7 @@ impl AlertMessageRepository for SqliteStore {
 
     async fn prune_ended(&self, now: DateTime<Utc>) -> Result<usize> {
         let now = now.into_db()?;
-        self.with_conn("prune_ended_alert_messages", move |connection| {
+        self.with_writer("prune_ended_alert_messages", move |connection| {
             let removed = connection
                 .execute(
                     "DELETE FROM alert_message_slots WHERE message_id IN (
@@ -177,7 +177,7 @@ impl SqliteStore {
     ) -> Result<()> {
         let message_id = message_id.to_owned();
         let line = line.clone();
-        self.with_conn("record_alert_message_line", move |connection| {
+        self.with_writer("record_alert_message_line", move |connection| {
             connection
                 .execute(
                     "INSERT INTO alert_message_slots

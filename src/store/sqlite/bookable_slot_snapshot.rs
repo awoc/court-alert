@@ -19,7 +19,7 @@ fn map_slot(row: &rusqlite::Row<'_>) -> rusqlite::Result<(BookableSlotId, Bookab
 #[async_trait]
 impl BookableSlotSnapshotRepository for SqliteStore {
     async fn load_snapshot(&self) -> Result<BookableSlotSnapshot> {
-        self.with_conn("load_bookable_slot_snapshot", |connection| {
+        self.with_reader("load_bookable_slot_snapshot", |connection| {
             let mut statement = connection
                 .prepare(&format!("SELECT {SLOT_COLUMNS} FROM bookable_slots"))
                 .context("preparing bookable-slot snapshot load")?;
@@ -34,7 +34,7 @@ impl BookableSlotSnapshotRepository for SqliteStore {
 
     async fn load_venue_snapshot(&self, venue_id: &VenueId) -> Result<BookableSlotSnapshot> {
         let venue_id = venue_id.to_string();
-        self.with_conn("load_venue_bookable_slot_snapshot", move |connection| {
+        self.with_reader("load_venue_bookable_slot_snapshot", move |connection| {
             let mut statement = connection
                 .prepare(&format!(
                     "SELECT {SLOT_COLUMNS} FROM bookable_slots WHERE venue_id = ?1"
@@ -62,7 +62,7 @@ impl BookableSlotSnapshotRepository for SqliteStore {
             );
         }
         let venue_id = venue_id.to_string();
-        self.with_conn("replace_venue_bookable_slot_snapshot", move |connection| {
+        self.with_writer("replace_venue_bookable_slot_snapshot", move |connection| {
             let transaction = connection
                 .transaction()
                 .context("starting bookable-slot snapshot transaction")?;
@@ -101,7 +101,7 @@ impl BookableSlotSnapshotRepository for SqliteStore {
 
     async fn delete_snapshots_except(&self, venue_ids: &[VenueId]) -> Result<u64> {
         let kept: Vec<String> = venue_ids.iter().map(VenueId::to_string).collect();
-        self.with_conn("sweep_removed_venue_slots", move |connection| {
+        self.with_writer("sweep_removed_venue_slots", move |connection| {
             let placeholders = (1..=kept.len())
                 .map(|i| format!("?{i}"))
                 .collect::<Vec<_>>()
@@ -124,7 +124,7 @@ impl BookableSlotSnapshotRepository for SqliteStore {
 impl VenueStateRepository for SqliteStore {
     async fn is_initialised(&self, venue_id: &VenueId) -> Result<bool> {
         let venue_id = venue_id.to_string();
-        self.with_conn("is_venue_initialised", move |connection| {
+        self.with_reader("is_venue_initialised", move |connection| {
             connection
                 .query_row(
                     "SELECT EXISTS (SELECT 1 FROM venue_state WHERE venue_id = ?1)",
@@ -138,7 +138,7 @@ impl VenueStateRepository for SqliteStore {
 
     async fn delete_venue_state_except(&self, venue_ids: &[VenueId]) -> Result<u64> {
         let kept: Vec<String> = venue_ids.iter().map(VenueId::to_string).collect();
-        self.with_conn("sweep_removed_venue_state", move |connection| {
+        self.with_writer("sweep_removed_venue_state", move |connection| {
             let placeholders = (1..=kept.len())
                 .map(|i| format!("?{i}"))
                 .collect::<Vec<_>>()
@@ -159,7 +159,7 @@ impl VenueStateRepository for SqliteStore {
     async fn mark_initialised(&self, venue_id: &VenueId) -> Result<()> {
         let venue_id = venue_id.to_string();
         let now = Utc::now().into_db()?;
-        self.with_conn("mark_venue_initialised", move |connection| {
+        self.with_writer("mark_venue_initialised", move |connection| {
             connection
                 .execute(
                     "INSERT INTO venue_state (venue_id, initialised_at) VALUES (?1, ?2)

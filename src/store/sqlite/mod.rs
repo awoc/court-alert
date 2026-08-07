@@ -32,22 +32,39 @@ fn prepare(conn: &mut Connection) -> Result<()> {
 }
 
 pub struct SqliteStore {
-    inner: Arc<Mutex<Connection>>,
+    writer: Arc<Mutex<Connection>>,
+    reader: Arc<Mutex<Connection>>,
 }
 
 impl SqliteStore {
-    fn wrap(conn: Connection) -> Self {
+    fn wrap(writer: Connection, reader: Connection) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(conn)),
+            writer: Arc::new(Mutex::new(writer)),
+            reader: Arc::new(Mutex::new(reader)),
         }
     }
 
-    async fn with_conn<T, F>(&self, op: &'static str, f: F) -> Result<T>
+    async fn with_writer<T, F>(&self, op: &'static str, f: F) -> Result<T>
     where
         F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
         T: Send + 'static,
     {
-        let conn = self.inner.clone();
+        Self::run(self.writer.clone(), op, f).await
+    }
+
+    async fn with_reader<T, F>(&self, op: &'static str, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        Self::run(self.reader.clone(), op, f).await
+    }
+
+    async fn run<T, F>(conn: Arc<Mutex<Connection>>, op: &'static str, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
         spawn_blocking(move || {
             let mut guard = conn.lock().expect("connection mutex poisoned");
             f(&mut guard)
@@ -62,15 +79,21 @@ impl SqliteStore {
                 .await
                 .with_context(|| format!("creating DB directory {}", parent.display()))?;
         }
-        let conn = spawn_blocking(move || -> Result<Connection> {
-            let mut conn = Connection::open(&path)
+        let (writer, reader) = spawn_blocking(move || -> Result<(Connection, Connection)> {
+            let mut writer = Connection::open(&path)
                 .with_context(|| format!("opening DB {}", path.display()))?;
-            prepare(&mut conn).with_context(|| format!("preparing DB {}", path.display()))?;
-            Ok(conn)
+            prepare(&mut writer).with_context(|| format!("preparing DB {}", path.display()))?;
+            // Opened second, so the schema it reads is already there.
+            let reader = Connection::open(&path)
+                .with_context(|| format!("opening DB {} for reads", path.display()))?;
+            reader
+                .execute_batch(PRAGMAS)
+                .with_context(|| format!("applying read pragmas to {}", path.display()))?;
+            Ok((writer, reader))
         })
         .await
         .context("DB open task panicked")??;
-        Ok(Self::wrap(conn))
+        Ok(Self::wrap(writer, reader))
     }
 }
 
@@ -84,7 +107,12 @@ impl SqliteStore {
         })
         .await
         .context("DB open task panicked")??;
-        Ok(Self::wrap(conn))
+
+        let shared = Arc::new(Mutex::new(conn));
+        Ok(Self {
+            writer: shared.clone(),
+            reader: shared,
+        })
     }
 }
 
