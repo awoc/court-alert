@@ -87,19 +87,6 @@ impl SubscriptionService {
             .collect()
     }
 
-    fn slot_summary(&self, slot: &crate::model::BookableSlot) -> contract::AvailableSlotSummary {
-        contract::AvailableSlotSummary {
-            club: self
-                .registry
-                .read()
-                .expect("venue registry poisoned")
-                .club_label(&slot.venue_id),
-            court: slot.court_name.clone(),
-            starts_at: slot.starts_at,
-            ends_at: slot.ends_at,
-        }
-    }
-
     pub fn clubs_of(&self, sport: Sport) -> Vec<(VenueId, String)> {
         let registry = self.registry.read().expect("venue registry poisoned");
         registry
@@ -120,5 +107,20 @@ impl SubscriptionService {
             .write()
             .expect("senders lock poisoned")
             .insert(provider.to_string(), sender);
+    }
+}
+
+/// Borrows the caller's registry rather than locking again: a second `read()`
+/// on a guard this task already holds deadlocks against a queued catalog
+/// refresh.
+fn slot_summary(
+    registry: &VenueRegistry,
+    slot: &crate::model::BookableSlot,
+) -> contract::AvailableSlotSummary {
+    contract::AvailableSlotSummary {
+        club: registry.club_label(&slot.venue_id),
+        court: slot.court_name.clone(),
+        starts_at: slot.starts_at,
+        ends_at: slot.ends_at,
     }
 }

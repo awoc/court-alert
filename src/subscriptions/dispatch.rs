@@ -4,8 +4,8 @@ use tracing::warn;
 use crate::model::AvailabilityChange;
 use crate::subscriptions::contract::AvailabilityAlert;
 
-use super::SubscriptionService;
 use super::matcher::match_subscriptions;
+use super::{SubscriptionService, slot_summary};
 
 impl SubscriptionService {
     pub async fn dispatch_loop(
@@ -52,8 +52,14 @@ impl SubscriptionService {
             match_subscriptions(changes, &subs, &registry)
         };
         for (user, slots) in matched {
-            let alert = AvailabilityAlert {
-                slots: slots.iter().map(|slot| self.slot_summary(slot)).collect(),
+            let alert = {
+                let registry = self.registry.read().expect("venue registry poisoned");
+                AvailabilityAlert {
+                    slots: slots
+                        .iter()
+                        .map(|slot| slot_summary(&registry, slot))
+                        .collect(),
+                }
             };
             let sender = self
                 .senders

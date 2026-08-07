@@ -18,7 +18,7 @@ fn map_subscription(row: &Row<'_>) -> rusqlite::Result<Subscription> {
 #[async_trait]
 impl SubscriptionRepository for SqliteStore {
     async fn add(&self, sub: SubscriptionDraft) -> Result<i64> {
-        self.with_conn("insert", move |conn| {
+        self.with_writer("insert", move |conn| {
             let (weekday, on_date) = sub.schedule.into_db()?;
             let courts_json = sub.courts.into_db()?;
             let filter = sub.filter.into_db()?;
@@ -54,7 +54,7 @@ impl SubscriptionRepository for SqliteStore {
     ) -> Result<Vec<Subscription>> {
         let user = user.clone();
         let today = today.format("%Y-%m-%d").to_string();
-        self.with_conn("list_for_user", move |conn| {
+        self.with_reader("list_for_user", move |conn| {
             let mut stmt = conn
                 .prepare(&format!(
                     "SELECT {SUB_COLUMNS}
@@ -78,7 +78,7 @@ impl SubscriptionRepository for SqliteStore {
 
     async fn list_all(&self, today: NaiveDate) -> Result<Vec<Subscription>> {
         let today = today.format("%Y-%m-%d").to_string();
-        self.with_conn("list_all", move |conn| {
+        self.with_reader("list_all", move |conn| {
             let mut stmt = conn
                 .prepare(&format!(
                     "SELECT {SUB_COLUMNS}
@@ -98,7 +98,7 @@ impl SubscriptionRepository for SqliteStore {
 
     async fn remove(&self, id: i64, user: &ProviderUserRef) -> Result<bool> {
         let user = user.clone();
-        self.with_conn("remove", move |conn| {
+        self.with_writer("remove", move |conn| {
             let affected = conn
                 .execute(
                     "DELETE FROM subscriptions
@@ -112,7 +112,7 @@ impl SubscriptionRepository for SqliteStore {
     }
 
     async fn remove_any(&self, id: i64) -> Result<bool> {
-        self.with_conn("remove_any", move |conn| {
+        self.with_writer("remove_any", move |conn| {
             let affected = conn
                 .execute("DELETE FROM subscriptions WHERE id = ?1", params![id])
                 .context("deleting subscription by id")?;
@@ -123,7 +123,7 @@ impl SubscriptionRepository for SqliteStore {
 
     async fn remove_expired(&self, today: chrono::NaiveDate) -> Result<u64> {
         let today = today.format("%Y-%m-%d").to_string();
-        self.with_conn("remove_expired", move |conn| {
+        self.with_writer("remove_expired", move |conn| {
             let affected = conn
                 .execute(
                     "DELETE FROM subscriptions WHERE on_date IS NOT NULL AND on_date < ?1",

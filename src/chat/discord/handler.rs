@@ -1,11 +1,13 @@
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context as _, Result};
 use serenity::all::{
     ButtonStyle, CommandInteraction, ComponentInteraction, Context, CreateActionRow, CreateButton,
     CreateInteractionResponse, CreateInteractionResponseFollowup, CreateInteractionResponseMessage,
-    EventHandler, GuildId, Interaction, InteractionContext, Message, Ready, UserId,
+    EditInteractionResponse, EventHandler, GuildId, Interaction, InteractionContext, Message,
+    Ready, UserId,
 };
 use serenity::async_trait;
 use tracing::{error, info, warn};
@@ -49,6 +51,15 @@ impl EventHandler for Handler {
 
 impl Handler {
     async fn handle_command(&self, ctx: &Context, cmd: &CommandInteraction) {
+        let started = Instant::now();
+        info!(command = %cmd.data.name, user = %cmd.user.id, "interaction received");
+        // Answering takes a database round trip the 3s interaction deadline
+        // cannot be relied on to cover; deferring first buys 15 minutes.
+        let ephemeral = hides_from_others(cmd.context);
+        if let Err(e) = defer(ctx, cmd, ephemeral).await {
+            error!(error = %format!("{e:#}"), "failed to acknowledge interaction");
+            return;
+        }
         let messages = if cmd.data.name == "help" {
             render_help()
         } else {
@@ -57,9 +68,15 @@ impl Handler {
                 Err(e) => render_text(&format!("Error: {e:#}")),
             }
         };
-        if let Err(e) = reply(ctx, cmd, &messages).await {
+        if let Err(e) = reply(ctx, cmd, &messages, ephemeral).await {
             error!(error = %format!("{e:#}"), "failed to send interaction response");
+            return;
         }
+        info!(
+            command = %cmd.data.name,
+            elapsed_ms = started.elapsed().as_millis(),
+            "interaction answered"
+        );
     }
 
     async fn handle_component(&self, ctx: &Context, component: &ComponentInteraction) {
@@ -75,6 +92,13 @@ impl Handler {
                 return;
             }
         };
+        // Same deadline as a slash command, and the same database round trip
+        // behind it. Acknowledging keeps the message as it is until the reply
+        // replaces it, so the click shows no loading state.
+        if let Err(e) = acknowledge(ctx, component).await {
+            error!(error = %format!("{e:#}"), "failed to acknowledge component interaction");
+            return;
+        }
         let messages = self
             .run(component.user.id, command, render_button_reply)
             .await;
@@ -103,25 +127,68 @@ impl Handler {
     }
 }
 
-async fn reply(ctx: &Context, cmd: &CommandInteraction, messages: &[ReplyMessage]) -> Result<()> {
-    let ephemeral = hides_from_others(cmd.context);
-    let first = messages
-        .first()
-        .context("cannot send an empty interaction response")?;
-    let response = CreateInteractionResponse::Message(
-        CreateInteractionResponseMessage::new()
-            .content(&first.content)
-            .components(components(first))
-            .ephemeral(ephemeral),
+async fn defer(ctx: &Context, cmd: &CommandInteraction, ephemeral: bool) -> Result<()> {
+    let response = CreateInteractionResponse::Defer(
+        CreateInteractionResponseMessage::new().ephemeral(ephemeral),
     );
     cmd.create_response(&ctx.http, response)
         .await
-        .context("sending interaction response")?;
+        .context("deferring the interaction response")
+}
+
+async fn reply(
+    ctx: &Context,
+    cmd: &CommandInteraction,
+    messages: &[ReplyMessage],
+    ephemeral: bool,
+) -> Result<()> {
+    let first = messages
+        .first()
+        .context("cannot send an empty interaction response")?;
+    let edited = cmd
+        .edit_response(
+            &ctx.http,
+            EditInteractionResponse::new()
+                .content(&first.content)
+                .components(components(first)),
+        )
+        .await
+        .context("sending the deferred interaction response");
+    if let Err(error) = edited {
+        report_unanswered(ephemeral, |f| cmd.create_followup(&ctx.http, f)).await;
+        return Err(error);
+    }
     send_followups(&messages[1..], ephemeral, |f| {
         cmd.create_followup(&ctx.http, f)
     })
     .await;
     Ok(())
+}
+
+/// Before deferring, a reply that could not be sent failed visibly: Discord
+/// told the user the command did not respond. A deferred one fails into a
+/// loading state that resolves into nothing, so the failure has to be said out
+/// loud. The follow-up may well fail for the same reason — best effort.
+async fn report_unanswered<S, F>(ephemeral: bool, send: S)
+where
+    S: Fn(CreateInteractionResponseFollowup) -> F,
+    F: Future<Output = serenity::Result<Message>>,
+{
+    let note = render_text("⚠️ Something went wrong sending this reply. Please try again.");
+    for message in &note {
+        if let Err(e) = send(followup(message, ephemeral)).await {
+            error!(error = %format!("{e:#}"), "failed to report an unanswered interaction");
+        }
+    }
+}
+
+/// Acknowledges a click without a loading state, leaving the message the button
+/// sits on untouched until [`replace_message`] rewrites it.
+async fn acknowledge(ctx: &Context, component: &ComponentInteraction) -> Result<()> {
+    component
+        .create_response(&ctx.http, CreateInteractionResponse::Acknowledge)
+        .await
+        .context("acknowledging the component interaction")
 }
 
 async fn replace_message(
@@ -132,16 +199,22 @@ async fn replace_message(
     let first = messages
         .first()
         .context("cannot send an empty interaction response")?;
-    let response = CreateInteractionResponse::UpdateMessage(
-        CreateInteractionResponseMessage::new()
-            .content(&first.content)
-            .components(components(first)),
-    );
-    component
-        .create_response(&ctx.http, response)
-        .await
-        .context("updating the message the component belongs to")?;
     let ephemeral = hides_from_others(component.context);
+    // The click was acknowledged already, so this edits the acknowledged
+    // message rather than answering the interaction afresh.
+    let edited = component
+        .edit_response(
+            &ctx.http,
+            EditInteractionResponse::new()
+                .content(&first.content)
+                .components(components(first)),
+        )
+        .await
+        .context("updating the message the component belongs to");
+    if let Err(error) = edited {
+        report_unanswered(ephemeral, |f| component.create_followup(&ctx.http, f)).await;
+        return Err(error);
+    }
     send_followups(&messages[1..], ephemeral, |f| {
         component.create_followup(&ctx.http, f)
     })

@@ -10,8 +10,8 @@ use crate::subscriptions::contract::{
     SubscriptionSummary,
 };
 
-use super::SubscriptionService;
 use super::matcher::slot_matches;
+use super::{SubscriptionService, slot_summary};
 
 impl SubscriptionService {
     pub async fn handle(
@@ -260,7 +260,7 @@ impl SubscriptionService {
         slots.sort_by_key(|slot| slot.starts_at);
         slots
             .into_iter()
-            .map(|slot| self.slot_summary(slot))
+            .map(|slot| slot_summary(&registry, slot))
             .collect()
     }
 }
