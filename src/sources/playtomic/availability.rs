@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::model::{CourtCatalog, SlotObservation, Venue};
 use crate::ports::VenueAvailabilitySource;
-use crate::time::berlin_dates_in;
+use crate::time::{berlin_date, berlin_dates_in};
 
 use super::discovery::check_opening_hours;
 use super::{ClubDirectory, PlaytomicClient, playtomic_sport_id};
@@ -99,25 +99,35 @@ fn observations_for(
     let mut shortest: BTreeMap<(Uuid, DateTime<Utc>), i64> = BTreeMap::new();
 
     for resource in resources {
-        // Partial days look like newly booked slots to the monitor.
-        anyhow::ensure!(
-            resource.start_date == requested,
-            "venue {}: asked playtomic for {requested} but resource {} came back for {}",
-            venue.id,
-            resource.resource_id,
-            resource.start_date
-        );
+        let (resource_id, start_date) = (resource.resource_id, resource.start_date);
+        let mut carried_a_slot = false;
         for slot in resource.slots {
             if slot.duration <= 0 {
                 continue;
             }
             // start_time is UTC even though requests are keyed by a club-local date.
-            let starts_at = Utc.from_utc_datetime(&resource.start_date.and_time(slot.start_time));
+            let starts_at = Utc.from_utc_datetime(&start_date.and_time(slot.start_time));
+            let local_date = berlin_date(starts_at);
+            anyhow::ensure!(
+                local_date == requested,
+                "venue {}: asked playtomic for {requested} but resource {resource_id} \
+                 came back for {local_date} (start_date {start_date})",
+                venue.id
+            );
+            carried_a_slot = true;
             shortest
-                .entry((resource.resource_id, starts_at))
+                .entry((resource_id, starts_at))
                 .and_modify(|shortest| *shortest = (*shortest).min(slot.duration))
                 .or_insert(slot.duration);
         }
+        // Partial days look like newly booked slots to the monitor, and a resource with nothing
+        // bookable left has no slot to date it by.
+        anyhow::ensure!(
+            carried_a_slot || start_date == requested,
+            "venue {}: asked playtomic for {requested} but resource {resource_id} \
+             came back empty for {start_date}",
+            venue.id
+        );
     }
 
     Ok(shortest
@@ -294,6 +304,63 @@ mod tests {
 
         assert_eq!(observations.len(), 1);
         assert_eq!(observations[0].court_name, unknown.to_string());
+    }
+
+    #[test]
+    fn a_slot_after_midnight_is_kept_for_the_day_it_opens() {
+        let raw = format!(
+            r#"[{{"resource_id":"{COURT_1}","start_date":"2026-08-04",
+                 "slots":[{{"start_time":"22:00:00","duration":60}}]}}]"#
+        );
+
+        let observations =
+            observations_for(&venue(), &catalog(), sample_date(), parse(&raw)).expect("one day");
+
+        assert_eq!(observations.len(), 1);
+        assert_eq!(
+            crate::time::fmt_berlin(observations[0].starts_at),
+            "Wed, 05.08.2026 00:00"
+        );
+    }
+
+    #[test]
+    fn a_fully_booked_resource_for_the_previous_day_fails_the_fetch() {
+        let raw =
+            format!(r#"[{{"resource_id":"{COURT_1}","start_date":"2026-08-04","slots":[]}}]"#);
+
+        let error = observations_for(&venue(), &catalog(), sample_date(), parse(&raw))
+            .expect_err("an empty resource cannot vouch for the requested day");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("2026-08-05"), "got: {message}");
+        assert!(message.contains("2026-08-04"), "got: {message}");
+    }
+
+    #[test]
+    fn a_fully_booked_resource_for_the_requested_day_is_accepted() {
+        let raw =
+            format!(r#"[{{"resource_id":"{COURT_1}","start_date":"2026-08-05","slots":[]}}]"#);
+
+        assert!(
+            observations_for(&venue(), &catalog(), sample_date(), parse(&raw))
+                .expect("a booked-out day is valid")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_previous_day_slot_before_midnight_still_fails_the_fetch() {
+        let raw = format!(
+            r#"[{{"resource_id":"{COURT_1}","start_date":"2026-08-04",
+                 "slots":[{{"start_time":"09:00:00","duration":60}}]}}]"#
+        );
+
+        let error = observations_for(&venue(), &catalog(), sample_date(), parse(&raw))
+            .expect_err("a slot outside the requested day must be rejected");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("2026-08-05"), "got: {message}");
+        assert!(message.contains("2026-08-04"), "got: {message}");
     }
 
     #[test]
