@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Receiver;
 use tracing::warn;
 
-use crate::model::{AvailabilityChange, BookableSlotId};
+use crate::model::AvailabilityChange;
 use crate::subscriptions::contract::{AvailabilityAlert, DirectMessageSender};
 
 use super::matcher::match_subscriptions;
@@ -94,13 +94,7 @@ impl SubscriptionService {
     }
 
     async fn strike_taken(&self, changes: &[AvailabilityChange]) {
-        let taken: Vec<BookableSlotId> = changes
-            .iter()
-            .filter_map(|change| match change {
-                AvailabilityChange::BecameUnbookable(slot) => Some(BookableSlotId::from(slot)),
-                AvailabilityChange::BecameBookable(_) => None,
-            })
-            .collect();
+        let taken = AvailabilityChange::taken_ids(changes);
         if taken.is_empty() {
             return;
         }

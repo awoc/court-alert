@@ -9,7 +9,7 @@ use crate::alerts::DailyPruner;
 use crate::model::{AlertLine, AlertSurface, AvailabilityChange};
 use crate::ports::{AlertMessageRepository, AvailabilityChangeSink};
 
-use super::format::{added_slots, channel_lines, chunk_lines, removed_slot_ids, render};
+use super::format::{added_slots, channel_lines, chunk_lines, render};
 use super::http::{HTTP_TIMEOUT, redact_discord_webhook_tokens, send_with_rate_limit_retry};
 use super::strike::{DISCORD_UNKNOWN_MESSAGE, EditOutcome, strike_through};
 
@@ -147,7 +147,7 @@ impl DiscordNotifier {
     }
 
     async fn strike_removed(&self, changes: &[AvailabilityChange]) {
-        let removed = removed_slot_ids(changes);
+        let removed = AvailabilityChange::taken_ids(changes);
         let struck = strike_through(
             &self.messages,
             AlertSurface::Channel,

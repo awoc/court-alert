@@ -1,5 +1,5 @@
 use super::text::{DISCORD_CHUNK_BUDGET, fmt_club_slot_line, fmt_slot_line};
-use crate::model::{AlertLine, AvailabilityChange, BookableSlot, BookableSlotId};
+use crate::model::{AlertLine, AvailabilityChange, BookableSlot};
 use crate::subscriptions::contract::AvailabilityAlert;
 
 const STRIKE_MARKUP_CHARS: usize = 4;
@@ -75,16 +75,6 @@ pub(super) fn added_slots(changes: &[AvailabilityChange]) -> Vec<&BookableSlot> 
             .then_with(|| left.court_name.cmp(&right.court_name))
     });
     added
-}
-
-pub(super) fn removed_slot_ids(changes: &[AvailabilityChange]) -> Vec<BookableSlotId> {
-    changes
-        .iter()
-        .filter_map(|change| match change {
-            AvailabilityChange::BecameUnbookable(slot) => Some(BookableSlotId::from(slot)),
-            AvailabilityChange::BecameBookable(_) => None,
-        })
-        .collect()
 }
 
 #[cfg(test)]

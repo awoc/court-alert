@@ -79,6 +79,16 @@ impl AvailabilityChange {
             Self::BecameBookable(slot) | Self::BecameUnbookable(slot) => slot,
         }
     }
+
+    pub fn taken_ids(changes: &[Self]) -> Vec<BookableSlotId> {
+        changes
+            .iter()
+            .filter_map(|change| match change {
+                Self::BecameUnbookable(slot) => Some(BookableSlotId::from(slot)),
+                Self::BecameBookable(_) => None,
+            })
+            .collect()
+    }
 }
 
 pub fn diff_availability(
