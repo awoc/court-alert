@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use uuid::Uuid;
 
 use crate::model::{CourtFilter, ProviderUserRef, Schedule, Sport, TimeRange};
 
@@ -23,6 +24,7 @@ pub struct OwnedSubscriptionSummary {
 pub struct AvailableSlotSummary {
     pub club: String,
     pub court: String,
+    pub court_id: Uuid,
     pub starts_at: DateTime<Utc>,
     pub ends_at: DateTime<Utc>,
 }

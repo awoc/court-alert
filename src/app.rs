@@ -4,6 +4,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use tracing::{info, warn};
 
+use crate::alerts::DailyPruner;
 use crate::chat;
 use crate::chat::discord::DiscordNotifier;
 use crate::config::{Config, Settings};
@@ -33,16 +34,21 @@ impl App {
         sources::validate_configuration(&config).with_context(describe)?;
         chat::validate_configuration(&config).with_context(describe)?;
         let registry = Arc::new(RwLock::new(build_registry(&config)));
-        let chat_providers = chat::build(&settings);
 
         let store = Arc::new(SqliteStore::open(settings.db_path.clone()).await?);
+        let pruner = Arc::new(DailyPruner::new(store.clone()));
+        let chat_providers = chat::build(&settings, store.clone(), pruner.clone());
 
         let mut sinks: Vec<Arc<dyn AvailabilityChangeSink>> = Vec::new();
         match &settings.discord_webhook {
             Some(url) => sinks.push(
                 SportScopedSink::wrap(
                     SurfaceFilteredSink::wrap(
-                        Box::new(DiscordNotifier::new(url.clone(), store.clone())?),
+                        Box::new(DiscordNotifier::new(
+                            url.clone(),
+                            store.clone(),
+                            pruner.clone(),
+                        )?),
                         registry.clone(),
                         config.surface_filter(),
                     ),

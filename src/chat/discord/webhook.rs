@@ -1,38 +1,30 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use chrono::{NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use crate::model::{AlertLine, AvailabilityChange};
+use crate::alerts::DailyPruner;
+use crate::model::{AlertLine, AlertSurface, AvailabilityChange};
 use crate::ports::{AlertMessageRepository, AvailabilityChangeSink};
-use crate::time::today_berlin;
 
-use super::format::{added_slots, chunk_slots, removed_slot_ids, render};
+use super::format::{added_slots, channel_lines, chunk_lines, render};
 use super::http::{HTTP_TIMEOUT, redact_discord_webhook_tokens, send_with_rate_limit_retry};
-
-// Other Discord 404 codes do not prove that the tracked message is gone.
-const DISCORD_UNKNOWN_MESSAGE: i64 = 10008;
-
-enum EditOutcome {
-    Edited,
-    Gone,
-}
+use super::strike::{DISCORD_UNKNOWN_MESSAGE, EditOutcome, strike_through};
 
 pub struct DiscordNotifier {
     webhook_url: reqwest::Url,
     client: reqwest::Client,
     messages: Arc<dyn AlertMessageRepository>,
-    // Avoid repeated cleanup writes on SD-card storage.
-    last_pruned: Mutex<Option<NaiveDate>>,
+    pruner: Arc<DailyPruner>,
 }
 
 impl DiscordNotifier {
     pub fn new(
         mut webhook_url: reqwest::Url,
         messages: Arc<dyn AlertMessageRepository>,
+        pruner: Arc<DailyPruner>,
     ) -> Result<Self> {
         // Avoid producing `.../token//messages/{id}` in `edit_url`.
         webhook_url
@@ -47,7 +39,7 @@ impl DiscordNotifier {
             webhook_url,
             client,
             messages,
-            last_pruned: Mutex::new(None),
+            pruner,
         })
     }
 
@@ -81,7 +73,7 @@ impl DiscordNotifier {
     }
 
     async fn post_added(&self, changes: &[AvailabilityChange]) {
-        for chunk in chunk_slots(&added_slots(changes)) {
+        for chunk in chunk_lines(channel_lines(&added_slots(changes))) {
             let content = render(&chunk);
             debug!(
                 lines = chunk.len(),
@@ -99,7 +91,11 @@ impl DiscordNotifier {
     }
 
     async fn record(&self, message_id: &str, lines: &[AlertLine]) {
-        if let Err(error) = self.messages.record_message(message_id, lines).await {
+        if let Err(error) = self
+            .messages
+            .record_message(AlertSurface::Channel, None, message_id, lines)
+            .await
+        {
             warn!(
                 error = %format!("{error:#}"),
                 message_id,
@@ -151,85 +147,19 @@ impl DiscordNotifier {
     }
 
     async fn strike_removed(&self, changes: &[AvailabilityChange]) {
-        let removed = removed_slot_ids(changes);
-        if removed.is_empty() {
-            return;
-        }
-        let plans = match self.messages.plan_strikes(&removed).await {
-            Ok(plans) => plans,
-            Err(error) => {
-                warn!(
-                    error = %format!("{error:#}"),
-                    "discord: planning strikethroughs failed; no edits attempted"
-                );
-                return;
-            }
-        };
-        if plans.is_empty() {
-            debug!(
-                slots = removed.len(),
-                "discord: no tracked message holds these slots; nothing to strike"
-            );
-            return;
-        }
-
-        for plan in plans {
-            let message_id = plan.message.id;
-            match self.edit(&message_id, &render(&plan.message.lines)).await {
-                Ok(EditOutcome::Edited) => {
-                    if let Err(error) = self
-                        .messages
-                        .commit_strikes(&message_id, &plan.newly_struck)
-                        .await
-                    {
-                        warn!(
-                            error = %format!("{error:#}"),
-                            message_id,
-                            "discord: edit succeeded but recording it failed"
-                        );
-                    }
-                }
-                Ok(EditOutcome::Gone) => {
-                    debug!(
-                        message_id,
-                        "discord: message no longer exists; forgetting it"
-                    );
-                    if let Err(error) = self.messages.forget_message(&message_id).await {
-                        warn!(
-                            error = %format!("{error:#}"),
-                            message_id,
-                            "discord: forgetting a deleted message failed"
-                        );
-                    }
-                }
-                Err(error) => warn!(
-                    error = %format!("{error:#}"),
-                    message_id,
-                    "discord: striking through an alert failed; it stays live-looking"
-                ),
-            }
-        }
-    }
-
-    async fn prune_daily(&self) {
-        let today = today_berlin();
-        if *self.last_pruned.lock().expect("prune guard poisoned") == Some(today) {
-            return;
-        }
-        match self.messages.prune_ended(Utc::now()).await {
-            Ok(removed) => {
-                *self.last_pruned.lock().expect("prune guard poisoned") = Some(today);
-                if removed > 0 {
-                    debug!(
-                        removed,
-                        "discord: pruned alert messages whose slots all ended"
-                    );
-                }
-            }
-            Err(error) => warn!(
+        let removed = AvailabilityChange::taken_ids(changes);
+        let struck = strike_through(
+            &self.messages,
+            AlertSurface::Channel,
+            &removed,
+            |message| async move { self.edit(&message.id, &render(&message.lines)).await },
+        )
+        .await;
+        if let Err(error) = struck {
+            warn!(
                 error = %format!("{error:#}"),
-                "discord: pruning alert messages failed"
-            ),
+                "discord: planning strikethroughs failed; no edits attempted"
+            );
         }
     }
 }
@@ -243,7 +173,7 @@ impl AvailabilityChangeSink for DiscordNotifier {
         }
         // Strike before pruning can drop old rows; prune before recording new rows.
         self.strike_removed(changes).await;
-        self.prune_daily().await;
+        self.pruner.run().await;
         self.post_added(changes).await;
         Ok(())
     }
@@ -252,7 +182,7 @@ impl AvailabilityChangeSink for DiscordNotifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{BookableSlot, BookableSlotId};
+    use crate::model::{BookableSlot, BookableSlotId, StrikePlan};
     use crate::store::SqliteStore;
     use chrono::{TimeZone, Utc};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -277,11 +207,22 @@ mod tests {
         let url = format!("{}/api/webhooks/123/token", server.uri())
             .parse()
             .unwrap();
-        (DiscordNotifier::new(url, store.clone()).unwrap(), store)
+        let pruner = Arc::new(DailyPruner::new(store.clone()));
+        (
+            DiscordNotifier::new(url, store.clone(), pruner).unwrap(),
+            store,
+        )
     }
 
     fn disable_pruning_for_today(notifier: &DiscordNotifier) {
-        *notifier.last_pruned.lock().unwrap() = Some(crate::time::today_berlin());
+        notifier.pruner.skip_today();
+    }
+
+    async fn plan_strikes(store: &Arc<SqliteStore>, slot: &BookableSlot) -> Vec<StrikePlan> {
+        store
+            .plan_strikes(AlertSurface::Channel, &[BookableSlotId::from(slot)])
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -304,12 +245,13 @@ mod tests {
             .await
             .unwrap();
 
-        let plans = store
-            .plan_strikes(&[BookableSlotId::from(&added)])
-            .await
-            .unwrap();
+        let plans = plan_strikes(&store, &added).await;
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].message.id, "1408", "the id came from ?wait=true");
+        assert_eq!(
+            plans[0].message.channel_id, None,
+            "the webhook addresses its own messages by id"
+        );
     }
 
     #[tokio::test]
@@ -331,16 +273,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            store
-                .plan_strikes(&[BookableSlotId::from(&added)])
-                .await
-                .unwrap()
-                .len(),
+            plan_strikes(&store, &added).await.len(),
             1,
             "pruning ran before the post, not after it"
         );
         assert_eq!(
-            *notifier.last_pruned.lock().unwrap(),
+            notifier.pruner.last_run(),
             Some(crate::time::today_berlin()),
             "pruning did run — the rows survived on merit, not by being skipped"
         );
@@ -362,13 +300,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(
-            store
-                .plan_strikes(&[BookableSlotId::from(&added)])
-                .await
-                .unwrap()
-                .is_empty()
-        );
+        assert!(plan_strikes(&store, &added).await.is_empty());
     }
 
     fn unknown_message_body() -> serde_json::Value {
@@ -381,7 +313,12 @@ mod tests {
 
     async fn seed(store: &Arc<SqliteStore>, message_id: &str, slot: &BookableSlot) {
         store
-            .record_message(message_id, &[AlertLine::from(slot)])
+            .record_message(
+                AlertSurface::Channel,
+                None,
+                message_id,
+                &[AlertLine::from(slot)],
+            )
             .await
             .unwrap();
     }
@@ -406,11 +343,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            store
-                .plan_strikes(&[BookableSlotId::from(&gone)])
-                .await
-                .unwrap()
-                .is_empty(),
+            plan_strikes(&store, &gone).await.is_empty(),
             "the strike was committed after Discord confirmed the edit"
         );
     }
@@ -451,7 +384,12 @@ mod tests {
             .await;
         let (notifier, store) = notifier(&server).await;
         store
-            .record_message("1408", &[AlertLine::from(&staying), AlertLine::from(&gone)])
+            .record_message(
+                AlertSurface::Channel,
+                None,
+                "1408",
+                &[AlertLine::from(&staying), AlertLine::from(&gone)],
+            )
             .await
             .unwrap();
 
@@ -508,10 +446,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(responder.calls(), 2, "one 429, then a retry");
-        let plans = store
-            .plan_strikes(&[BookableSlotId::from(&added)])
-            .await
-            .unwrap();
+        let plans = plan_strikes(&store, &added).await;
         assert_eq!(plans.len(), 1, "the retried post was recorded");
         assert_eq!(plans[0].message.id, "1408");
     }
@@ -529,7 +464,8 @@ mod tests {
         let url = format!("{}/api/webhooks/123/token/", server.uri())
             .parse()
             .unwrap();
-        let notifier = DiscordNotifier::new(url, store.clone()).unwrap();
+        let pruner = Arc::new(DailyPruner::new(store.clone()));
+        let notifier = DiscordNotifier::new(url, store.clone(), pruner).unwrap();
         let gone = slot("Court 2", 18);
         seed(&store, "1408", &gone).await;
 
@@ -560,11 +496,7 @@ mod tests {
 
         assert_eq!(responder.calls(), 2, "one 429, then a retry");
         assert!(
-            store
-                .plan_strikes(&[BookableSlotId::from(&gone)])
-                .await
-                .unwrap()
-                .is_empty(),
+            plan_strikes(&store, &gone).await.is_empty(),
             "the retried edit was committed"
         );
     }
@@ -587,11 +519,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            store
-                .plan_strikes(&[BookableSlotId::from(&gone)])
-                .await
-                .unwrap()
-                .len(),
+            plan_strikes(&store, &gone).await.len(),
             1,
             "nothing is committed when Discord did not confirm"
         );
@@ -616,11 +544,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            store
-                .plan_strikes(&[BookableSlotId::from(&gone)])
-                .await
-                .unwrap()
-                .is_empty(),
+            plan_strikes(&store, &gone).await.is_empty(),
             "rows for a message Discord no longer knows are dropped"
         );
     }
@@ -643,11 +567,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            store
-                .plan_strikes(&[BookableSlotId::from(&gone)])
-                .await
-                .unwrap()
-                .len(),
+            plan_strikes(&store, &gone).await.len(),
             1,
             "the rows survive a wrong-credential 404"
         );
@@ -670,14 +590,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            store
-                .plan_strikes(&[BookableSlotId::from(&gone)])
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
+        assert_eq!(plan_strikes(&store, &gone).await.len(), 1);
     }
 
     #[tokio::test]
@@ -719,10 +632,10 @@ mod tests {
         let changes = [AvailabilityChange::BecameBookable(added)];
 
         notifier.publish(&changes).await.unwrap();
-        let after_first = *notifier.last_pruned.lock().unwrap();
+        let after_first = notifier.pruner.last_run();
         notifier.publish(&changes).await.unwrap();
 
         assert_eq!(after_first, Some(crate::time::today_berlin()));
-        assert_eq!(*notifier.last_pruned.lock().unwrap(), after_first);
+        assert_eq!(notifier.pruner.last_run(), after_first);
     }
 }

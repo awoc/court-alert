@@ -1,8 +1,10 @@
+use std::sync::Arc;
+
 use tokio::sync::mpsc::Receiver;
 use tracing::warn;
 
 use crate::model::AvailabilityChange;
-use crate::subscriptions::contract::AvailabilityAlert;
+use crate::subscriptions::contract::{AvailabilityAlert, DirectMessageSender};
 
 use super::matcher::match_subscriptions;
 use super::{SubscriptionService, slot_summary};
@@ -37,6 +39,11 @@ impl SubscriptionService {
         if changes.is_empty() {
             return;
         }
+        self.alert_subscribers(changes).await;
+        self.strike_taken(changes).await;
+    }
+
+    async fn alert_subscribers(&self, changes: &[AvailabilityChange]) {
         let subs = match self.store.list_all(self.clock.today()).await {
             Ok(s) => s,
             Err(e) => {
@@ -85,6 +92,30 @@ impl SubscriptionService {
             }
         }
     }
+
+    async fn strike_taken(&self, changes: &[AvailabilityChange]) {
+        let taken = AvailabilityChange::taken_ids(changes);
+        if taken.is_empty() {
+            return;
+        }
+        let senders: Vec<(String, Arc<dyn DirectMessageSender>)> = self
+            .senders
+            .read()
+            .expect("senders lock poisoned")
+            .iter()
+            .map(|(provider, sender)| (provider.clone(), sender.clone()))
+            .collect();
+        for (provider, sender) in senders {
+            if let Err(e) = sender.strike_taken(&taken).await {
+                warn!(
+                    error = %format!("{e:#}"),
+                    provider = %provider,
+                    slots = taken.len(),
+                    "dispatch: failed to strike slots that were taken"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -94,8 +125,8 @@ mod tests {
         service_with_store, subscribe_cmd, uref, venue_id,
     };
     use crate::model::{
-        AvailabilityChange, BookableSlot, CourtFilter, Schedule, Sport, SubscriptionDraft,
-        TimeRange,
+        AvailabilityChange, BookableSlot, BookableSlotId, CourtFilter, Schedule, Sport,
+        SubscriptionDraft, TimeRange,
     };
     use crate::ports::SubscriptionRepository;
     use crate::subscriptions::contract::{
@@ -107,6 +138,8 @@ mod tests {
 
     struct RecordingSender {
         sent: Mutex<Vec<(String, AvailabilityAlert)>>,
+        struck: Mutex<Vec<Vec<BookableSlotId>>>,
+        order: Mutex<Vec<&'static str>>,
         fail: bool,
     }
 
@@ -114,8 +147,18 @@ mod tests {
         fn new(fail: bool) -> Arc<Self> {
             Arc::new(Self {
                 sent: Mutex::new(Vec::new()),
+                struck: Mutex::new(Vec::new()),
+                order: Mutex::new(Vec::new()),
                 fail,
             })
+        }
+
+        fn struck(&self) -> Vec<BookableSlotId> {
+            self.struck.lock().unwrap().concat()
+        }
+
+        fn order(&self) -> Vec<&'static str> {
+            self.order.lock().unwrap().clone()
         }
     }
 
@@ -126,10 +169,27 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((user_id.to_string(), alert.clone()));
+            self.order.lock().unwrap().push("send");
             if self.fail {
                 anyhow::bail!("simulated DM failure");
             }
             Ok(())
+        }
+
+        async fn strike_taken(&self, slots: &[BookableSlotId]) -> anyhow::Result<()> {
+            self.struck.lock().unwrap().push(slots.to_vec());
+            self.order.lock().unwrap().push("strike");
+            if self.fail {
+                anyhow::bail!("simulated strike failure");
+            }
+            Ok(())
+        }
+    }
+
+    fn unbookable(name: &str) -> AvailabilityChange {
+        match bookable(name) {
+            AvailabilityChange::BecameBookable(slot) => AvailabilityChange::BecameUnbookable(slot),
+            change => change,
         }
     }
 
@@ -259,6 +319,80 @@ mod tests {
             .await
             .unwrap();
         svc.dispatch(&[bookable("Court 2")]).await;
+    }
+
+    #[tokio::test]
+    async fn a_slot_that_stops_being_bookable_is_struck_where_it_was_announced() {
+        let svc = service().await;
+        let sender = RecordingSender::new(false);
+        svc.register_sender("discord", sender.clone());
+        let taken = unbookable("Court 2");
+
+        svc.dispatch(std::slice::from_ref(&taken)).await;
+
+        assert_eq!(sender.struck(), vec![BookableSlotId::from(taken.slot())]);
+        assert!(
+            sender.sent.lock().unwrap().is_empty(),
+            "a court going away is not news worth a fresh alert"
+        );
+    }
+
+    #[tokio::test]
+    async fn slots_are_struck_even_when_no_subscription_matches_them() {
+        let svc = service().await;
+        let sender = RecordingSender::new(false);
+        svc.register_sender("discord", sender.clone());
+        let taken = unbookable("Court 2");
+
+        svc.dispatch(std::slice::from_ref(&taken)).await;
+
+        assert_eq!(sender.struck(), vec![BookableSlotId::from(taken.slot())]);
+    }
+
+    #[tokio::test]
+    async fn alerts_go_out_before_anything_is_struck() {
+        let svc = service().await;
+        let sender = RecordingSender::new(false);
+        svc.register_sender("discord", sender.clone());
+        svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
+            .await
+            .unwrap();
+
+        svc.dispatch(&[unbookable("Court 5"), bookable("Court 2")])
+            .await;
+
+        assert_eq!(sender.order(), vec!["send", "strike"]);
+    }
+
+    #[tokio::test]
+    async fn a_batch_of_new_slots_strikes_nothing() {
+        let svc = service().await;
+        let sender = RecordingSender::new(false);
+        svc.register_sender("discord", sender.clone());
+        svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
+            .await
+            .unwrap();
+
+        svc.dispatch(&[bookable("Court 2")]).await;
+
+        assert!(sender.struck().is_empty());
+        assert_eq!(sender.sent.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failing_strike_does_not_stop_the_alerts_in_the_same_batch() {
+        let svc = service().await;
+        let sender = RecordingSender::new(true);
+        svc.register_sender("discord", sender.clone());
+        svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
+            .await
+            .unwrap();
+
+        svc.dispatch(&[unbookable("Court 5"), bookable("Court 2")])
+            .await;
+
+        assert_eq!(sender.struck().len(), 1);
+        assert_eq!(sender.sent.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

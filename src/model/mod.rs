@@ -5,7 +5,7 @@ mod slot;
 mod subscription;
 mod venue;
 
-pub use alert_message::{AlertLine, AlertMessage, StrikePlan};
+pub use alert_message::{AlertLine, AlertMessage, AlertSurface, StrikePlan};
 pub use court::{Court, CourtAttributes, CourtCatalog, CourtFilter, CourtLocation, CourtSurface};
 pub use registry::{CatalogState, VenueRegistry};
 pub use slot::{

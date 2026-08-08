@@ -110,9 +110,6 @@ impl SubscriptionService {
     }
 }
 
-/// Borrows the caller's registry rather than locking again: a second `read()`
-/// on a guard this task already holds deadlocks against a queued catalog
-/// refresh.
 fn slot_summary(
     registry: &VenueRegistry,
     slot: &crate::model::BookableSlot,
@@ -120,6 +117,7 @@ fn slot_summary(
     contract::AvailableSlotSummary {
         club: registry.club_label(&slot.venue_id),
         court: slot.court_name.clone(),
+        court_id: slot.court_id,
         starts_at: slot.starts_at,
         ends_at: slot.ends_at,
     }

@@ -3,30 +3,33 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serenity::Client;
-use serenity::all::{GatewayIntents, GuildId, Http, UserId};
+use serenity::all::{GatewayIntents, GuildId};
 use serenity::async_trait;
 
+use crate::alerts::DailyPruner;
 use crate::chat::{ChatProvider, ReadySignal};
 use crate::config::DiscordSettings;
 use crate::model::ProviderUserRef;
+use crate::ports::AlertMessageRepository;
 use crate::subscriptions::SubscriptionService;
-use crate::subscriptions::contract::{AvailabilityAlert, DirectMessageSender};
 
 mod commands;
+mod dm;
 mod error_webhook;
 mod format;
 mod handler;
 mod http;
 mod parse;
 mod render;
+mod strike;
 mod text;
 mod webhook;
 
 pub use error_webhook::DiscordErrorLayer;
 pub use webhook::DiscordNotifier;
 
+use dm::DiscordSender;
 use handler::Handler;
-use render::render_alert;
 
 pub const PROVIDER_NAME: &str = "discord";
 
@@ -36,10 +39,16 @@ pub struct DiscordProvider {
     token: String,
     guild_id: Option<GuildId>,
     admin_ids: HashSet<ProviderUserRef>,
+    messages: Arc<dyn AlertMessageRepository>,
+    pruner: Arc<DailyPruner>,
 }
 
 impl DiscordProvider {
-    pub fn new(settings: DiscordSettings) -> Self {
+    pub fn new(
+        settings: DiscordSettings,
+        messages: Arc<dyn AlertMessageRepository>,
+        pruner: Arc<DailyPruner>,
+    ) -> Self {
         Self {
             token: settings.token,
             guild_id: settings.guild_id.map(GuildId::new),
@@ -51,6 +60,8 @@ impl DiscordProvider {
                     user_id: id,
                 })
                 .collect(),
+            messages,
+            pruner,
         }
     }
 }
@@ -78,33 +89,14 @@ impl ChatProvider for DiscordProvider {
 
         service.register_sender(
             PROVIDER_NAME,
-            Arc::new(DiscordSender {
-                http: client.http.clone(),
-            }),
+            Arc::new(DiscordSender::new(
+                client.http.clone(),
+                self.messages.clone(),
+                self.pruner.clone(),
+            )),
         );
 
         client.start().await.context("starting serenity client")?;
-        Ok(())
-    }
-}
-
-struct DiscordSender {
-    http: Arc<Http>,
-}
-
-#[async_trait]
-impl DirectMessageSender for DiscordSender {
-    async fn send_dm(&self, user_id: &str, alert: &AvailabilityAlert) -> Result<()> {
-        let id: u64 = user_id
-            .parse()
-            .with_context(|| format!("invalid Discord user id {user_id:?}"))?;
-        let channel = UserId::new(id)
-            .create_dm_channel(&self.http)
-            .await
-            .context("opening DM channel")?;
-        for msg in render_alert(alert) {
-            channel.say(&self.http, msg).await.context("sending DM")?;
-        }
         Ok(())
     }
 }
@@ -113,13 +105,18 @@ impl DirectMessageSender for DiscordSender {
 mod tests {
     use super::*;
 
-    #[test]
-    fn admin_ids_become_provider_scoped_user_refs() {
-        let provider = DiscordProvider::new(DiscordSettings {
-            token: "t".into(),
-            guild_id: Some(42),
-            admin_ids: HashSet::from(["123".to_string()]),
-        });
+    #[tokio::test]
+    async fn admin_ids_become_provider_scoped_user_refs() {
+        let store = Arc::new(crate::store::SqliteStore::open_in_memory().await.unwrap());
+        let provider = DiscordProvider::new(
+            DiscordSettings {
+                token: "t".into(),
+                guild_id: Some(42),
+                admin_ids: HashSet::from(["123".to_string()]),
+            },
+            store.clone(),
+            Arc::new(DailyPruner::new(store)),
+        );
         assert_eq!(
             provider.admins(),
             HashSet::from([ProviderUserRef {
