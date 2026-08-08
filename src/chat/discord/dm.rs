@@ -11,9 +11,7 @@ use crate::ports::AlertMessageRepository;
 use crate::subscriptions::contract::{AvailabilityAlert, DirectMessageSender};
 
 use super::format::{alert_lines, chunk_lines, render};
-use super::strike::{DailyPruner, EditOutcome, strike_through};
-
-const DISCORD_UNKNOWN_MESSAGE: isize = 10008;
+use super::strike::{DISCORD_UNKNOWN_MESSAGE, DailyPruner, EditOutcome, strike_through};
 
 pub(super) struct DiscordSender {
     http: Arc<Http>,
@@ -65,7 +63,7 @@ impl DiscordSender {
             Ok(_) => Ok(EditOutcome::Edited),
             Err(serenity::Error::Http(HttpError::UnsuccessfulRequest(response)))
                 if response.status_code == StatusCode::NOT_FOUND
-                    && response.error.code == DISCORD_UNKNOWN_MESSAGE =>
+                    && response.error.code as i64 == DISCORD_UNKNOWN_MESSAGE =>
             {
                 Ok(EditOutcome::Gone)
             }

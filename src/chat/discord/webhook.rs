@@ -10,10 +10,7 @@ use crate::ports::{AlertMessageRepository, AvailabilityChangeSink};
 
 use super::format::{added_slots, channel_lines, chunk_lines, removed_slot_ids, render};
 use super::http::{HTTP_TIMEOUT, redact_discord_webhook_tokens, send_with_rate_limit_retry};
-use super::strike::{DailyPruner, EditOutcome, strike_through};
-
-// Other Discord 404 codes do not prove that the tracked message is gone.
-const DISCORD_UNKNOWN_MESSAGE: i64 = 10008;
+use super::strike::{DISCORD_UNKNOWN_MESSAGE, DailyPruner, EditOutcome, strike_through};
 
 pub struct DiscordNotifier {
     webhook_url: reqwest::Url,
