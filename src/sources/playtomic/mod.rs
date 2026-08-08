@@ -376,6 +376,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_club_open_past_midnight_does_not_fail_its_venue_fetch() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/clubs/availability"))
+            .and(query_param("date", "2026-08-05"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"[{"resource_id":"b2d8552d-5794-4abc-879f-61d53f587978",
+                     "start_date":"2026-08-04",
+                     "slots":[{"start_time":"22:00:00","duration":60}]},
+                    {"resource_id":"b2d8552d-5794-4abc-879f-61d53f587978",
+                     "start_date":"2026-08-05",
+                     "slots":[{"start_time":"09:00:00","duration":60}]}]"#,
+            ))
+            .mount(&server)
+            .await;
+        let source = PlaytomicAvailabilitySource::new(
+            PlaytomicClient::for_test(server.uri()),
+            ClubDirectory::new(),
+        );
+
+        let observations = source
+            .fetch(
+                &venue(Sport::Padel),
+                &CourtCatalog::default(),
+                Utc.with_ymd_and_hms(2026, 8, 4, 22, 0, 0).unwrap(),
+                Utc.with_ymd_and_hms(2026, 8, 5, 22, 0, 0).unwrap(),
+            )
+            .await
+            .expect("a post-midnight slot belongs to the requested day");
+
+        let starts: Vec<_> = observations.iter().map(|o| o.starts_at).collect();
+        assert_eq!(
+            starts,
+            vec![
+                Utc.with_ymd_and_hms(2026, 8, 4, 22, 0, 0).unwrap(),
+                Utc.with_ymd_and_hms(2026, 8, 5, 9, 0, 0).unwrap(),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn a_failing_date_fails_the_whole_venue_fetch() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
