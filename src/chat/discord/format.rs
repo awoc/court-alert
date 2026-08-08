@@ -265,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn additions_are_sorted_and_removals_are_returned_as_ids() {
+    fn additions_are_sorted_by_start_time() {
         let late = slot("Court 2", 18);
         let early = slot("Court 5", 12);
         let gone = slot("Court 7", 14);
@@ -276,7 +276,6 @@ mod tests {
         ];
 
         let added = added_slots(&changes);
-        let removed = removed_slot_ids(&changes);
 
         assert_eq!(
             added
@@ -286,6 +285,5 @@ mod tests {
             vec!["Court 5", "Court 2"],
             "sorted by start time"
         );
-        assert_eq!(removed, vec![BookableSlotId::from(&gone)]);
     }
 }

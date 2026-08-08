@@ -6,6 +6,7 @@ use serenity::Client;
 use serenity::all::{GatewayIntents, GuildId};
 use serenity::async_trait;
 
+use crate::alerts::DailyPruner;
 use crate::chat::{ChatProvider, ReadySignal};
 use crate::config::DiscordSettings;
 use crate::model::ProviderUserRef;
@@ -25,7 +26,6 @@ mod text;
 mod webhook;
 
 pub use error_webhook::DiscordErrorLayer;
-pub use strike::DailyPruner;
 pub use webhook::DiscordNotifier;
 
 use dm::DiscordSender;

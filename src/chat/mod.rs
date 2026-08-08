@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tokio::sync::watch;
 
+use crate::alerts::DailyPruner;
 use crate::config::{Config, Settings};
 use crate::model::{ProviderUserRef, Sport};
 use crate::ports::AlertMessageRepository;
@@ -81,7 +82,7 @@ pub fn validate_configuration(config: &Config) -> Result<()> {
 pub fn build(
     settings: &Settings,
     messages: Arc<dyn AlertMessageRepository>,
-    pruner: Arc<discord::DailyPruner>,
+    pruner: Arc<DailyPruner>,
 ) -> Vec<Box<dyn ChatProvider>> {
     let mut providers: Vec<Box<dyn ChatProvider>> = Vec::new();
     if let Some(discord) = &settings.discord_bot {

@@ -110,9 +110,6 @@ impl SubscriptionService {
     }
 }
 
-/// Borrows the caller's registry rather than locking again: a second `read()`
-/// on a guard this task already holds deadlocks against a queued catalog
-/// refresh.
 fn slot_summary(
     registry: &VenueRegistry,
     slot: &crate::model::BookableSlot,

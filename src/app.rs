@@ -4,8 +4,9 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use tracing::{info, warn};
 
+use crate::alerts::DailyPruner;
 use crate::chat;
-use crate::chat::discord::{DailyPruner, DiscordNotifier};
+use crate::chat::discord::DiscordNotifier;
 use crate::config::{Config, Settings};
 use crate::model::{Sport, VenueRegistry};
 use crate::monitor::Monitor;

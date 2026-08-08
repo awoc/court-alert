@@ -5,12 +5,13 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
+use crate::alerts::DailyPruner;
 use crate::model::{AlertLine, AlertSurface, AvailabilityChange};
 use crate::ports::{AlertMessageRepository, AvailabilityChangeSink};
 
 use super::format::{added_slots, channel_lines, chunk_lines, removed_slot_ids, render};
 use super::http::{HTTP_TIMEOUT, redact_discord_webhook_tokens, send_with_rate_limit_retry};
-use super::strike::{DISCORD_UNKNOWN_MESSAGE, DailyPruner, EditOutcome, strike_through};
+use super::strike::{DISCORD_UNKNOWN_MESSAGE, EditOutcome, strike_through};
 
 pub struct DiscordNotifier {
     webhook_url: reqwest::Url,

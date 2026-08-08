@@ -6,12 +6,13 @@ use serenity::all::{ChannelId, EditMessage, Http, HttpError, MessageId, StatusCo
 use serenity::async_trait;
 use tracing::warn;
 
+use crate::alerts::DailyPruner;
 use crate::model::{AlertLine, AlertSurface, BookableSlotId};
 use crate::ports::AlertMessageRepository;
 use crate::subscriptions::contract::{AvailabilityAlert, DirectMessageSender};
 
 use super::format::{alert_lines, chunk_lines, render};
-use super::strike::{DISCORD_UNKNOWN_MESSAGE, DailyPruner, EditOutcome, strike_through};
+use super::strike::{DISCORD_UNKNOWN_MESSAGE, EditOutcome, strike_through};
 
 pub(super) struct DiscordSender {
     http: Arc<Http>,
