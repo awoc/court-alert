@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use anyhow::{Context as _, Result};
@@ -27,6 +28,7 @@ pub(super) struct Handler {
     pub(super) service: Arc<SubscriptionService>,
     pub(super) guild_id: Option<GuildId>,
     pub(super) ready: ReadySignal,
+    pub(super) commands_registered: AtomicBool,
 }
 
 #[async_trait]
@@ -34,9 +36,16 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         info!(user = %ready.user.name, "discord provider connected");
         self.ready.ready();
+        // Serenity fires this on every resume, and the clubs the commands name
+        // come from the config the process started with, so there is nothing
+        // new to register. Only a registration that failed is worth repeating.
+        if self.commands_registered.load(Ordering::SeqCst) {
+            return;
+        }
         let padel_clubs = self.service.clubs_of(Sport::Padel);
-        if let Err(e) = register_commands(&ctx, self.guild_id, &padel_clubs).await {
-            error!(error = %format!("{e:#}"), "failed to register slash commands");
+        match register_commands(&ctx, self.guild_id, &padel_clubs).await {
+            Ok(()) => self.commands_registered.store(true, Ordering::SeqCst),
+            Err(e) => error!(error = %format!("{e:#}"), "failed to register slash commands"),
         }
     }
 
