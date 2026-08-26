@@ -163,17 +163,53 @@ fn venues_are_phase_offset_evenly_across_the_interval() {
 fn repeated_failures_are_reported_once_per_run() {
     let venue = venue();
     let mut run = FailureRun::default();
+    let now = Instant::now();
 
-    assert!(!run.failing);
-    run.failed(&venue, &anyhow::anyhow!("boom"));
-    assert!(run.failing, "the first failure is reported");
-    run.failed(&venue, &anyhow::anyhow!("boom"));
-    assert!(run.failing, "subsequent failures stay inside the same run");
+    assert!(run.started_at.is_none());
+    run.failed(&venue, &anyhow::anyhow!("boom"), now);
+    assert_eq!(run.started_at, Some(now), "the first failure is reported");
+    run.failed(&venue, &anyhow::anyhow!("boom"), now);
+    assert_eq!(
+        run.started_at,
+        Some(now),
+        "subsequent failures stay inside the same run"
+    );
 
-    run.succeeded(&venue);
-    assert!(!run.failing);
-    run.failed(&venue, &anyhow::anyhow!("boom"));
-    assert!(run.failing, "a new outage is reported again");
+    run.succeeded(&venue, now);
+    assert!(run.started_at.is_none());
+    assert!(run.reported_at.is_none());
+    run.failed(&venue, &anyhow::anyhow!("boom"), now);
+    assert_eq!(run.started_at, Some(now), "a new outage is reported again");
+}
+
+#[test]
+fn an_outage_that_outlasts_the_reminder_is_reported_again() {
+    let venue = venue();
+    let mut run = FailureRun::default();
+    let start = Instant::now();
+
+    run.failed(&venue, &anyhow::anyhow!("boom"), start);
+    assert_eq!(run.reported_at, Some(start));
+
+    run.failed(
+        &venue,
+        &anyhow::anyhow!("boom"),
+        start + FAILURE_REMINDER / 2,
+    );
+    assert_eq!(
+        run.reported_at,
+        Some(start),
+        "a run shorter than the reminder stays quiet"
+    );
+
+    let due = start + FAILURE_REMINDER;
+    run.failed(&venue, &anyhow::anyhow!("boom"), due);
+    assert_eq!(run.reported_at, Some(due), "the outage is reported again");
+    assert_eq!(
+        run.started_at,
+        Some(start),
+        "the run itself did not restart"
+    );
 }
 
 #[test]
@@ -417,16 +453,17 @@ mod loop_harness {
     fn a_skipped_tick_leaves_the_failure_run_untouched() {
         let venue = venue();
         let mut failures = FailureRun::default();
-        failures.failed(&venue, &anyhow::anyhow!("club page down"));
-        assert!(failures.failing);
+        let now = Instant::now();
+        failures.failed(&venue, &anyhow::anyhow!("club page down"), now);
+        assert!(failures.started_at.is_some());
 
         assert!(
-            failures.failing,
+            failures.started_at.is_some(),
             "a skipped tick must not clear the failure run"
         );
 
-        failures.succeeded(&venue);
-        assert!(!failures.failing, "a real poll still clears it");
+        failures.succeeded(&venue, now);
+        assert!(failures.started_at.is_none(), "a real poll still clears it");
     }
 
     #[tokio::test]
