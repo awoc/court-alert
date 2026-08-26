@@ -99,8 +99,13 @@ async fn fetch_booking_slot_dtos(
             input: BookingSlotsQueryInput { starts_at, ends_at },
         },
     };
+    // One 401/403 is usually a blip rather than an expired session, so the
+    // session only gets thrown away once a second attempt on it is refused too.
     match post_query_with_retry(auth, &body).await {
-        Ok(slots) => Ok(slots),
+        Err(FetchError::Unauthorized(_)) => {}
+        result => return result.map_err(anyhow::Error::from),
+    }
+    match post_query_with_retry(auth, &body).await {
         Err(FetchError::Unauthorized(generation)) => {
             auth.invalidate_if_generation(generation);
             post_query_with_retry(auth, &body)
@@ -108,7 +113,7 @@ async fn fetch_booking_slot_dtos(
                 .map_err(anyhow::Error::from)
                 .context("retry after re-auth failed")
         }
-        Err(FetchError::Other(e)) => Err(e),
+        result => result.map_err(anyhow::Error::from),
     }
 }
 
@@ -347,14 +352,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auth_expiry_triggers_one_retry() {
+    async fn a_single_unauthorized_is_retried_on_the_same_session() {
         let server = MockServer::start().await;
         install_login_flow_mocks(&server).await;
 
         Mock::given(method("POST"))
             .and(path("/services/identity/self-service/login"))
             .respond_with(login_success_response())
-            .expect(2)
+            .expect(1) // the blip must not cost a re-login
             .mount(&server)
             .await;
 
@@ -379,6 +384,42 @@ mod tests {
             fetch_booking_slot_dtos(&auth, Uuid::parse_str(PRODUCT_ID).unwrap(), start, end)
                 .await
                 .expect("fetch after retry");
+        assert_eq!(slots.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn auth_expiry_triggers_one_retry() {
+        let server = MockServer::start().await;
+        install_login_flow_mocks(&server).await;
+
+        Mock::given(method("POST"))
+            .and(path("/services/identity/self-service/login"))
+            .respond_with(login_success_response())
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/query"))
+            .respond_with(ResponseTemplate::new(401))
+            .up_to_n_times(2)
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/query"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(sample_slots_response()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let auth = Auth::new(server.uri(), creds()).unwrap();
+        let (start, end) = sample_window();
+        let slots =
+            fetch_booking_slot_dtos(&auth, Uuid::parse_str(PRODUCT_ID).unwrap(), start, end)
+                .await
+                .expect("fetch after re-auth");
         assert_eq!(slots.len(), 2);
     }
 
