@@ -8,6 +8,7 @@ pub(super) const CSRF: &str = "the-csrf-token";
 pub(super) async fn install_login_flow_mocks(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path("/services/identity/self-service/login/browser"))
+        .and(query_param("refresh", "true"))
         .respond_with(
             ResponseTemplate::new(303)
                 .insert_header("Location", format!("/auth/login?flow={FLOW_ID}").as_str())

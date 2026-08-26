@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use anyhow::{Context, Result};
 use serenity::Client;
@@ -81,6 +82,7 @@ impl ChatProvider for DiscordProvider {
             service: service.clone(),
             guild_id: self.guild_id,
             ready,
+            commands_registered: AtomicBool::new(false),
         };
         let mut client = Client::builder(&self.token, GatewayIntents::empty())
             .event_handler(handler)

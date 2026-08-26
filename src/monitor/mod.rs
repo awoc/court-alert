@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use chrono::{Timelike, Utc};
 use chrono_tz::Europe::Berlin;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
 use crate::model::{
@@ -174,10 +174,12 @@ impl VenueLoop {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            match self.tick(&mut state, &mut catalog).await {
-                Ok(TickOutcome::Polled) => failures.succeeded(&self.venue),
+            let outcome = self.tick(&mut state, &mut catalog).await;
+            let now = Instant::now();
+            match outcome {
+                Ok(TickOutcome::Polled) => failures.succeeded(&self.venue, now),
                 Ok(TickOutcome::Skipped) => {}
-                Err(error) => failures.failed(&self.venue, &error),
+                Err(error) => failures.failed(&self.venue, &error, now),
             }
         }
     }
@@ -338,29 +340,57 @@ fn is_within_operating_window(now: chrono::DateTime<Utc>, window: OperatingWindo
     window.contains_hour(now.with_timezone(&Berlin).hour())
 }
 
+/// How long a venue keeps failing before its outage is reported again. Every
+/// failure in between is left to `debug!`, so a flapping venue stays quiet.
+const FAILURE_REMINDER: Duration = Duration::from_secs(60 * 60);
+
 #[derive(Default)]
 struct FailureRun {
-    failing: bool,
+    started_at: Option<Instant>,
+    reported_at: Option<Instant>,
 }
 
 impl FailureRun {
-    fn failed(&mut self, venue: &Venue, error: &anyhow::Error) {
+    fn failed(&mut self, venue: &Venue, error: &anyhow::Error, now: Instant) {
         let message = format!("{error:#}");
-        if self.failing {
+        let Some(started_at) = self.started_at else {
+            self.started_at = Some(now);
+            self.reported_at = Some(now);
+            warn!(
+                venue = %venue.id,
+                error = %message,
+                "venue poll failed; retaining its previous snapshot"
+            );
+            return;
+        };
+
+        let due = self
+            .reported_at
+            .is_none_or(|at| now.duration_since(at) >= FAILURE_REMINDER);
+        if !due {
             debug!(venue = %venue.id, reason = %message, "venue poll still failing");
             return;
         }
-        self.failing = true;
-        warn!(
+
+        // A run this long is an outage rather than a blip: the snapshot the
+        // venue still serves has been stale for `failing_for_secs`.
+        self.reported_at = Some(now);
+        error!(
             venue = %venue.id,
             error = %message,
-            "venue poll failed; retaining its previous snapshot"
+            failing_for_secs = now.duration_since(started_at).as_secs(),
+            "venue poll is still failing; its snapshot is stale"
         );
     }
 
-    fn succeeded(&mut self, venue: &Venue) {
-        if std::mem::take(&mut self.failing) {
-            info!(venue = %venue.id, "venue poll recovered");
+    fn succeeded(&mut self, venue: &Venue, now: Instant) {
+        if let Some(started_at) = self.started_at.take() {
+            self.reported_at = None;
+            info!(
+                venue = %venue.id,
+                failed_for_secs = now.duration_since(started_at).as_secs(),
+                "venue poll recovered"
+            );
         }
     }
 }

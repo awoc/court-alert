@@ -76,8 +76,11 @@ impl Auth {
     }
 
     async fn init_flow(&self) -> Result<String> {
+        // Without `refresh`, Kratos answers a browser that still holds a live
+        // session with its return URL instead of a login flow, which would
+        // leave a re-login no flow id to parse.
         let url = format!(
-            "{}/services/identity/self-service/login/browser",
+            "{}/services/identity/self-service/login/browser?refresh=true",
             self.base_url
         );
         let resp = self
@@ -243,7 +246,9 @@ mod tests {
         CSRF, FLOW_ID, install_login_flow_mocks, login_success_response,
     };
     use serde_json::json;
-    use wiremock::matchers::{body_string_contains, header, method, path, query_param};
+    use wiremock::matchers::{
+        body_string_contains, header, method, path, query_param, query_param_is_missing,
+    };
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn creds(email: &str, password: &str) -> Credentials {
@@ -297,6 +302,33 @@ mod tests {
         assert!(!auth.invalidate_if_generation(first_generation));
         let (_, still_second_generation) = auth.client().await.expect("cached newer session");
         assert_eq!(still_second_generation, second_generation);
+    }
+
+    #[tokio::test]
+    async fn login_refreshes_a_session_kratos_still_considers_live() {
+        let server = MockServer::start().await;
+        // Kratos hands an already-authenticated browser its return URL, with no
+        // flow id in it, unless the request asks to refresh the session.
+        Mock::given(method("GET"))
+            .and(path("/services/identity/self-service/login/browser"))
+            .and(query_param_is_missing("refresh"))
+            .respond_with(
+                ResponseTemplate::new(303)
+                    .insert_header("Location", "https://kurse.zhs-muenchen.de"),
+            )
+            .mount(&server)
+            .await;
+        install_login_flow_mocks(&server).await;
+
+        Mock::given(method("POST"))
+            .and(path("/services/identity/self-service/login"))
+            .respond_with(login_success_response())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let auth = Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
+        auth.client().await.expect("login through the refresh flow");
     }
 
     #[tokio::test]

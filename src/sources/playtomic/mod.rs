@@ -29,6 +29,11 @@ const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
 // Throttle the undocumented API, which publishes no rate limit.
 const INTER_DATE_DELAY: Duration = Duration::from_millis(500);
 
+const MAX_ATTEMPTS: u32 = 3;
+
+// Spacing for the first retry; later ones are a multiple of it.
+const RETRY_BACKOFF: Duration = Duration::from_secs(1);
+
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
@@ -36,6 +41,7 @@ pub struct PlaytomicClient {
     http: Arc<reqwest::Client>,
     base_url: String,
     inter_date_delay: Duration,
+    retry_backoff: Duration,
 }
 
 impl PlaytomicClient {
@@ -50,6 +56,7 @@ impl PlaytomicClient {
             ),
             base_url: BASE_URL.to_string(),
             inter_date_delay: INTER_DATE_DELAY,
+            retry_backoff: RETRY_BACKOFF,
         })
     }
 
@@ -59,6 +66,7 @@ impl PlaytomicClient {
             http: Arc::new(reqwest::Client::new()),
             base_url,
             inter_date_delay: Duration::ZERO,
+            retry_backoff: Duration::ZERO,
         }
     }
 
@@ -66,14 +74,37 @@ impl PlaytomicClient {
         tokio::time::sleep(self.inter_date_delay).await;
     }
 
+    /// A dropped request costs the venue its whole poll, because one failed
+    /// date aborts the fetch and a partial day diffs as mass cancellations.
+    /// Only transport failures and 5xx are retried; a 4xx or a malformed body
+    /// means the endpoint changed, and repeating it would only delay the news.
+    async fn send_with_retry(
+        &self,
+        build: impl Fn() -> reqwest::RequestBuilder,
+    ) -> reqwest::Result<reqwest::Response> {
+        for attempt in 1..MAX_ATTEMPTS {
+            let reason = match build().send().await {
+                Ok(response) if !response.status().is_server_error() => return Ok(response),
+                Ok(response) => format!("status {}", response.status()),
+                Err(error) => error.to_string(),
+            };
+            let delay = self.retry_backoff * attempt;
+            debug!(
+                attempt,
+                delay_ms = delay.as_millis() as u64,
+                reason,
+                "transient playtomic error; retrying"
+            );
+            tokio::time::sleep(delay).await;
+        }
+        build().send().await
+    }
+
     async fn club_page(&self, slug: &str) -> Result<String> {
         let url = format!("{}/clubs/{slug}", self.base_url);
         let response = self
-            .http
-            .get(&url)
             // Request the raw flight payload instead of HTML.
-            .header("RSC", "1")
-            .send()
+            .send_with_retry(|| self.http.get(&url).header("RSC", "1"))
             .await
             .with_context(|| format!("requesting the club page {url}"))?;
         let status = response.status();
@@ -100,9 +131,7 @@ impl PlaytomicClient {
             // The endpoint defaults to PADEL when this is omitted.
             .append_pair("sport_id", sport_id);
         let response = self
-            .http
-            .get(url.clone())
-            .send()
+            .send_with_retry(|| self.http.get(url.clone()))
             .await
             .with_context(|| format!("requesting availability for {date}"))?;
         let status = response.status();
@@ -372,6 +401,70 @@ mod tests {
             observations
                 .iter()
                 .all(|o| o.venue_id.as_str() == "casa-padel")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dropped_availability_request_is_retried() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/clubs/availability"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(2)
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/clubs/availability"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(AVAILABILITY))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let source = PlaytomicAvailabilitySource::new(
+            PlaytomicClient::for_test(server.uri()),
+            ClubDirectory::new(),
+        );
+
+        let observations = source
+            .fetch(
+                &venue(Sport::Padel),
+                &CourtCatalog::default(),
+                Utc.with_ymd_and_hms(2026, 8, 4, 22, 0, 0).unwrap(),
+                Utc.with_ymd_and_hms(2026, 8, 5, 22, 0, 0).unwrap(),
+            )
+            .await
+            .expect("the venue poll survives a dropped request");
+
+        assert_eq!(observations.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn a_rejected_availability_request_is_not_retried() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/clubs/availability"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1) // a 404 is the endpoint changing, not a dropped request
+            .mount(&server)
+            .await;
+        let source = PlaytomicAvailabilitySource::new(
+            PlaytomicClient::for_test(server.uri()),
+            ClubDirectory::new(),
+        );
+
+        let error = source
+            .fetch(
+                &venue(Sport::Padel),
+                &CourtCatalog::default(),
+                Utc.with_ymd_and_hms(2026, 8, 4, 22, 0, 0).unwrap(),
+                Utc.with_ymd_and_hms(2026, 8, 5, 22, 0, 0).unwrap(),
+            )
+            .await
+            .expect_err("a 404 fails the poll");
+
+        assert!(
+            format!("{error:#}").contains("404"),
+            "unhelpful error: {error:#}"
         );
     }
 
