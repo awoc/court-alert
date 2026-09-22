@@ -1,14 +1,13 @@
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::Deserialize;
 use tokio::sync::Mutex;
 use tracing::debug;
 
 use crate::config::Credentials;
-
-use super::dto::GraphQlRequest;
 
 const MAX_ATTEMPTS: u32 = 3;
 
@@ -64,20 +63,27 @@ impl Auth {
         Ok((&self.client, generation))
     }
 
-    /// Runs a query with the session's retry and refresh policy. A refusal is
-    /// retried once before invalidating the session that made the request.
-    pub(super) async fn query<V: Serialize + Sync, T: DeserializeOwned>(
-        &self,
-        body: &GraphQlRequest<'_, V>,
-    ) -> Result<T> {
-        match self.query_with_retry(body).await {
+    pub(super) fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Adds the session to a repeatable request and recovers from refusals.
+    /// The caller owns the endpoint and decoder; decoding failures share the
+    /// request's transient retry budget. Use only for requests safe to repeat.
+    pub(super) async fn request<B, D, F, T>(&self, build: B, decode: D) -> Result<T>
+    where
+        B: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+        D: Fn(reqwest::Response) -> F,
+        F: Future<Output = Result<T>>,
+    {
+        match self.request_with_retry(&build, &decode).await {
             Err(FetchError::Unauthorized(_)) => {}
             result => return result.map_err(anyhow::Error::from),
         }
-        match self.query_with_retry(body).await {
+        match self.request_with_retry(&build, &decode).await {
             Err(FetchError::Unauthorized(generation)) => {
                 self.invalidate_if_generation(generation);
-                self.query_with_retry(body)
+                self.request_with_retry(&build, &decode)
                     .await
                     .map_err(anyhow::Error::from)
                     .context("retry after re-auth failed")
@@ -86,12 +92,18 @@ impl Auth {
         }
     }
 
-    async fn query_with_retry<V: Serialize + Sync, T: DeserializeOwned>(
+    async fn request_with_retry<B, D, F, T>(
         &self,
-        body: &GraphQlRequest<'_, V>,
-    ) -> std::result::Result<T, FetchError> {
+        build: &B,
+        decode: &D,
+    ) -> std::result::Result<T, FetchError>
+    where
+        B: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+        D: Fn(reqwest::Response) -> F,
+        F: Future<Output = Result<T>>,
+    {
         for attempt in 1..=MAX_ATTEMPTS {
-            match self.post_query(body).await {
+            match self.request_once(build, decode).await {
                 Ok(data) => return Ok(data),
                 Err(FetchError::Unauthorized(generation)) => {
                     return Err(FetchError::Unauthorized(generation));
@@ -103,7 +115,7 @@ impl Auth {
                         attempt,
                         delay_ms = delay.as_millis() as u64,
                         error = %format!("{error:?}"),
-                        "transient /api/query error; retrying"
+                        "transient authenticated request error; retrying"
                     );
                     tokio::time::sleep(delay).await;
                 }
@@ -112,60 +124,28 @@ impl Auth {
         unreachable!("every retry-loop branch returns")
     }
 
-    async fn post_query<V: Serialize + Sync, T: DeserializeOwned>(
+    async fn request_once<B, D, F, T>(
         &self,
-        body: &GraphQlRequest<'_, V>,
-    ) -> std::result::Result<T, FetchError> {
-        let url = format!("{}/api/query", self.base_url);
-        let (client, auth_generation) = self.client().await.map_err(FetchError::from)?;
-        if tracing::enabled!(tracing::Level::DEBUG)
-            && let Ok(json) = serde_json::to_string(body)
-        {
-            debug!(body = %json, "post_query: sending");
-        }
-        let resp = client
-            .post(&url)
-            .header(reqwest::header::ACCEPT, "application/json")
-            .json(body)
+        build: &B,
+        decode: &D,
+    ) -> std::result::Result<T, FetchError>
+    where
+        B: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+        D: Fn(reqwest::Response) -> F,
+        F: Future<Output = Result<T>>,
+    {
+        let (client, generation) = self.client().await?;
+        let response = build(client)
             .send()
             .await
-            .context("posting GraphQL query")
-            .map_err(FetchError::from)?;
-
-        let status = resp.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            return Err(FetchError::Unauthorized(auth_generation));
+            .context("sending authenticated request")?;
+        if matches!(
+            response.status(),
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+        ) {
+            return Err(FetchError::Unauthorized(generation));
         }
-        let text = resp
-            .text()
-            .await
-            .context("reading GraphQL response body")
-            .map_err(FetchError::from)?;
-        debug!(%status, bytes = text.len(), "post_query: response received");
-        if !status.is_success() {
-            return Err(FetchError::Other(anyhow!(
-                "GraphQL HTTP error: {status} {text}"
-            )));
-        }
-
-        let parsed: GraphQlResponse<T> = serde_json::from_str(&text)
-            .context("decoding GraphQL response")
-            .map_err(FetchError::from)?;
-
-        if let Some(errors) = parsed.errors {
-            let joined = errors
-                .into_iter()
-                .map(|e| e.message)
-                .collect::<Vec<_>>()
-                .join("; ");
-            return Err(FetchError::Other(anyhow!("GraphQL errors: {joined}")));
-        }
-
-        let data = parsed
-            .data
-            .ok_or_else(|| anyhow!("GraphQL response had no data"))
-            .map_err(FetchError::from)?;
-        Ok(data)
+        decode(response).await.map_err(FetchError::from)
     }
 
     async fn login(&self) -> Result<()> {
@@ -289,17 +269,6 @@ fn retry_delay(attempt: u32) -> std::time::Duration {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct GraphQlResponse<T> {
-    data: Option<T>,
-    errors: Option<Vec<GraphQlError>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlError {
-    message: String,
-}
-
 fn extract_flow_id(url_or_path: &str) -> Option<String> {
     let query = url_or_path.split_once('?')?.1;
     for pair in query.split('&') {
@@ -402,27 +371,29 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Deserialize, PartialEq, Eq)]
-    struct QueryData {
-        value: u32,
-    }
-
-    async fn query(auth: &Auth) -> Result<QueryData> {
-        auth.query(&GraphQlRequest {
-            query: "query { value }",
-            variables: (),
-        })
+    async fn request(auth: &Auth) -> Result<u32> {
+        let url = format!("{}/protected", auth.base_url());
+        auth.request(
+            |client| client.get(&url),
+            |response| async {
+                response
+                    .error_for_status()?
+                    .json()
+                    .await
+                    .context("decoding response")
+            },
+        )
         .await
     }
 
-    fn query_success_response() -> ResponseTemplate {
-        ResponseTemplate::new(200).set_body_json(json!({"data": {"value": 42}}))
+    fn request_success_response() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(42)
     }
 
-    async fn accept_queries(server: &MockServer) {
-        Mock::given(method("POST"))
-            .and(path("/api/query"))
-            .respond_with(query_success_response())
+    async fn accept_requests(server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .respond_with(request_success_response())
             .mount(server)
             .await;
     }
@@ -446,9 +417,9 @@ mod tests {
             .await;
 
         let auth = Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
-        accept_queries(&server).await;
-        assert_eq!(query(&auth).await.unwrap(), QueryData { value: 42 });
-        assert_eq!(query(&auth).await.unwrap(), QueryData { value: 42 });
+        accept_requests(&server).await;
+        assert_eq!(request(&auth).await.unwrap(), 42);
+        assert_eq!(request(&auth).await.unwrap(), 42);
     }
 
     #[tokio::test]
@@ -498,8 +469,8 @@ mod tests {
             .await;
 
         let auth = Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
-        accept_queries(&server).await;
-        assert_eq!(query(&auth).await.unwrap(), QueryData { value: 42 });
+        accept_requests(&server).await;
+        assert_eq!(request(&auth).await.unwrap(), 42);
     }
 
     #[tokio::test]
@@ -516,12 +487,12 @@ mod tests {
             .await;
 
         let auth = Auth::new(server.uri(), creds("alice@example.com", "wrong")).unwrap();
-        let err = query(&auth).await.expect_err("expected failure");
+        let err = request(&auth).await.expect_err("expected failure");
         assert!(err.to_string().to_lowercase().contains("login failed"));
     }
 
     #[tokio::test]
-    async fn a_transient_query_failure_retries_without_refreshing() {
+    async fn a_transient_request_failure_retries_without_refreshing() {
         let server = MockServer::start().await;
         install_login_flow_mocks(&server).await;
         Mock::given(method("POST"))
@@ -530,22 +501,22 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        Mock::given(method("POST"))
-            .and(path("/api/query"))
+        Mock::given(method("GET"))
+            .and(path("/protected"))
             .respond_with(ResponseTemplate::new(503))
             .up_to_n_times(2)
             .expect(2)
             .mount(&server)
             .await;
-        Mock::given(method("POST"))
-            .and(path("/api/query"))
-            .respond_with(query_success_response())
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .respond_with(request_success_response())
             .expect(1)
             .mount(&server)
             .await;
 
         let auth = Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
-        assert_eq!(query(&auth).await.unwrap(), QueryData { value: 42 });
+        assert_eq!(request(&auth).await.unwrap(), 42);
     }
 
     #[tokio::test]
@@ -559,75 +530,22 @@ mod tests {
                 .expect(2)
                 .mount(&server)
                 .await;
-            Mock::given(method("POST"))
-                .and(path("/api/query"))
+            Mock::given(method("GET"))
+                .and(path("/protected"))
                 .respond_with(ResponseTemplate::new(status))
                 .expect(3)
                 .mount(&server)
                 .await;
 
             let auth = Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
-            let error = query(&auth).await.unwrap_err();
+            let error = request(&auth).await.unwrap_err();
             assert!(format!("{error:#}").contains("retry after re-auth failed"));
             assert!(format!("{error:#}").contains("401/403"));
         }
     }
 
     #[tokio::test]
-    async fn invalid_query_responses_exhaust_the_existing_retry_budget() {
-        let responses = [
-            (ResponseTemplate::new(503), "GraphQL HTTP error"),
-            (
-                ResponseTemplate::new(200).set_body_string("not json"),
-                "decoding GraphQL response",
-            ),
-            (
-                ResponseTemplate::new(200).set_body_json(json!({"data": {"value": "bad"}})),
-                "decoding GraphQL response",
-            ),
-            (
-                ResponseTemplate::new(200).set_body_json(json!({
-                    "data": {"value": 42}, "errors": [{"message": "partial failure"}]
-                })),
-                "partial failure",
-            ),
-            (
-                ResponseTemplate::new(200).set_body_json(json!({})),
-                "GraphQL response had no data",
-            ),
-        ];
-        // Run the independent failure cases together so their backoff does not
-        // make this test take five times as long.
-        futures::future::join_all(
-            responses
-                .into_iter()
-                .map(|(response, expected)| async move {
-                    let server = MockServer::start().await;
-                    install_login_flow_mocks(&server).await;
-                    Mock::given(method("POST"))
-                        .and(path("/services/identity/self-service/login"))
-                        .respond_with(login_success_response())
-                        .expect(1)
-                        .mount(&server)
-                        .await;
-                    Mock::given(method("POST"))
-                        .and(path("/api/query"))
-                        .respond_with(response)
-                        .expect(3)
-                        .mount(&server)
-                        .await;
-
-                    let auth =
-                        Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
-                    let error = query(&auth).await.unwrap_err();
-                    assert!(format!("{error:#}").contains(expected), "{error:#}");
-                }),
-        )
-        .await;
-    }
-
-    #[tokio::test]
-    async fn concurrent_queries_share_login_and_refresh() {
+    async fn concurrent_requests_share_login_and_refresh() {
         let server = MockServer::start().await;
         install_login_flow_mocks(&server).await;
         Mock::given(method("POST"))
@@ -646,18 +564,18 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        accept_queries(&server).await;
+        accept_requests(&server).await;
 
         let auth = Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
-        let results = futures::future::join_all((0..4).map(|_| query(&auth))).await;
+        let results = futures::future::join_all((0..4).map(|_| request(&auth))).await;
         for result in results {
-            assert_eq!(result.unwrap(), QueryData { value: 42 });
+            assert_eq!(result.unwrap(), 42);
         }
 
         // Expire the session at the remote end. Every request still carrying
         // that cookie must recover through the session module's interface.
-        Mock::given(method("POST"))
-            .and(path("/api/query"))
+        Mock::given(method("GET"))
+            .and(path("/protected"))
             .and(|request: &wiremock::Request| {
                 request
                     .headers
@@ -674,9 +592,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let results = futures::future::join_all((0..4).map(|_| query(&auth))).await;
+        let results = futures::future::join_all((0..4).map(|_| request(&auth))).await;
         for result in results {
-            assert_eq!(result.unwrap(), QueryData { value: 42 });
+            assert_eq!(result.unwrap(), 42);
         }
     }
 }

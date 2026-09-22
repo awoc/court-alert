@@ -1,7 +1,9 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::{StreamExt, TryStreamExt, stream};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use tracing::debug;
 use uuid::Uuid;
 
 use crate::model::{CourtCatalog, SlotObservation, Venue, VenueId};
@@ -96,8 +98,65 @@ async fn fetch_booking_slot_dtos(
             input: BookingSlotsQueryInput { starts_at, ends_at },
         },
     };
-    let data: BookingSlotsDataDto = auth.query(&body).await?;
+    let data: BookingSlotsDataDto = query(auth, &body).await?;
     Ok(data.booking_slots)
+}
+
+async fn query<V: Serialize + Sync, T: DeserializeOwned>(
+    auth: &Auth,
+    body: &GraphQlRequest<'_, V>,
+) -> Result<T> {
+    let url = format!("{}/api/query", auth.base_url());
+    auth.request(
+        |client| {
+            if tracing::enabled!(tracing::Level::DEBUG)
+                && let Ok(json) = serde_json::to_string(body)
+            {
+                debug!(body = %json, "post_query: sending");
+            }
+            client
+                .post(&url)
+                .header(reqwest::header::ACCEPT, "application/json")
+                .json(body)
+        },
+        decode_query_response,
+    )
+    .await
+}
+
+async fn decode_query_response<T: DeserializeOwned>(response: reqwest::Response) -> Result<T> {
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .context("reading GraphQL response body")?;
+    debug!(%status, bytes = text.len(), "post_query: response received");
+    anyhow::ensure!(status.is_success(), "GraphQL HTTP error: {status} {text}");
+
+    let parsed: GraphQlResponse<T> =
+        serde_json::from_str(&text).context("decoding GraphQL response")?;
+    if let Some(errors) = parsed.errors {
+        let joined = errors
+            .into_iter()
+            .map(|e| e.message)
+            .collect::<Vec<_>>()
+            .join("; ");
+        anyhow::bail!("GraphQL errors: {joined}");
+    }
+    parsed
+        .data
+        .ok_or_else(|| anyhow!("GraphQL response had no data"))
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlResponse<T> {
+    data: Option<T>,
+    errors: Option<Vec<GraphQlError>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlError {
+    message: String,
 }
 
 #[cfg(test)]
@@ -440,5 +499,66 @@ mod tests {
         let message = format!("{error:#}");
         assert!(message.contains("Court 5"), "{message}");
         assert!(message.contains("503"), "{message}");
+    }
+    #[derive(Debug, Deserialize)]
+    struct QueryData {
+        #[serde(rename = "value")]
+        _value: u32,
+    }
+
+    #[tokio::test]
+    async fn invalid_query_responses_exhaust_the_existing_retry_budget() {
+        let responses = [
+            (ResponseTemplate::new(503), "GraphQL HTTP error"),
+            (
+                ResponseTemplate::new(200).set_body_string("not json"),
+                "decoding GraphQL response",
+            ),
+            (
+                ResponseTemplate::new(200).set_body_json(json!({"data": {"value": "bad"}})),
+                "decoding GraphQL response",
+            ),
+            (
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "data": {"value": 42}, "errors": [{"message": "partial failure"}]
+                })),
+                "partial failure",
+            ),
+            (
+                ResponseTemplate::new(200).set_body_json(json!({})),
+                "GraphQL response had no data",
+            ),
+        ];
+        // Run the independent failure cases together so their backoff does not
+        // make this test take five times as long.
+        futures::future::join_all(
+            responses
+                .into_iter()
+                .map(|(response, expected)| async move {
+                    let server = MockServer::start().await;
+                    install_login_flow_mocks(&server).await;
+                    Mock::given(method("POST"))
+                        .and(path("/services/identity/self-service/login"))
+                        .respond_with(login_success_response())
+                        .expect(1)
+                        .mount(&server)
+                        .await;
+                    Mock::given(method("POST"))
+                        .and(path("/api/query"))
+                        .respond_with(response)
+                        .expect(3)
+                        .mount(&server)
+                        .await;
+
+                    let auth = Auth::new(server.uri(), creds()).unwrap();
+                    let body = GraphQlRequest {
+                        query: "query { value }",
+                        variables: (),
+                    };
+                    let error = query::<_, QueryData>(&auth, &body).await.unwrap_err();
+                    assert!(format!("{error:#}").contains(expected), "{error:#}");
+                }),
+        )
+        .await;
     }
 }
