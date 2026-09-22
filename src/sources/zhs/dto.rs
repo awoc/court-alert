@@ -32,19 +32,6 @@ fn serialize_datetime_millis<S: Serializer>(
 }
 
 #[derive(Debug, Deserialize)]
-pub(super) struct BookingSlotsResponseDto {
-    #[serde(default)]
-    pub data: Option<BookingSlotsDataDto>,
-    #[serde(default)]
-    pub errors: Option<Vec<GraphQlErrorDto>>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct GraphQlErrorDto {
-    pub message: String,
-}
-
-#[derive(Debug, Deserialize)]
 pub(super) struct BookingSlotsDataDto {
     pub booking_slots: Vec<BookingSlotDto>,
 }

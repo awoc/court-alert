@@ -2,11 +2,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::sync::Mutex;
 use tracing::debug;
 
 use crate::config::Credentials;
+
+use super::dto::GraphQlRequest;
+
+const MAX_ATTEMPTS: u32 = 3;
 
 pub struct Auth {
     client: reqwest::Client,
@@ -39,13 +43,13 @@ impl Auth {
         })
     }
 
-    pub(super) fn invalidate_if_generation(&self, generation: u64) -> bool {
+    fn invalidate_if_generation(&self, generation: u64) -> bool {
         self.authenticated_generation
             .compare_exchange(generation, 0, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
     }
 
-    pub(super) async fn client(&self) -> Result<(&reqwest::Client, u64)> {
+    async fn client(&self) -> Result<(&reqwest::Client, u64)> {
         let mut generation = self.authenticated_generation.load(Ordering::SeqCst);
         if generation == 0 {
             let _guard = self.login_lock.lock().await;
@@ -60,8 +64,108 @@ impl Auth {
         Ok((&self.client, generation))
     }
 
-    pub(super) fn base_url(&self) -> &str {
-        &self.base_url
+    /// Runs a query with the session's retry and refresh policy. A refusal is
+    /// retried once before invalidating the session that made the request.
+    pub(super) async fn query<V: Serialize + Sync, T: DeserializeOwned>(
+        &self,
+        body: &GraphQlRequest<'_, V>,
+    ) -> Result<T> {
+        match self.query_with_retry(body).await {
+            Err(FetchError::Unauthorized(_)) => {}
+            result => return result.map_err(anyhow::Error::from),
+        }
+        match self.query_with_retry(body).await {
+            Err(FetchError::Unauthorized(generation)) => {
+                self.invalidate_if_generation(generation);
+                self.query_with_retry(body)
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .context("retry after re-auth failed")
+            }
+            result => result.map_err(anyhow::Error::from),
+        }
+    }
+
+    async fn query_with_retry<V: Serialize + Sync, T: DeserializeOwned>(
+        &self,
+        body: &GraphQlRequest<'_, V>,
+    ) -> std::result::Result<T, FetchError> {
+        for attempt in 1..=MAX_ATTEMPTS {
+            match self.post_query(body).await {
+                Ok(data) => return Ok(data),
+                Err(FetchError::Unauthorized(generation)) => {
+                    return Err(FetchError::Unauthorized(generation));
+                }
+                Err(error) if attempt == MAX_ATTEMPTS => return Err(error),
+                Err(error) => {
+                    let delay = retry_delay(attempt);
+                    debug!(
+                        attempt,
+                        delay_ms = delay.as_millis() as u64,
+                        error = %format!("{error:?}"),
+                        "transient /api/query error; retrying"
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+        unreachable!("every retry-loop branch returns")
+    }
+
+    async fn post_query<V: Serialize + Sync, T: DeserializeOwned>(
+        &self,
+        body: &GraphQlRequest<'_, V>,
+    ) -> std::result::Result<T, FetchError> {
+        let url = format!("{}/api/query", self.base_url);
+        let (client, auth_generation) = self.client().await.map_err(FetchError::from)?;
+        if tracing::enabled!(tracing::Level::DEBUG)
+            && let Ok(json) = serde_json::to_string(body)
+        {
+            debug!(body = %json, "post_query: sending");
+        }
+        let resp = client
+            .post(&url)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .json(body)
+            .send()
+            .await
+            .context("posting GraphQL query")
+            .map_err(FetchError::from)?;
+
+        let status = resp.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            return Err(FetchError::Unauthorized(auth_generation));
+        }
+        let text = resp
+            .text()
+            .await
+            .context("reading GraphQL response body")
+            .map_err(FetchError::from)?;
+        debug!(%status, bytes = text.len(), "post_query: response received");
+        if !status.is_success() {
+            return Err(FetchError::Other(anyhow!(
+                "GraphQL HTTP error: {status} {text}"
+            )));
+        }
+
+        let parsed: GraphQlResponse<T> = serde_json::from_str(&text)
+            .context("decoding GraphQL response")
+            .map_err(FetchError::from)?;
+
+        if let Some(errors) = parsed.errors {
+            let joined = errors
+                .into_iter()
+                .map(|e| e.message)
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(FetchError::Other(anyhow!("GraphQL errors: {joined}")));
+        }
+
+        let data = parsed
+            .data
+            .ok_or_else(|| anyhow!("GraphQL response had no data"))
+            .map_err(FetchError::from)?;
+        Ok(data)
     }
 
     async fn login(&self) -> Result<()> {
@@ -154,6 +258,46 @@ impl Auth {
         }
         Ok(())
     }
+}
+
+#[derive(Debug)]
+enum FetchError {
+    Unauthorized(u64),
+    Other(anyhow::Error),
+}
+
+impl From<anyhow::Error> for FetchError {
+    fn from(e: anyhow::Error) -> Self {
+        FetchError::Other(e)
+    }
+}
+
+impl From<FetchError> for anyhow::Error {
+    fn from(e: FetchError) -> Self {
+        match e {
+            FetchError::Unauthorized(_) => anyhow!("request unauthorized (HTTP 401/403)"),
+            FetchError::Other(e) => e,
+        }
+    }
+}
+
+fn retry_delay(attempt: u32) -> std::time::Duration {
+    match attempt {
+        1 => std::time::Duration::from_millis(500),
+        2 => std::time::Duration::from_secs(2),
+        _ => std::time::Duration::from_secs(5),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlResponse<T> {
+    data: Option<T>,
+    errors: Option<Vec<GraphQlError>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlError {
+    message: String,
 }
 
 fn extract_flow_id(url_or_path: &str) -> Option<String> {
@@ -258,6 +402,31 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Deserialize, PartialEq, Eq)]
+    struct QueryData {
+        value: u32,
+    }
+
+    async fn query(auth: &Auth) -> Result<QueryData> {
+        auth.query(&GraphQlRequest {
+            query: "query { value }",
+            variables: (),
+        })
+        .await
+    }
+
+    fn query_success_response() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(json!({"data": {"value": 42}}))
+    }
+
+    async fn accept_queries(server: &MockServer) {
+        Mock::given(method("POST"))
+            .and(path("/api/query"))
+            .respond_with(query_success_response())
+            .mount(server)
+            .await;
+    }
+
     #[tokio::test]
     async fn login_flow_completes_and_caches_session() {
         let server = MockServer::start().await;
@@ -277,8 +446,9 @@ mod tests {
             .await;
 
         let auth = Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
-        auth.client().await.expect("login");
-        auth.client().await.expect("cached client"); // no extra POST — expect(1) enforces this on drop
+        accept_queries(&server).await;
+        assert_eq!(query(&auth).await.unwrap(), QueryData { value: 42 });
+        assert_eq!(query(&auth).await.unwrap(), QueryData { value: 42 });
     }
 
     #[tokio::test]
@@ -328,7 +498,8 @@ mod tests {
             .await;
 
         let auth = Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
-        auth.client().await.expect("login through the refresh flow");
+        accept_queries(&server).await;
+        assert_eq!(query(&auth).await.unwrap(), QueryData { value: 42 });
     }
 
     #[tokio::test]
@@ -345,7 +516,167 @@ mod tests {
             .await;
 
         let auth = Auth::new(server.uri(), creds("alice@example.com", "wrong")).unwrap();
-        let err = auth.client().await.expect_err("expected failure");
+        let err = query(&auth).await.expect_err("expected failure");
         assert!(err.to_string().to_lowercase().contains("login failed"));
+    }
+
+    #[tokio::test]
+    async fn a_transient_query_failure_retries_without_refreshing() {
+        let server = MockServer::start().await;
+        install_login_flow_mocks(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/services/identity/self-service/login"))
+            .respond_with(login_success_response())
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/query"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(2)
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/query"))
+            .respond_with(query_success_response())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let auth = Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
+        assert_eq!(query(&auth).await.unwrap(), QueryData { value: 42 });
+    }
+
+    #[tokio::test]
+    async fn repeated_refusal_stops_after_one_refresh() {
+        for status in [401, 403] {
+            let server = MockServer::start().await;
+            install_login_flow_mocks(&server).await;
+            Mock::given(method("POST"))
+                .and(path("/services/identity/self-service/login"))
+                .respond_with(login_success_response())
+                .expect(2)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/api/query"))
+                .respond_with(ResponseTemplate::new(status))
+                .expect(3)
+                .mount(&server)
+                .await;
+
+            let auth = Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
+            let error = query(&auth).await.unwrap_err();
+            assert!(format!("{error:#}").contains("retry after re-auth failed"));
+            assert!(format!("{error:#}").contains("401/403"));
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_query_responses_exhaust_the_existing_retry_budget() {
+        let responses = [
+            (ResponseTemplate::new(503), "GraphQL HTTP error"),
+            (
+                ResponseTemplate::new(200).set_body_string("not json"),
+                "decoding GraphQL response",
+            ),
+            (
+                ResponseTemplate::new(200).set_body_json(json!({"data": {"value": "bad"}})),
+                "decoding GraphQL response",
+            ),
+            (
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "data": {"value": 42}, "errors": [{"message": "partial failure"}]
+                })),
+                "partial failure",
+            ),
+            (
+                ResponseTemplate::new(200).set_body_json(json!({})),
+                "GraphQL response had no data",
+            ),
+        ];
+        // Run the independent failure cases together so their backoff does not
+        // make this test take five times as long.
+        futures::future::join_all(
+            responses
+                .into_iter()
+                .map(|(response, expected)| async move {
+                    let server = MockServer::start().await;
+                    install_login_flow_mocks(&server).await;
+                    Mock::given(method("POST"))
+                        .and(path("/services/identity/self-service/login"))
+                        .respond_with(login_success_response())
+                        .expect(1)
+                        .mount(&server)
+                        .await;
+                    Mock::given(method("POST"))
+                        .and(path("/api/query"))
+                        .respond_with(response)
+                        .expect(3)
+                        .mount(&server)
+                        .await;
+
+                    let auth =
+                        Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
+                    let error = query(&auth).await.unwrap_err();
+                    assert!(format!("{error:#}").contains(expected), "{error:#}");
+                }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_queries_share_login_and_refresh() {
+        let server = MockServer::start().await;
+        install_login_flow_mocks(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/services/identity/self-service/login"))
+            .respond_with(login_success_response())
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/services/identity/self-service/login"))
+            .respond_with(ResponseTemplate::new(200).insert_header(
+                "Set-Cookie",
+                "ory-session=refreshed-token; Path=/; HttpOnly",
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        accept_queries(&server).await;
+
+        let auth = Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
+        let results = futures::future::join_all((0..4).map(|_| query(&auth))).await;
+        for result in results {
+            assert_eq!(result.unwrap(), QueryData { value: 42 });
+        }
+
+        // Expire the session at the remote end. Every request still carrying
+        // that cookie must recover through the session module's interface.
+        Mock::given(method("POST"))
+            .and(path("/api/query"))
+            .and(|request: &wiremock::Request| {
+                request
+                    .headers
+                    .get("cookie")
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| {
+                        value
+                            .split(';')
+                            .any(|cookie| cookie.trim() == "ory-session=session-token")
+                    })
+            })
+            .respond_with(ResponseTemplate::new(401))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+
+        let results = futures::future::join_all((0..4).map(|_| query(&auth))).await;
+        for result in results {
+            assert_eq!(result.unwrap(), QueryData { value: 42 });
+        }
     }
 }
