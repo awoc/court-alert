@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::{StreamExt, TryStreamExt, stream};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::value::RawValue;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -133,7 +134,7 @@ async fn decode_query_response<T: DeserializeOwned>(response: reqwest::Response)
     debug!(%status, bytes = text.len(), "post_query: response received");
     anyhow::ensure!(status.is_success(), "GraphQL HTTP error: {status} {text}");
 
-    let parsed: GraphQlResponse<T> =
+    let parsed: GraphQlResponse<'_> =
         serde_json::from_str(&text).context("decoding GraphQL response")?;
     if let Some(errors) = parsed.errors {
         let joined = errors
@@ -143,14 +144,16 @@ async fn decode_query_response<T: DeserializeOwned>(response: reqwest::Response)
             .join("; ");
         anyhow::bail!("GraphQL errors: {joined}");
     }
-    parsed
+    let data = parsed
         .data
-        .ok_or_else(|| anyhow!("GraphQL response had no data"))
+        .ok_or_else(|| anyhow!("GraphQL response had no data"))?;
+    serde_json::from_str(data.get()).context("decoding GraphQL response data")
 }
 
 #[derive(Debug, Deserialize)]
-struct GraphQlResponse<T> {
-    data: Option<T>,
+struct GraphQlResponse<'a> {
+    #[serde(borrow)]
+    data: Option<&'a RawValue>,
     errors: Option<Vec<GraphQlError>>,
 }
 
@@ -560,5 +563,34 @@ mod tests {
                 }),
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn partial_graphql_failure_reports_the_server_error_before_decoding_data() {
+        let server = MockServer::start().await;
+        install_login_flow_mocks(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/services/identity/self-service/login"))
+            .respond_with(login_success_response())
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/query"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {"booking_slots": null},
+                "errors": [{"message": "resolver timeout"}]
+            })))
+            .expect(3)
+            .mount(&server)
+            .await;
+
+        let auth = Auth::new(server.uri(), creds()).unwrap();
+        let (start, end) = sample_window();
+        let error =
+            fetch_booking_slot_dtos(&auth, Uuid::parse_str(PRODUCT_ID).unwrap(), start, end)
+                .await
+                .unwrap_err();
+        assert_eq!(error.to_string(), "GraphQL errors: resolver timeout");
     }
 }
