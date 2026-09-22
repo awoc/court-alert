@@ -9,7 +9,7 @@ use tracing::debug;
 
 use crate::config::Credentials;
 
-const MAX_ATTEMPTS: u32 = 3;
+const RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(500), Duration::from_secs(2)];
 
 pub struct Auth {
     client: reqwest::Client,
@@ -76,6 +76,7 @@ impl Auth {
         D: Fn(reqwest::Response) -> F,
         F: Future<Output = Result<T>>,
     {
+        // A lone refusal can be a blip, so refresh only after a second refusal.
         match self.request_with_retry(&build, &decode).await {
             Err(FetchError::Unauthorized(_)) => {}
             result => return result.map_err(anyhow::Error::from),
@@ -102,17 +103,18 @@ impl Auth {
         D: Fn(reqwest::Response) -> F,
         F: Future<Output = Result<T>>,
     {
-        for attempt in 1..=MAX_ATTEMPTS {
+        for attempt in 0..=RETRY_DELAYS.len() {
             match self.request_once(build, decode).await {
                 Ok(data) => return Ok(data),
                 Err(FetchError::Unauthorized(generation)) => {
                     return Err(FetchError::Unauthorized(generation));
                 }
-                Err(error) if attempt == MAX_ATTEMPTS => return Err(error),
                 Err(error) => {
-                    let delay = retry_delay(attempt);
+                    let Some(&delay) = RETRY_DELAYS.get(attempt) else {
+                        return Err(error);
+                    };
                     debug!(
-                        attempt,
+                        attempt = attempt + 1,
                         delay_ms = delay.as_millis() as u64,
                         error = %format!("{error:?}"),
                         "transient authenticated request error; retrying"
@@ -258,14 +260,6 @@ impl From<FetchError> for anyhow::Error {
             FetchError::Unauthorized(_) => anyhow!("request unauthorized (HTTP 401/403)"),
             FetchError::Other(e) => e,
         }
-    }
-}
-
-fn retry_delay(attempt: u32) -> std::time::Duration {
-    match attempt {
-        1 => std::time::Duration::from_millis(500),
-        2 => std::time::Duration::from_secs(2),
-        _ => std::time::Duration::from_secs(5),
     }
 }
 
