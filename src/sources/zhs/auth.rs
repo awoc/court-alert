@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -7,6 +8,8 @@ use tokio::sync::Mutex;
 use tracing::debug;
 
 use crate::config::Credentials;
+
+const RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(500), Duration::from_secs(2)];
 
 pub struct Auth {
     client: reqwest::Client,
@@ -39,13 +42,13 @@ impl Auth {
         })
     }
 
-    pub(super) fn invalidate_if_generation(&self, generation: u64) -> bool {
+    fn invalidate_if_generation(&self, generation: u64) -> bool {
         self.authenticated_generation
             .compare_exchange(generation, 0, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
     }
 
-    pub(super) async fn client(&self) -> Result<(&reqwest::Client, u64)> {
+    async fn client(&self) -> Result<(&reqwest::Client, u64)> {
         let mut generation = self.authenticated_generation.load(Ordering::SeqCst);
         if generation == 0 {
             let _guard = self.login_lock.lock().await;
@@ -62,6 +65,116 @@ impl Auth {
 
     pub(super) fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// Adds the session to a repeatable request and recovers from refusals.
+    /// The caller owns the endpoint and decoder; decoding failures share the
+    /// request's transient retry budget. Use only for requests safe to repeat.
+    pub(super) async fn request<B, D, F, T>(&self, build: B, decode: D) -> Result<T>
+    where
+        B: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+        D: Fn(reqwest::Response) -> F,
+        F: Future<Output = Result<T>>,
+    {
+        // A lone refusal can be a blip, so refresh only after a second refusal.
+        match self.request_with_retry(&build, &decode).await {
+            Err(FetchError::Unauthorized(_)) => {}
+            result => return result.map_err(anyhow::Error::from),
+        }
+        match self.request_with_retry(&build, &decode).await {
+            Err(FetchError::Unauthorized(generation)) => {
+                self.invalidate_if_generation(generation);
+                self.request_with_retry(&build, &decode)
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .context("retry after re-auth failed")
+            }
+            result => result.map_err(anyhow::Error::from),
+        }
+    }
+
+    async fn request_with_retry<B, D, F, T>(
+        &self,
+        build: &B,
+        decode: &D,
+    ) -> std::result::Result<T, FetchError>
+    where
+        B: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+        D: Fn(reqwest::Response) -> F,
+        F: Future<Output = Result<T>>,
+    {
+        for attempt in 0..=RETRY_DELAYS.len() {
+            match self.request_once(build, decode).await {
+                Ok(data) => return Ok(data),
+                Err(FetchError::Unauthorized(generation)) => {
+                    return Err(FetchError::Unauthorized(generation));
+                }
+                Err(error) => {
+                    let Some(&delay) = RETRY_DELAYS.get(attempt) else {
+                        return Err(error);
+                    };
+                    debug!(
+                        attempt = attempt + 1,
+                        delay_ms = delay.as_millis() as u64,
+                        error = %format!("{error:?}"),
+                        "transient authenticated request error; retrying"
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+        unreachable!("every retry-loop branch returns")
+    }
+
+    async fn request_once<B, D, F, T>(
+        &self,
+        build: &B,
+        decode: &D,
+    ) -> std::result::Result<T, FetchError>
+    where
+        B: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+        D: Fn(reqwest::Response) -> F,
+        F: Future<Output = Result<T>>,
+    {
+        let (client, generation) = self.client().await?;
+        let response = build(client)
+            .send()
+            .await
+            .context("sending authenticated request")?;
+        if matches!(
+            response.status(),
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+        ) || self.is_login_redirect(&response)
+        {
+            return Err(FetchError::Unauthorized(generation));
+        }
+        decode(response).await.map_err(FetchError::from)
+    }
+
+    fn is_login_redirect(&self, response: &reqwest::Response) -> bool {
+        if !matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
+            return false;
+        }
+        let Some(location) = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+        else {
+            return false;
+        };
+        let Ok(destination) = response.url().join(location) else {
+            return false;
+        };
+        let Ok(origin) = reqwest::Url::parse(&self.base_url) else {
+            return false;
+        };
+        destination.origin() == origin.origin()
+            && matches!(
+                destination.path().trim_end_matches('/'),
+                "/auth/login"
+                    | "/services/identity/self-service/login/browser"
+                    | "/services/identity/self-service/login"
+            )
     }
 
     async fn login(&self) -> Result<()> {
@@ -153,6 +266,29 @@ impl Auth {
             bail!("login failed: {status} {body}");
         }
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+enum FetchError {
+    Unauthorized(u64),
+    Other(anyhow::Error),
+}
+
+impl From<anyhow::Error> for FetchError {
+    fn from(e: anyhow::Error) -> Self {
+        FetchError::Other(e)
+    }
+}
+
+impl From<FetchError> for anyhow::Error {
+    fn from(e: FetchError) -> Self {
+        match e {
+            FetchError::Unauthorized(_) => {
+                anyhow!("request unauthorized (HTTP 401/403 or login redirect)")
+            }
+            FetchError::Other(e) => e,
+        }
     }
 }
 
@@ -258,6 +394,33 @@ mod tests {
         }
     }
 
+    async fn request(auth: &Auth) -> Result<u32> {
+        let url = format!("{}/protected", auth.base_url());
+        auth.request(
+            |client| client.get(&url),
+            |response| async {
+                response
+                    .error_for_status()?
+                    .json()
+                    .await
+                    .context("decoding response")
+            },
+        )
+        .await
+    }
+
+    fn request_success_response() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(42)
+    }
+
+    async fn accept_requests(server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .respond_with(request_success_response())
+            .mount(server)
+            .await;
+    }
+
     #[tokio::test]
     async fn login_flow_completes_and_caches_session() {
         let server = MockServer::start().await;
@@ -277,8 +440,9 @@ mod tests {
             .await;
 
         let auth = Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
-        auth.client().await.expect("login");
-        auth.client().await.expect("cached client"); // no extra POST — expect(1) enforces this on drop
+        accept_requests(&server).await;
+        assert_eq!(request(&auth).await.unwrap(), 42);
+        assert_eq!(request(&auth).await.unwrap(), 42);
     }
 
     #[tokio::test]
@@ -328,7 +492,8 @@ mod tests {
             .await;
 
         let auth = Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
-        auth.client().await.expect("login through the refresh flow");
+        accept_requests(&server).await;
+        assert_eq!(request(&auth).await.unwrap(), 42);
     }
 
     #[tokio::test]
@@ -345,7 +510,229 @@ mod tests {
             .await;
 
         let auth = Auth::new(server.uri(), creds("alice@example.com", "wrong")).unwrap();
-        let err = auth.client().await.expect_err("expected failure");
+        let err = request(&auth).await.expect_err("expected failure");
         assert!(err.to_string().to_lowercase().contains("login failed"));
+    }
+
+    #[tokio::test]
+    async fn a_transient_request_failure_retries_without_refreshing() {
+        let server = MockServer::start().await;
+        install_login_flow_mocks(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/services/identity/self-service/login"))
+            .respond_with(login_success_response())
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(2)
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .respond_with(request_success_response())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let auth = Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
+        assert_eq!(request(&auth).await.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn repeated_refusal_stops_after_one_refresh() {
+        for status in [401, 403] {
+            let server = MockServer::start().await;
+            install_login_flow_mocks(&server).await;
+            Mock::given(method("POST"))
+                .and(path("/services/identity/self-service/login"))
+                .respond_with(login_success_response())
+                .expect(2)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/protected"))
+                .respond_with(ResponseTemplate::new(status))
+                .expect(3)
+                .mount(&server)
+                .await;
+
+            let auth = Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
+            let error = request(&auth).await.unwrap_err();
+            assert!(format!("{error:#}").contains("retry after re-auth failed"));
+            assert!(format!("{error:#}").contains("401/403"));
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_requests_share_login_and_refresh() {
+        let server = MockServer::start().await;
+        install_login_flow_mocks(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/services/identity/self-service/login"))
+            .respond_with(login_success_response())
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/services/identity/self-service/login"))
+            .respond_with(ResponseTemplate::new(200).insert_header(
+                "Set-Cookie",
+                "ory-session=refreshed-token; Path=/; HttpOnly",
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        accept_requests(&server).await;
+
+        let auth = Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
+        let results = futures::future::join_all((0..4).map(|_| request(&auth))).await;
+        for result in results {
+            assert_eq!(result.unwrap(), 42);
+        }
+
+        // Expire the session at the remote end. Every request still carrying
+        // that cookie must recover through the session module's interface.
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .and(|request: &wiremock::Request| {
+                request
+                    .headers
+                    .get("cookie")
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| {
+                        value
+                            .split(';')
+                            .any(|cookie| cookie.trim() == "ory-session=session-token")
+                    })
+            })
+            .respond_with(ResponseTemplate::new(401))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+
+        let results = futures::future::join_all((0..4).map(|_| request(&auth))).await;
+        for result in results {
+            assert_eq!(result.unwrap(), 42);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_login_redirect_refreshes_the_session_without_following_it() {
+        let server = MockServer::start().await;
+        install_login_flow_mocks(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/services/identity/self-service/login"))
+            .respond_with(login_success_response())
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .respond_with(
+                ResponseTemplate::new(303).insert_header("Location", "/auth/login?flow=expired"),
+            )
+            .up_to_n_times(2)
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/auth/login"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .respond_with(request_success_response())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let auth = Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
+        assert_eq!(request(&auth).await.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn only_same_origin_login_redirects_trigger_recovery() {
+        let server = MockServer::start().await;
+        install_login_flow_mocks(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/services/identity/self-service/login"))
+            .respond_with(login_success_response())
+            .expect(1)
+            .mount(&server)
+            .await;
+        let auth = Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
+        let cases = [
+            (303, Some("/booking")),
+            (303, Some("/auth/login-extra")),
+            (303, Some("https://example.test/auth/login")),
+            (303, Some("http://[")),
+            (303, None),
+            (200, Some("/auth/login")),
+            (304, Some("/auth/login")),
+        ];
+        for (index, (status, location)) in cases.into_iter().enumerate() {
+            let path_ = format!("/redirect/{index}");
+            let mut response = ResponseTemplate::new(status);
+            if let Some(location) = location {
+                response = response.insert_header("Location", location);
+            }
+            Mock::given(method("GET"))
+                .and(path(path_.clone()))
+                .respond_with(response)
+                .expect(1)
+                .mount(&server)
+                .await;
+            let url = format!("{}{path_}", server.uri());
+            let actual = auth
+                .request(
+                    |client| client.get(&url),
+                    |response| async move { Ok(response.status().as_u16()) },
+                )
+                .await
+                .unwrap();
+            assert_eq!(actual, status);
+        }
+    }
+
+    #[tokio::test]
+    async fn absolute_and_relative_login_redirects_have_a_bounded_refresh() {
+        let server = MockServer::start().await;
+        install_login_flow_mocks(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/services/identity/self-service/login"))
+            .respond_with(login_success_response())
+            .expect(4)
+            .mount(&server)
+            .await;
+        let locations = [
+            format!("{}/auth/login?flow=expired", server.uri()),
+            "../services/identity/self-service/login/browser?refresh=true".into(),
+            "/services/identity/self-service/login/".into(),
+        ];
+        let auth = Auth::new(server.uri(), creds("alice@example.com", "hunter2")).unwrap();
+        for (index, location) in locations.into_iter().enumerate() {
+            let path_ = format!("/redirect/{index}");
+            Mock::given(method("GET"))
+                .and(path(path_.clone()))
+                .respond_with(ResponseTemplate::new(302).insert_header("Location", location))
+                .expect(3)
+                .mount(&server)
+                .await;
+            let url = format!("{}{path_}", server.uri());
+            let error = auth
+                .request(|client| client.get(&url), |_| async { Ok(()) })
+                .await
+                .unwrap_err();
+            let error = format!("{error:#}");
+            assert!(error.contains("retry after re-auth failed"), "{error}");
+            assert!(error.contains("login redirect"), "{error}");
+        }
     }
 }

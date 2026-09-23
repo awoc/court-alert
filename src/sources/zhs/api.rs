@@ -2,6 +2,8 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::{StreamExt, TryStreamExt, stream};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::value::RawValue;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -10,13 +12,11 @@ use crate::ports::VenueAvailabilitySource;
 
 use super::auth::Auth;
 use super::dto::{
-    BookingSlotDto, BookingSlotsQueryInput, BookingSlotsResponseDto, BookingSlotsVariables,
+    BookingSlotDto, BookingSlotsDataDto, BookingSlotsQueryInput, BookingSlotsVariables,
     GraphQlRequest,
 };
 
 const BOOKING_SLOTS_QUERY: &str = "\nquery List_product_slots($productID: UUID!, $input: BookingSlotsInput!) {\n  booking_slots(product_id: $productID, input: $input) {\n    start\n    end\n    booking_period_start\n    booking_period_end\n    availability\n    already_booked\n    already_in_cart\n    already_on_waiting_list\n    blocked_by_resource\n }\n}";
-
-const MAX_ATTEMPTS: u32 = 3;
 
 const MAX_CONCURRENT_COURT_FETCHES: usize = 4;
 
@@ -99,133 +99,67 @@ async fn fetch_booking_slot_dtos(
             input: BookingSlotsQueryInput { starts_at, ends_at },
         },
     };
-    // One 401/403 is usually a blip rather than an expired session, so the
-    // session only gets thrown away once a second attempt on it is refused too.
-    match post_query_with_retry(auth, &body).await {
-        Err(FetchError::Unauthorized(_)) => {}
-        result => return result.map_err(anyhow::Error::from),
-    }
-    match post_query_with_retry(auth, &body).await {
-        Err(FetchError::Unauthorized(generation)) => {
-            auth.invalidate_if_generation(generation);
-            post_query_with_retry(auth, &body)
-                .await
-                .map_err(anyhow::Error::from)
-                .context("retry after re-auth failed")
-        }
-        result => result.map_err(anyhow::Error::from),
-    }
+    let data: BookingSlotsDataDto = query(auth, &body).await?;
+    Ok(data.booking_slots)
 }
 
-#[derive(Debug)]
-enum FetchError {
-    Unauthorized(u64),
-    Other(anyhow::Error),
-}
-
-impl From<anyhow::Error> for FetchError {
-    fn from(e: anyhow::Error) -> Self {
-        FetchError::Other(e)
-    }
-}
-
-impl From<FetchError> for anyhow::Error {
-    fn from(e: FetchError) -> Self {
-        match e {
-            FetchError::Unauthorized(_) => anyhow!("request unauthorized (HTTP 401/403)"),
-            FetchError::Other(e) => e,
-        }
-    }
-}
-
-fn retry_delay(attempt: u32) -> std::time::Duration {
-    match attempt {
-        1 => std::time::Duration::from_millis(500),
-        2 => std::time::Duration::from_secs(2),
-        _ => std::time::Duration::from_secs(5),
-    }
-}
-
-async fn post_query_with_retry(
+async fn query<V: Serialize + Sync, T: DeserializeOwned>(
     auth: &Auth,
-    body: &GraphQlRequest<'_, BookingSlotsVariables>,
-) -> std::result::Result<Vec<BookingSlotDto>, FetchError> {
-    for attempt in 1..=MAX_ATTEMPTS {
-        match post_query(auth, body).await {
-            Ok(slots) => return Ok(slots),
-            Err(FetchError::Unauthorized(generation)) => {
-                return Err(FetchError::Unauthorized(generation));
-            }
-            Err(error) if attempt == MAX_ATTEMPTS => return Err(error),
-            Err(error) => {
-                let delay = retry_delay(attempt);
-                debug!(
-                    attempt,
-                    delay_ms = delay.as_millis() as u64,
-                    error = %format!("{error:?}"),
-                    "transient /api/query error; retrying"
-                );
-                tokio::time::sleep(delay).await;
-            }
-        }
-    }
-    unreachable!("every retry-loop branch returns")
-}
-
-async fn post_query(
-    auth: &Auth,
-    body: &GraphQlRequest<'_, BookingSlotsVariables>,
-) -> std::result::Result<Vec<BookingSlotDto>, FetchError> {
+    body: &GraphQlRequest<'_, V>,
+) -> Result<T> {
     let url = format!("{}/api/query", auth.base_url());
-    let (client, auth_generation) = auth.client().await.map_err(FetchError::from)?;
-    if tracing::enabled!(tracing::Level::DEBUG)
-        && let Ok(json) = serde_json::to_string(body)
-    {
-        debug!(body = %json, "post_query: sending");
-    }
-    let resp = client
-        .post(&url)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .json(body)
-        .send()
-        .await
-        .context("posting GraphQL query")
-        .map_err(FetchError::from)?;
+    auth.request(
+        |client| {
+            if tracing::enabled!(tracing::Level::DEBUG)
+                && let Ok(json) = serde_json::to_string(body)
+            {
+                debug!(body = %json, "post_query: sending");
+            }
+            client
+                .post(&url)
+                .header(reqwest::header::ACCEPT, "application/json")
+                .json(body)
+        },
+        decode_query_response,
+    )
+    .await
+}
 
-    let status = resp.status();
-    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-        return Err(FetchError::Unauthorized(auth_generation));
-    }
-    let text = resp
+async fn decode_query_response<T: DeserializeOwned>(response: reqwest::Response) -> Result<T> {
+    let status = response.status();
+    let text = response
         .text()
         .await
-        .context("reading GraphQL response body")
-        .map_err(FetchError::from)?;
+        .context("reading GraphQL response body")?;
     debug!(%status, bytes = text.len(), "post_query: response received");
-    if !status.is_success() {
-        return Err(FetchError::Other(anyhow!(
-            "GraphQL HTTP error: {status} {text}"
-        )));
-    }
+    anyhow::ensure!(status.is_success(), "GraphQL HTTP error: {status} {text}");
 
-    let parsed: BookingSlotsResponseDto = serde_json::from_str(&text)
-        .context("decoding GraphQL response")
-        .map_err(FetchError::from)?;
-
+    let parsed: GraphQlResponse<'_> =
+        serde_json::from_str(&text).context("decoding GraphQL response")?;
     if let Some(errors) = parsed.errors {
         let joined = errors
             .into_iter()
             .map(|e| e.message)
             .collect::<Vec<_>>()
             .join("; ");
-        return Err(FetchError::Other(anyhow!("GraphQL errors: {joined}")));
+        anyhow::bail!("GraphQL errors: {joined}");
     }
-
     let data = parsed
         .data
-        .ok_or_else(|| anyhow!("GraphQL response had no data"))
-        .map_err(FetchError::from)?;
-    Ok(data.booking_slots)
+        .ok_or_else(|| anyhow!("GraphQL response had no data"))?;
+    serde_json::from_str(data.get()).context("decoding GraphQL response data")
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlResponse<'a> {
+    #[serde(borrow)]
+    data: Option<&'a RawValue>,
+    errors: Option<Vec<GraphQlError>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlError {
+    message: String,
 }
 
 #[cfg(test)]
@@ -332,9 +266,9 @@ mod tests {
 
     #[test]
     fn api_dto_is_normalized_before_crossing_the_port() {
-        let response: BookingSlotsResponseDto =
-            serde_json::from_value(sample_slots_response()).unwrap();
-        let dto = response.data.unwrap().booking_slots.remove(0);
+        let mut response: BookingSlotsDataDto =
+            serde_json::from_value(sample_slots_response()["data"].clone()).unwrap();
+        let dto = response.booking_slots.remove(0);
         let court_id = Uuid::parse_str(PRODUCT_ID).unwrap();
 
         let venue_id = VenueId::new("zhs-munich");
@@ -502,5 +436,161 @@ mod tests {
             .await
             .expect_err("expected error");
         assert!(err.to_string().contains("bad query"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_court_never_returns_partial_venue_availability() {
+        use crate::model::{Court, CourtAttributes, CourtSurface, Sport, VenueIdentity};
+
+        let server = MockServer::start().await;
+        install_login_flow_mocks(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/services/identity/self-service/login"))
+            .respond_with(login_success_response())
+            .expect(1)
+            .mount(&server)
+            .await;
+        let failed_court = Uuid::from_u128(5);
+        Mock::given(method("POST"))
+            .and(path("/api/query"))
+            .and(body_partial_json(
+                json!({"variables": {"productID": failed_court}}),
+            ))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(3)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/query"))
+            .and(body_partial_json(
+                json!({"variables": {"productID": PRODUCT_ID}}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(sample_slots_response()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let venue = Venue {
+            id: VenueId::new("zhs-munich"),
+            display_name: "ZHS München".into(),
+            sport: Sport::Tennis,
+            identity: VenueIdentity::Zhs {
+                base_url: server.uri(),
+            },
+            poll_interval_secs: None,
+            lookahead_days: None,
+            operating_window: None,
+        };
+        let catalog = CourtCatalog::new(vec![
+            Court::new(
+                Uuid::parse_str(PRODUCT_ID).unwrap(),
+                "Court 2".into(),
+                CourtAttributes::tennis(CourtSurface::Clay),
+            ),
+            Court::new(
+                failed_court,
+                "Court 5".into(),
+                CourtAttributes::tennis(CourtSurface::Clay),
+            ),
+        ]);
+        let source = ZhsSlotAvailabilitySource::new(Auth::new(server.uri(), creds()).unwrap());
+        let (start, end) = sample_window();
+
+        let error = source
+            .fetch(&venue, &catalog, start, end)
+            .await
+            .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("Court 5"), "{message}");
+        assert!(message.contains("503"), "{message}");
+    }
+    #[derive(Debug, Deserialize)]
+    struct QueryData {
+        #[serde(rename = "value")]
+        _value: u32,
+    }
+
+    #[tokio::test]
+    async fn invalid_query_responses_exhaust_the_existing_retry_budget() {
+        let responses = [
+            (ResponseTemplate::new(503), "GraphQL HTTP error"),
+            (
+                ResponseTemplate::new(200).set_body_string("not json"),
+                "decoding GraphQL response",
+            ),
+            (
+                ResponseTemplate::new(200).set_body_json(json!({"data": {"value": "bad"}})),
+                "decoding GraphQL response",
+            ),
+            (
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "data": {"value": 42}, "errors": [{"message": "partial failure"}]
+                })),
+                "partial failure",
+            ),
+            (
+                ResponseTemplate::new(200).set_body_json(json!({})),
+                "GraphQL response had no data",
+            ),
+        ];
+        // Run the independent failure cases together so their backoff does not
+        // make this test take five times as long.
+        futures::future::join_all(
+            responses
+                .into_iter()
+                .map(|(response, expected)| async move {
+                    let server = MockServer::start().await;
+                    install_login_flow_mocks(&server).await;
+                    Mock::given(method("POST"))
+                        .and(path("/services/identity/self-service/login"))
+                        .respond_with(login_success_response())
+                        .expect(1)
+                        .mount(&server)
+                        .await;
+                    Mock::given(method("POST"))
+                        .and(path("/api/query"))
+                        .respond_with(response)
+                        .expect(3)
+                        .mount(&server)
+                        .await;
+
+                    let auth = Auth::new(server.uri(), creds()).unwrap();
+                    let body = GraphQlRequest {
+                        query: "query { value }",
+                        variables: (),
+                    };
+                    let error = query::<_, QueryData>(&auth, &body).await.unwrap_err();
+                    assert!(format!("{error:#}").contains(expected), "{error:#}");
+                }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn partial_graphql_failure_reports_the_server_error_before_decoding_data() {
+        let server = MockServer::start().await;
+        install_login_flow_mocks(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/services/identity/self-service/login"))
+            .respond_with(login_success_response())
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/query"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {"booking_slots": null},
+                "errors": [{"message": "resolver timeout"}]
+            })))
+            .expect(3)
+            .mount(&server)
+            .await;
+
+        let auth = Auth::new(server.uri(), creds()).unwrap();
+        let (start, end) = sample_window();
+        let error =
+            fetch_booking_slot_dtos(&auth, Uuid::parse_str(PRODUCT_ID).unwrap(), start, end)
+                .await
+                .unwrap_err();
+        assert_eq!(error.to_string(), "GraphQL errors: resolver timeout");
     }
 }
