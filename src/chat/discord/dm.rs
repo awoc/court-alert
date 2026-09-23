@@ -4,51 +4,24 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use serenity::all::{ChannelId, EditMessage, Http, HttpError, MessageId, StatusCode, UserId};
 use serenity::async_trait;
-use tracing::warn;
 
-use crate::alerts::DailyPruner;
-use crate::model::{AlertLine, AlertSurface, BookableSlotId};
-use crate::ports::AlertMessageRepository;
+use crate::alerts::{AlertLifecycle, AlertTracker, EditOutcome};
+use crate::model::{AlertSurface, BookableSlotId};
 use crate::subscriptions::contract::{AvailabilityAlert, DirectMessageSender};
 
 use super::format::{alert_lines, chunk_lines, render};
-use super::strike::{DISCORD_UNKNOWN_MESSAGE, EditOutcome, strike_through};
+use super::{DISCORD_UNKNOWN_MESSAGE, PROVIDER_NAME};
 
 pub(super) struct DiscordSender {
     http: Arc<Http>,
-    messages: Arc<dyn AlertMessageRepository>,
-    pruner: Arc<DailyPruner>,
+    alerts: AlertTracker,
 }
 
 impl DiscordSender {
-    pub(super) fn new(
-        http: Arc<Http>,
-        messages: Arc<dyn AlertMessageRepository>,
-        pruner: Arc<DailyPruner>,
-    ) -> Self {
+    pub(super) fn new(http: Arc<Http>, alerts: Arc<AlertLifecycle>) -> Self {
         Self {
             http,
-            messages,
-            pruner,
-        }
-    }
-
-    async fn record(&self, channel_id: ChannelId, message_id: MessageId, lines: &[AlertLine]) {
-        if let Err(error) = self
-            .messages
-            .record_message(
-                AlertSurface::DirectMessage,
-                Some(&channel_id.to_string()),
-                &message_id.to_string(),
-                lines,
-            )
-            .await
-        {
-            warn!(
-                error = %format!("{error:#}"),
-                %message_id,
-                "discord: recording a DM failed; it cannot be struck through later"
-            );
+            alerts: alerts.tracker(PROVIDER_NAME, AlertSurface::DirectMessage),
         }
     }
 
@@ -88,34 +61,31 @@ impl DirectMessageSender for DiscordSender {
                 .say(&self.http, render(&chunk))
                 .await
                 .context("sending DM")?;
-            self.record(channel.id, sent.id, &chunk).await;
+            self.alerts
+                .record(Some(&channel.id.to_string()), &sent.id.to_string(), &chunk)
+                .await;
         }
         Ok(())
     }
 
     async fn strike_taken(&self, slots: &[BookableSlotId]) -> Result<()> {
-        let struck = strike_through(
-            &self.messages,
-            AlertSurface::DirectMessage,
-            slots,
-            |message| async move {
-                let channel = message.channel_id.as_deref().context(
+        self.alerts
+            .strike_taken(slots, |message| async move {
+                let channel = message.key.destination.as_deref().context(
                     "a recorded direct message has no channel, so it cannot be edited again",
                 )?;
-                self.edit(channel, &message.id, &render(&message.lines))
+                self.edit(channel, &message.key.id, &render(&message.lines))
                     .await
-            },
-        )
-        .await;
-        self.pruner.run().await;
-        struck
+            })
+            .await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{BookableSlot, VenueId};
+    use crate::model::{AlertLine, AlertMessageKey, BookableSlot, VenueId};
+    use crate::ports::AlertMessageRepository;
     use crate::store::SqliteStore;
     use crate::subscriptions::contract::AvailableSlotSummary;
     use chrono::{TimeZone, Utc};
@@ -173,11 +143,8 @@ mod tests {
             .proxy(server.uri())
             .ratelimiter_disabled(true)
             .build();
-        let pruner = Arc::new(DailyPruner::new(store.clone()));
-        (
-            DiscordSender::new(Arc::new(http), store.clone(), pruner),
-            store,
-        )
+        let alerts = Arc::new(AlertLifecycle::new(store.clone()));
+        (DiscordSender::new(Arc::new(http), alerts), store)
     }
 
     fn slot(court: &str) -> BookableSlot {
@@ -222,9 +189,12 @@ mod tests {
     async fn seed(store: &Arc<SqliteStore>, message_id: &str, slot: &BookableSlot) {
         store
             .record_message(
-                AlertSurface::DirectMessage,
-                Some(DM_CHANNEL),
-                message_id,
+                &AlertMessageKey::new(
+                    "discord",
+                    AlertSurface::DirectMessage,
+                    Some(DM_CHANNEL),
+                    message_id,
+                ),
                 &[AlertLine {
                     club: Some("ZHS München".into()),
                     ..AlertLine::from(slot)
@@ -237,6 +207,7 @@ mod tests {
     async fn plans(store: &Arc<SqliteStore>, slot: &BookableSlot) -> Vec<crate::model::StrikePlan> {
         store
             .plan_strikes(
+                "discord",
                 AlertSurface::DirectMessage,
                 &[crate::model::BookableSlotId::from(slot)],
             )
@@ -267,8 +238,11 @@ mod tests {
 
         let plans = plans(&store, &announced).await;
         assert_eq!(plans.len(), 1);
-        assert_eq!(plans[0].message.id, "1408");
-        assert_eq!(plans[0].message.channel_id.as_deref(), Some(DM_CHANNEL));
+        assert_eq!(plans[0].message.key.id, "1408");
+        assert_eq!(
+            plans[0].message.key.destination.as_deref(),
+            Some(DM_CHANNEL)
+        );
         assert_eq!(
             plans[0].message.lines[0].club.as_deref(),
             Some("ZHS München"),
@@ -291,7 +265,7 @@ mod tests {
             .mount(&server)
             .await;
         let (sender, store) = sender(&server).await;
-        sender.pruner.skip_today();
+        sender.alerts.skip_pruning_today();
         let taken = slot("Court 2");
         seed(&store, "1408", &taken).await;
 
@@ -314,7 +288,7 @@ mod tests {
             .mount(&server)
             .await;
         let (sender, store) = sender(&server).await;
-        sender.pruner.skip_today();
+        sender.alerts.skip_pruning_today();
         let taken = slot("Court 2");
         seed(&store, "1408", &taken).await;
 
@@ -337,7 +311,7 @@ mod tests {
             .mount(&server)
             .await;
         let (sender, store) = sender(&server).await;
-        sender.pruner.skip_today();
+        sender.alerts.skip_pruning_today();
         let taken = slot("Court 2");
         seed(&store, "1408", &taken).await;
 
@@ -363,7 +337,7 @@ mod tests {
             .mount(&server)
             .await;
         let (sender, store) = sender(&server).await;
-        sender.pruner.skip_today();
+        sender.alerts.skip_pruning_today();
         let taken = slot("Court 2");
         seed(&store, "1408", &taken).await;
 
@@ -391,7 +365,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(sender.pruner.last_run(), Some(crate::time::today_berlin()));
+        assert_eq!(
+            sender.alerts.last_pruned(),
+            Some(crate::time::today_berlin())
+        );
         assert_eq!(
             store.prune_ended(Utc::now()).await.unwrap(),
             0,

@@ -5,27 +5,22 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use crate::alerts::DailyPruner;
-use crate::model::{AlertLine, AlertSurface, AvailabilityChange};
-use crate::ports::{AlertMessageRepository, AvailabilityChangeSink};
+use crate::alerts::{AlertLifecycle, AlertTracker, EditOutcome};
+use crate::model::{AlertSurface, AvailabilityChange};
+use crate::ports::AvailabilityChangeSink;
 
 use super::format::{added_slots, channel_lines, chunk_lines, render};
 use super::http::{HTTP_TIMEOUT, redact_discord_webhook_tokens, send_with_rate_limit_retry};
-use super::strike::{DISCORD_UNKNOWN_MESSAGE, EditOutcome, strike_through};
+use super::{DISCORD_UNKNOWN_MESSAGE, PROVIDER_NAME};
 
 pub struct DiscordNotifier {
     webhook_url: reqwest::Url,
     client: reqwest::Client,
-    messages: Arc<dyn AlertMessageRepository>,
-    pruner: Arc<DailyPruner>,
+    alerts: AlertTracker,
 }
 
 impl DiscordNotifier {
-    pub fn new(
-        mut webhook_url: reqwest::Url,
-        messages: Arc<dyn AlertMessageRepository>,
-        pruner: Arc<DailyPruner>,
-    ) -> Result<Self> {
+    pub fn new(mut webhook_url: reqwest::Url, alerts: Arc<AlertLifecycle>) -> Result<Self> {
         // Avoid producing `.../token//messages/{id}` in `edit_url`.
         webhook_url
             .path_segments_mut()
@@ -38,8 +33,7 @@ impl DiscordNotifier {
         Ok(Self {
             webhook_url,
             client,
-            messages,
-            pruner,
+            alerts: alerts.tracker(PROVIDER_NAME, AlertSurface::Channel),
         })
     }
 
@@ -81,26 +75,12 @@ impl DiscordNotifier {
                 "discord: posting"
             );
             match self.post(&content).await {
-                Ok(message_id) => self.record(&message_id, &chunk).await,
+                Ok(message_id) => self.alerts.record(None, &message_id, &chunk).await,
                 Err(error) => warn!(
                     error = %format!("{error:#}"),
                     "discord: posting an alert failed; its slots cannot be struck later"
                 ),
             }
-        }
-    }
-
-    async fn record(&self, message_id: &str, lines: &[AlertLine]) {
-        if let Err(error) = self
-            .messages
-            .record_message(AlertSurface::Channel, None, message_id, lines)
-            .await
-        {
-            warn!(
-                error = %format!("{error:#}"),
-                message_id,
-                "discord: recording an alert message failed; it cannot be edited later"
-            );
         }
     }
 
@@ -148,13 +128,12 @@ impl DiscordNotifier {
 
     async fn strike_removed(&self, changes: &[AvailabilityChange]) {
         let removed = AvailabilityChange::taken_ids(changes);
-        let struck = strike_through(
-            &self.messages,
-            AlertSurface::Channel,
-            &removed,
-            |message| async move { self.edit(&message.id, &render(&message.lines)).await },
-        )
-        .await;
+        let struck = self
+            .alerts
+            .strike_taken(&removed, |message| async move {
+                self.edit(&message.key.id, &render(&message.lines)).await
+            })
+            .await;
         if let Err(error) = struck {
             warn!(
                 error = %format!("{error:#}"),
@@ -173,7 +152,6 @@ impl AvailabilityChangeSink for DiscordNotifier {
         }
         // Strike before pruning can drop old rows; prune before recording new rows.
         self.strike_removed(changes).await;
-        self.pruner.run().await;
         self.post_added(changes).await;
         Ok(())
     }
@@ -182,7 +160,8 @@ impl AvailabilityChangeSink for DiscordNotifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{BookableSlot, BookableSlotId, StrikePlan};
+    use crate::model::{AlertLine, AlertMessageKey, BookableSlot, BookableSlotId, StrikePlan};
+    use crate::ports::AlertMessageRepository;
     use crate::store::SqliteStore;
     use chrono::{TimeZone, Utc};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -207,20 +186,21 @@ mod tests {
         let url = format!("{}/api/webhooks/123/token", server.uri())
             .parse()
             .unwrap();
-        let pruner = Arc::new(DailyPruner::new(store.clone()));
-        (
-            DiscordNotifier::new(url, store.clone(), pruner).unwrap(),
-            store,
-        )
+        let alerts = Arc::new(AlertLifecycle::new(store.clone()));
+        (DiscordNotifier::new(url, alerts).unwrap(), store)
     }
 
     fn disable_pruning_for_today(notifier: &DiscordNotifier) {
-        notifier.pruner.skip_today();
+        notifier.alerts.skip_pruning_today();
     }
 
     async fn plan_strikes(store: &Arc<SqliteStore>, slot: &BookableSlot) -> Vec<StrikePlan> {
         store
-            .plan_strikes(AlertSurface::Channel, &[BookableSlotId::from(slot)])
+            .plan_strikes(
+                "discord",
+                AlertSurface::Channel,
+                &[BookableSlotId::from(slot)],
+            )
             .await
             .unwrap()
     }
@@ -247,9 +227,12 @@ mod tests {
 
         let plans = plan_strikes(&store, &added).await;
         assert_eq!(plans.len(), 1);
-        assert_eq!(plans[0].message.id, "1408", "the id came from ?wait=true");
         assert_eq!(
-            plans[0].message.channel_id, None,
+            plans[0].message.key.id, "1408",
+            "the id came from ?wait=true"
+        );
+        assert_eq!(
+            plans[0].message.key.destination, None,
             "the webhook addresses its own messages by id"
         );
     }
@@ -278,7 +261,7 @@ mod tests {
             "pruning ran before the post, not after it"
         );
         assert_eq!(
-            notifier.pruner.last_run(),
+            notifier.alerts.last_pruned(),
             Some(crate::time::today_berlin()),
             "pruning did run — the rows survived on merit, not by being skipped"
         );
@@ -314,9 +297,7 @@ mod tests {
     async fn seed(store: &Arc<SqliteStore>, message_id: &str, slot: &BookableSlot) {
         store
             .record_message(
-                AlertSurface::Channel,
-                None,
-                message_id,
+                &AlertMessageKey::new("discord", AlertSurface::Channel, None, message_id),
                 &[AlertLine::from(slot)],
             )
             .await
@@ -385,9 +366,7 @@ mod tests {
         let (notifier, store) = notifier(&server).await;
         store
             .record_message(
-                AlertSurface::Channel,
-                None,
-                "1408",
+                &AlertMessageKey::new("discord", AlertSurface::Channel, None, "1408"),
                 &[AlertLine::from(&staying), AlertLine::from(&gone)],
             )
             .await
@@ -448,7 +427,7 @@ mod tests {
         assert_eq!(responder.calls(), 2, "one 429, then a retry");
         let plans = plan_strikes(&store, &added).await;
         assert_eq!(plans.len(), 1, "the retried post was recorded");
-        assert_eq!(plans[0].message.id, "1408");
+        assert_eq!(plans[0].message.key.id, "1408");
     }
 
     #[tokio::test]
@@ -464,8 +443,8 @@ mod tests {
         let url = format!("{}/api/webhooks/123/token/", server.uri())
             .parse()
             .unwrap();
-        let pruner = Arc::new(DailyPruner::new(store.clone()));
-        let notifier = DiscordNotifier::new(url, store.clone(), pruner).unwrap();
+        let alerts = Arc::new(AlertLifecycle::new(store.clone()));
+        let notifier = DiscordNotifier::new(url, alerts).unwrap();
         let gone = slot("Court 2", 18);
         seed(&store, "1408", &gone).await;
 
@@ -632,10 +611,10 @@ mod tests {
         let changes = [AvailabilityChange::BecameBookable(added)];
 
         notifier.publish(&changes).await.unwrap();
-        let after_first = notifier.pruner.last_run();
+        let after_first = notifier.alerts.last_pruned();
         notifier.publish(&changes).await.unwrap();
 
         assert_eq!(after_first, Some(crate::time::today_berlin()));
-        assert_eq!(notifier.pruner.last_run(), after_first);
+        assert_eq!(notifier.alerts.last_pruned(), after_first);
     }
 }

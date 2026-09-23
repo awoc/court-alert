@@ -1,145 +1,123 @@
-//! Retention of the alert messages each surface has announced slots in.
+//! Shared recording, edit persistence, and retention for alert messages.
 
-use std::sync::{Arc, Mutex};
+mod prune;
 
-use chrono::{NaiveDate, Utc};
+use std::future::Future;
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
 use tracing::{debug, warn};
 
+use crate::model::{AlertLine, AlertMessage, AlertMessageKey, AlertSurface, BookableSlotId};
 use crate::ports::AlertMessageRepository;
-use crate::time::today_berlin;
+use prune::DailyPruner;
 
-const PRUNE_GRACE: chrono::TimeDelta = chrono::TimeDelta::hours(1);
-
-/// Drops tracked alert messages whose slots have all ended.
-pub struct DailyPruner {
-    messages: Arc<dyn AlertMessageRepository>,
-    last_pruned: Mutex<Option<NaiveDate>>,
+pub enum EditOutcome {
+    Edited,
+    Gone,
 }
 
-impl DailyPruner {
+pub struct AlertLifecycle {
+    messages: Arc<dyn AlertMessageRepository>,
+    pruner: DailyPruner,
+}
+
+impl AlertLifecycle {
     pub fn new(messages: Arc<dyn AlertMessageRepository>) -> Self {
         Self {
+            pruner: DailyPruner::new(messages.clone()),
             messages,
-            last_pruned: Mutex::new(None),
         }
     }
 
-    pub async fn run(&self) {
-        let today = today_berlin();
-        {
-            // Claimed before the await: checking, then awaiting, lets both callers past.
-            let mut last_pruned = self.last_pruned.lock().expect("prune guard poisoned");
-            if *last_pruned == Some(today) {
-                return;
-            }
-            *last_pruned = Some(today);
+    pub fn tracker(self: &Arc<Self>, provider: &str, surface: AlertSurface) -> AlertTracker {
+        AlertTracker {
+            lifecycle: self.clone(),
+            provider: provider.to_owned(),
+            surface,
         }
-        // Grace, so a strikethrough already in flight is not pruned out from under it.
-        match self.messages.prune_ended(Utc::now() - PRUNE_GRACE).await {
-            Ok(removed) => {
-                if removed > 0 {
-                    debug!(removed, "pruned alert messages whose slots all ended");
+    }
+}
+
+/// A provider and surface share the lifecycle's retention policy while keeping
+/// their message identity and edit plans isolated from other adapters.
+pub struct AlertTracker {
+    lifecycle: Arc<AlertLifecycle>,
+    provider: String,
+    surface: AlertSurface,
+}
+
+impl AlertTracker {
+    /// Called after a successful send. A tracking failure must not resend an
+    /// already delivered alert.
+    pub async fn record(&self, destination: Option<&str>, message_id: &str, lines: &[AlertLine]) {
+        let key = AlertMessageKey::new(&self.provider, self.surface, destination, message_id);
+        if let Err(error) = self.lifecycle.messages.record_message(&key, lines).await {
+            warn!(provider = %self.provider, message_id, error = %format!("{error:#}"),
+                  "recording an alert failed; it cannot be updated later");
+        }
+    }
+
+    /// Edit before pruning can discard tracked messages. Keep pruning shared
+    /// across all providers, including when planning an edit fails.
+    pub async fn strike_taken<E, F>(&self, slots: &[BookableSlotId], edit: E) -> Result<()>
+    where
+        E: Fn(AlertMessage) -> F,
+        F: Future<Output = Result<EditOutcome>>,
+    {
+        let result = self.edit_taken(slots, edit).await;
+        self.lifecycle.pruner.run().await;
+        result
+    }
+
+    async fn edit_taken<E, F>(&self, slots: &[BookableSlotId], edit: E) -> Result<()>
+    where
+        E: Fn(AlertMessage) -> F,
+        F: Future<Output = Result<EditOutcome>>,
+    {
+        if slots.is_empty() {
+            return Ok(());
+        }
+        let messages = &self.lifecycle.messages;
+        let plans = messages
+            .plan_strikes(&self.provider, self.surface, slots)
+            .await
+            .context("planning alert edits")?;
+        for plan in plans {
+            let key = plan.message.key.clone();
+            match edit(plan.message).await {
+                Ok(EditOutcome::Edited) => {
+                    if let Err(error) = messages.commit_strikes(&key, &plan.newly_struck).await {
+                        warn!(provider = %key.provider, message_id = %key.id, error = %format!("{error:#}"),
+                              "alert edit succeeded but recording it failed");
+                    }
+                }
+                Ok(EditOutcome::Gone) => {
+                    debug!(provider = %key.provider, message_id = %key.id, "alert message no longer exists; forgetting it");
+                    if let Err(error) = messages.forget_message(&key).await {
+                        warn!(provider = %key.provider, message_id = %key.id, error = %format!("{error:#}"),
+                              "forgetting a deleted alert failed");
+                    }
+                }
+                Err(error) => {
+                    warn!(provider = %key.provider, message_id = %key.id, error = %format!("{error:#}"),
+                                    "updating an alert failed; its tracked lines stay unchanged")
                 }
             }
-            Err(error) => {
-                *self.last_pruned.lock().expect("prune guard poisoned") = None;
-                warn!(
-                    error = %format!("{error:#}"),
-                    "pruning alert messages failed"
-                );
-            }
         }
+        Ok(())
     }
 
     #[cfg(test)]
-    pub fn last_run(&self) -> Option<NaiveDate> {
-        *self.last_pruned.lock().unwrap()
+    pub(crate) fn skip_pruning_today(&self) {
+        self.lifecycle.pruner.skip_today();
     }
 
     #[cfg(test)]
-    pub fn skip_today(&self) {
-        *self.last_pruned.lock().unwrap() = Some(today_berlin());
+    pub(crate) fn last_pruned(&self) -> Option<chrono::NaiveDate> {
+        self.lifecycle.pruner.last_run()
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::{AlertLine, AlertSurface, StrikePlan};
-    use anyhow::Result;
-    use chrono::{DateTime, Utc};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    struct BlockingPruneRepository {
-        prunes: AtomicUsize,
-        started: tokio::sync::mpsc::UnboundedSender<()>,
-        release: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
-    }
-
-    #[async_trait::async_trait]
-    impl AlertMessageRepository for BlockingPruneRepository {
-        async fn record_message(
-            &self,
-            _surface: AlertSurface,
-            _channel_id: Option<&str>,
-            _message_id: &str,
-            _lines: &[AlertLine],
-        ) -> Result<()> {
-            unimplemented!("not used by these tests")
-        }
-
-        async fn plan_strikes(
-            &self,
-            _surface: AlertSurface,
-            _slots: &[crate::model::BookableSlotId],
-        ) -> Result<Vec<StrikePlan>> {
-            unimplemented!("not used by these tests")
-        }
-
-        async fn commit_strikes(&self, _message_id: &str, _lines: &[u32]) -> Result<()> {
-            unimplemented!("not used by these tests")
-        }
-
-        async fn forget_message(&self, _message_id: &str) -> Result<()> {
-            unimplemented!("not used by these tests")
-        }
-
-        async fn prune_ended(&self, _now: DateTime<Utc>) -> Result<usize> {
-            self.prunes.fetch_add(1, Ordering::SeqCst);
-            let _ = self.started.send(());
-            let waiting = self.release.lock().expect("release guard poisoned").take();
-            if let Some(waiting) = waiting {
-                let _ = waiting.await;
-            }
-            Ok(0)
-        }
-    }
-
-    #[tokio::test]
-    async fn a_second_caller_does_not_start_a_prune_while_one_is_running() {
-        let (started, mut starts) = tokio::sync::mpsc::unbounded_channel();
-        let (release, held) = tokio::sync::oneshot::channel();
-        let messages = Arc::new(BlockingPruneRepository {
-            prunes: AtomicUsize::new(0),
-            started,
-            release: std::sync::Mutex::new(Some(held)),
-        });
-        let pruner = Arc::new(DailyPruner::new(messages.clone()));
-
-        let first = tokio::spawn({
-            let pruner = pruner.clone();
-            async move { pruner.run().await }
-        });
-        starts.recv().await.expect("the first prune never started");
-
-        pruner.run().await;
-
-        assert_eq!(
-            messages.prunes.load(Ordering::SeqCst),
-            1,
-            "the second caller started its own full-table delete"
-        );
-        release.send(()).unwrap();
-        first.await.unwrap();
-    }
-}
+mod tests;

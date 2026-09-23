@@ -20,9 +20,28 @@ pub struct AlertLine {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AlertMessage {
+pub struct AlertMessageKey {
+    pub provider: String,
+    pub surface: AlertSurface,
+    /// Opaque address within the provider. None means the adapter knows the destination.
+    pub destination: Option<String>,
     pub id: String,
-    pub channel_id: Option<String>,
+}
+
+impl AlertMessageKey {
+    pub fn new(provider: &str, surface: AlertSurface, destination: Option<&str>, id: &str) -> Self {
+        Self {
+            provider: provider.to_owned(),
+            surface,
+            destination: destination.map(str::to_owned),
+            id: id.to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlertMessage {
+    pub key: AlertMessageKey,
     pub lines: Vec<AlertLine>,
 }
 
