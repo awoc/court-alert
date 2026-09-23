@@ -10,7 +10,7 @@ use crate::model::{
 };
 use crate::ports::AlertMessageRepository;
 
-use super::alert_message_row::{destination_from_db, destination_to_db};
+use super::alert_message_row::AlertDestination;
 use super::{AlertMessageRow, DbRepr, SqliteStore};
 
 #[async_trait]
@@ -19,7 +19,7 @@ impl AlertMessageRepository for SqliteStore {
         let key = key.clone();
         let lines = lines.to_vec();
         self.with_writer("record_alert_message", move |connection| {
-            let destination = destination_to_db(key.destination.as_deref())?;
+            let destination = AlertDestination(key.destination.as_deref()).into_db()?;
             let transaction = connection
                 .transaction()
                 .context("starting alert-message insert transaction")?;
@@ -139,7 +139,7 @@ impl AlertMessageRepository for SqliteStore {
                         key: AlertMessageKey::new(
                             &chat_provider,
                             surface,
-                            destination_from_db(&destination),
+                            AlertDestination::from_db(&destination)?.0,
                             &message_id,
                         ),
                         lines,
@@ -156,7 +156,7 @@ impl AlertMessageRepository for SqliteStore {
         let key = key.clone();
         let lines = lines.to_vec();
         self.with_writer("commit_alert_message_strikes", move |connection| {
-            let destination = destination_to_db(key.destination.as_deref())?;
+            let destination = AlertDestination(key.destination.as_deref()).into_db()?;
             let transaction = connection
                 .transaction()
                 .context("starting alert-message strike transaction")?;
@@ -190,7 +190,7 @@ impl AlertMessageRepository for SqliteStore {
     async fn forget_message(&self, key: &AlertMessageKey) -> Result<()> {
         let key = key.clone();
         self.with_writer("forget_alert_message", move |connection| {
-            let destination = destination_to_db(key.destination.as_deref())?;
+            let destination = AlertDestination(key.destination.as_deref()).into_db()?;
             connection
                 .execute(
                     "DELETE FROM alert_message_slots
@@ -573,13 +573,17 @@ mod tests {
     async fn assert_pending_keys(
         store: &SqliteStore,
         announced: &AlertLine,
+        seeded: &[AlertMessageKey],
         expected: &[AlertMessageKey],
     ) {
-        for (chat_provider, surface) in [
-            ("first", AlertSurface::DirectMessage),
-            ("second", AlertSurface::DirectMessage),
-            ("second", AlertSurface::Channel),
-        ] {
+        let mut scopes = Vec::new();
+        for key in seeded {
+            let scope = (key.chat_provider.as_str(), key.surface);
+            if !scopes.contains(&scope) {
+                scopes.push(scope);
+            }
+        }
+        for (chat_provider, surface) in scopes {
             let actual: Vec<_> = store
                 .plan_strikes(chat_provider, surface, &[id_of(announced)])
                 .await
@@ -606,49 +610,61 @@ mod tests {
     #[tokio::test]
     async fn planning_isolates_chat_providers_and_surfaces_with_reused_message_ids() {
         let (store, announced, keys) = seed_reused_message_ids().await;
-        assert_pending_keys(&store, &announced, &keys).await;
+        assert_pending_keys(&store, &announced, &keys, &keys).await;
     }
 
     #[tokio::test]
     async fn committing_strikes_changes_only_the_complete_message_key() {
         let (store, announced, keys) = seed_reused_message_ids().await;
         store.commit_strikes(&keys[1], &[0]).await.unwrap();
-        let expected = [keys[0].clone(), keys[2].clone(), keys[3].clone()];
-        assert_pending_keys(&store, &announced, &expected).await;
+        let expected: Vec<_> = keys
+            .iter()
+            .filter(|key| *key != &keys[1])
+            .cloned()
+            .collect();
+        assert_pending_keys(&store, &announced, &keys, &expected).await;
     }
 
     #[tokio::test]
     async fn forgetting_changes_only_the_complete_message_key() {
         let (store, announced, keys) = seed_reused_message_ids().await;
         store.forget_message(&keys[1]).await.unwrap();
-        let expected = [keys[0].clone(), keys[2].clone(), keys[3].clone()];
-        assert_pending_keys(&store, &announced, &expected).await;
+        let expected: Vec<_> = keys
+            .iter()
+            .filter(|key| *key != &keys[1])
+            .cloned()
+            .collect();
+        assert_pending_keys(&store, &announced, &keys, &expected).await;
+    }
+
+    async fn seed_implicit_channel_message() -> (SqliteStore, AlertLine, AlertMessageKey) {
+        let store = SqliteStore::open_in_memory().await.unwrap();
+        let announced = line("Court 1", 8);
+        record(&store, "42", std::slice::from_ref(&announced)).await;
+        let invalid = AlertMessageKey::new("discord", AlertSurface::Channel, Some(""), "42");
+        (store, announced, invalid)
+    }
+
+    async fn assert_implicit_channel_message_unchanged(store: &SqliteStore, announced: &AlertLine) {
+        let pending = plan(store, &[id_of(announced)]).await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].message.key.destination, None);
     }
 
     #[tokio::test]
     async fn an_empty_destination_cannot_commit_an_implicit_channel_message() {
-        let store = SqliteStore::open_in_memory().await.unwrap();
-        let announced = line("Court 1", 8);
-        record(&store, "42", std::slice::from_ref(&announced)).await;
-        let invalid = AlertMessageKey::new("discord", AlertSurface::Channel, Some(""), "42");
+        let (store, announced, invalid) = seed_implicit_channel_message().await;
 
         assert!(store.commit_strikes(&invalid, &[0]).await.is_err());
-        let pending = plan(&store, &[id_of(&announced)]).await;
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].message.key.destination, None);
+        assert_implicit_channel_message_unchanged(&store, &announced).await;
     }
 
     #[tokio::test]
     async fn an_empty_destination_cannot_forget_an_implicit_channel_message() {
-        let store = SqliteStore::open_in_memory().await.unwrap();
-        let announced = line("Court 1", 8);
-        record(&store, "42", std::slice::from_ref(&announced)).await;
-        let invalid = AlertMessageKey::new("discord", AlertSurface::Channel, Some(""), "42");
+        let (store, announced, invalid) = seed_implicit_channel_message().await;
 
         assert!(store.forget_message(&invalid).await.is_err());
-        let pending = plan(&store, &[id_of(&announced)]).await;
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].message.key.destination, None);
+        assert_implicit_channel_message_unchanged(&store, &announced).await;
     }
 
     #[tokio::test]

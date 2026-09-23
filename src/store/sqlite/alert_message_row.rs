@@ -6,16 +6,19 @@ use crate::model::{AlertLine, AlertSurface};
 
 use super::DbRepr;
 
-pub(super) fn destination_to_db(destination: Option<&str>) -> anyhow::Result<&str> {
-    anyhow::ensure!(
-        destination != Some(""),
-        "an alert destination must not be empty"
-    );
-    Ok(destination.unwrap_or(""))
-}
+pub(super) struct AlertDestination<'a>(pub(super) Option<&'a str>);
 
-pub(super) fn destination_from_db(destination: &str) -> Option<&str> {
-    (!destination.is_empty()).then_some(destination)
+impl<'a> DbRepr for AlertDestination<'a> {
+    type Db = &'a str;
+
+    fn into_db(self) -> anyhow::Result<Self::Db> {
+        anyhow::ensure!(self.0 != Some(""), "an alert destination must not be empty");
+        Ok(self.0.unwrap_or(""))
+    }
+
+    fn from_db(destination: Self::Db) -> rusqlite::Result<Self> {
+        Ok(Self((!destination.is_empty()).then_some(destination)))
+    }
 }
 
 pub(super) struct AlertMessageRow {
