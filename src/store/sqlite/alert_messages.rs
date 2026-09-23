@@ -29,7 +29,7 @@ impl AlertMessageRepository for SqliteStore {
                 let mut statement = transaction
                     .prepare(
                         "INSERT INTO alert_message_slots
-                     (provider, surface, destination, message_id, line_index, club,
+                     (chat_provider, surface, destination, message_id, line_index, club,
                       court_id, court_name, starts_at, ends_at, struck)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)",
                     )
@@ -37,7 +37,7 @@ impl AlertMessageRepository for SqliteStore {
                 for (index, line) in lines.into_iter().enumerate() {
                     statement
                         .execute(params![
-                            key.provider,
+                            key.chat_provider,
                             key.surface.as_db(),
                             key.destination.as_deref().unwrap_or(""),
                             key.id,
@@ -60,11 +60,11 @@ impl AlertMessageRepository for SqliteStore {
 
     async fn plan_strikes(
         &self,
-        provider: &str,
+        chat_provider: &str,
         surface: AlertSurface,
         slots: &[BookableSlotId],
     ) -> Result<Vec<StrikePlan>> {
-        let provider = provider.to_owned();
+        let chat_provider = chat_provider.to_owned();
         let slots = slots.to_vec();
         self.with_reader("plan_alert_message_strikes", move |connection| {
             // Lookups and complete message loads must observe the same snapshot.
@@ -76,7 +76,7 @@ impl AlertMessageRepository for SqliteStore {
                 let mut find = transaction
                     .prepare(
                         "SELECT message_id, destination, line_index FROM alert_message_slots
-                         WHERE provider = ?1 AND surface = ?2
+                         WHERE chat_provider = ?1 AND surface = ?2
                            AND court_id = ?3 AND starts_at = ?4 AND struck = 0",
                     )
                     .context("preparing alert-message slot lookup")?;
@@ -84,7 +84,7 @@ impl AlertMessageRepository for SqliteStore {
                     let rows = find
                         .query_map(
                             params![
-                                provider,
+                                chat_provider,
                                 surface.as_db(),
                                 slot.court_id.into_db()?,
                                 slot.starts_at.into_db()?
@@ -113,7 +113,7 @@ impl AlertMessageRepository for SqliteStore {
                 .prepare(
                     "SELECT line_index, club, court_id, court_name, starts_at, ends_at, struck
                      FROM alert_message_slots
-                     WHERE provider = ?1 AND surface = ?2 AND destination = ?3 AND message_id = ?4
+                     WHERE chat_provider = ?1 AND surface = ?2 AND destination = ?3 AND message_id = ?4
                      ORDER BY line_index",
                 )
                 .context("preparing alert-message load")?;
@@ -122,7 +122,7 @@ impl AlertMessageRepository for SqliteStore {
                 newly_struck.dedup();
                 let rows = load
                     .query_map(
-                        params![provider, surface.as_db(), destination, message_id],
+                        params![chat_provider, surface.as_db(), destination, message_id],
                         |row| {
                             let row = AlertMessageRow::try_from(row)?;
                             let index = row.line_index;
@@ -139,7 +139,7 @@ impl AlertMessageRepository for SqliteStore {
                 plans.push(StrikePlan {
                     message: AlertMessage {
                         key: AlertMessageKey::new(
-                            &provider,
+                            &chat_provider,
                             surface,
                             (!destination.is_empty()).then_some(destination.as_str()),
                             &message_id,
@@ -165,14 +165,14 @@ impl AlertMessageRepository for SqliteStore {
                 let mut statement = transaction
                     .prepare(
                         "UPDATE alert_message_slots SET struck = 1
-                         WHERE provider = ?1 AND surface = ?2 AND destination = ?3
+                         WHERE chat_provider = ?1 AND surface = ?2 AND destination = ?3
                            AND message_id = ?4 AND line_index = ?5",
                     )
                     .context("preparing alert-message strike")?;
                 for line in lines {
                     statement
                         .execute(params![
-                            key.provider,
+                            key.chat_provider,
                             key.surface.as_db(),
                             key.destination.as_deref().unwrap_or(""),
                             key.id,
@@ -194,9 +194,9 @@ impl AlertMessageRepository for SqliteStore {
             connection
                 .execute(
                     "DELETE FROM alert_message_slots
-                 WHERE provider = ?1 AND surface = ?2 AND destination = ?3 AND message_id = ?4",
+                 WHERE chat_provider = ?1 AND surface = ?2 AND destination = ?3 AND message_id = ?4",
                     params![
-                        key.provider,
+                        key.chat_provider,
                         key.surface.as_db(),
                         key.destination.as_deref().unwrap_or(""),
                         key.id
@@ -214,9 +214,9 @@ impl AlertMessageRepository for SqliteStore {
             let removed = connection
                 .execute(
                     "DELETE FROM alert_message_slots
-                     WHERE (provider, surface, destination, message_id) IN (
-                         SELECT provider, surface, destination, message_id FROM alert_message_slots
-                         GROUP BY provider, surface, destination, message_id HAVING max(ends_at) <= ?1
+                     WHERE (chat_provider, surface, destination, message_id) IN (
+                         SELECT chat_provider, surface, destination, message_id FROM alert_message_slots
+                         GROUP BY chat_provider, surface, destination, message_id HAVING max(ends_at) <= ?1
                      )",
                     params![now],
                 )
@@ -241,7 +241,7 @@ impl SqliteStore {
             connection
                 .execute(
                     "INSERT INTO alert_message_slots
-                     (provider, surface, destination, message_id, line_index, club,
+                     (chat_provider, surface, destination, message_id, line_index, club,
                       court_id, court_name, starts_at, ends_at, struck)
                      VALUES ('discord', 'channel', '', ?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
                     params![
@@ -553,7 +553,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn message_keys_isolate_providers_destinations_and_surfaces() {
+    async fn message_keys_isolate_chat_providers_destinations_and_surfaces() {
         let store = SqliteStore::open_in_memory().await.unwrap();
         let announced = line("Court 1", 8);
         let keys = [

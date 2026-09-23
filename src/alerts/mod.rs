@@ -17,12 +17,12 @@ pub enum EditOutcome {
     Gone,
 }
 
-pub struct AlertLifecycle {
+pub struct AlertMessageLifecycle {
     messages: Arc<dyn AlertMessageRepository>,
     pruner: DailyPruner,
 }
 
-impl AlertLifecycle {
+impl AlertMessageLifecycle {
     pub fn new(messages: Arc<dyn AlertMessageRepository>) -> Self {
         Self {
             pruner: DailyPruner::new(messages.clone()),
@@ -30,47 +30,52 @@ impl AlertLifecycle {
         }
     }
 
-    pub fn tracker(self: &Arc<Self>, provider: &str, surface: AlertSurface) -> AlertTracker {
-        AlertTracker {
+    pub fn tracker(
+        self: &Arc<Self>,
+        chat_provider: &str,
+        surface: AlertSurface,
+    ) -> AlertMessageTracker {
+        AlertMessageTracker {
             lifecycle: self.clone(),
-            provider: provider.to_owned(),
+            chat_provider: chat_provider.to_owned(),
             surface,
         }
     }
 }
 
-/// A provider and surface share the lifecycle's retention policy while keeping
-/// their message identity and edit plans isolated from other adapters.
-pub struct AlertTracker {
-    lifecycle: Arc<AlertLifecycle>,
-    provider: String,
+pub struct AlertMessageTracker {
+    lifecycle: Arc<AlertMessageLifecycle>,
+    chat_provider: String,
     surface: AlertSurface,
 }
 
-impl AlertTracker {
-    /// Called after a successful send. A tracking failure must not resend an
-    /// already delivered alert.
+impl AlertMessageTracker {
+    /// Records a successfully delivered alert. Persistence errors are logged.
     pub async fn record(&self, destination: Option<&str>, message_id: &str, lines: &[AlertLine]) {
-        let key = AlertMessageKey::new(&self.provider, self.surface, destination, message_id);
+        let key = AlertMessageKey::new(&self.chat_provider, self.surface, destination, message_id);
         if let Err(error) = self.lifecycle.messages.record_message(&key, lines).await {
-            warn!(provider = %self.provider, message_id, error = %format!("{error:#}"),
-                  "recording an alert failed; it cannot be updated later");
+            warn!(
+                chat_provider = %self.chat_provider,
+                message_id,
+                error = %format!("{error:#}"),
+                "recording an alert failed; it cannot be updated later"
+            );
         }
     }
 
-    /// Edit before pruning can discard tracked messages. Keep pruning shared
-    /// across all providers, including when planning an edit fails.
-    pub async fn strike_taken<E, F>(&self, slots: &[BookableSlotId], edit: E) -> Result<()>
+    /// Edits messages for taken slots, then runs shared retention.
+    /// Returns planning errors; individual edit and persistence errors are logged.
+    pub async fn mark_taken<E, F>(&self, slots: &[BookableSlotId], edit: E) -> Result<()>
     where
         E: Fn(AlertMessage) -> F,
         F: Future<Output = Result<EditOutcome>>,
     {
-        let result = self.edit_taken(slots, edit).await;
+        let result = self.apply_edits(slots, edit).await;
         self.lifecycle.pruner.run().await;
         result
     }
 
-    async fn edit_taken<E, F>(&self, slots: &[BookableSlotId], edit: E) -> Result<()>
+    async fn apply_edits<E, F>(&self, slots: &[BookableSlotId], edit: E) -> Result<()>
     where
         E: Fn(AlertMessage) -> F,
         F: Future<Output = Result<EditOutcome>>,
@@ -80,7 +85,7 @@ impl AlertTracker {
         }
         let messages = &self.lifecycle.messages;
         let plans = messages
-            .plan_strikes(&self.provider, self.surface, slots)
+            .plan_strikes(&self.chat_provider, self.surface, slots)
             .await
             .context("planning alert edits")?;
         for plan in plans {
@@ -88,20 +93,36 @@ impl AlertTracker {
             match edit(plan.message).await {
                 Ok(EditOutcome::Edited) => {
                     if let Err(error) = messages.commit_strikes(&key, &plan.newly_struck).await {
-                        warn!(provider = %key.provider, message_id = %key.id, error = %format!("{error:#}"),
-                              "alert edit succeeded but recording it failed");
+                        warn!(
+                            chat_provider = %key.chat_provider,
+                            message_id = %key.id,
+                            error = %format!("{error:#}"),
+                            "alert edit succeeded but recording it failed"
+                        );
                     }
                 }
                 Ok(EditOutcome::Gone) => {
-                    debug!(provider = %key.provider, message_id = %key.id, "alert message no longer exists; forgetting it");
+                    debug!(
+                        chat_provider = %key.chat_provider,
+                        message_id = %key.id,
+                        "alert message no longer exists; forgetting it"
+                    );
                     if let Err(error) = messages.forget_message(&key).await {
-                        warn!(provider = %key.provider, message_id = %key.id, error = %format!("{error:#}"),
-                              "forgetting a deleted alert failed");
+                        warn!(
+                            chat_provider = %key.chat_provider,
+                            message_id = %key.id,
+                            error = %format!("{error:#}"),
+                            "forgetting a deleted alert failed"
+                        );
                     }
                 }
                 Err(error) => {
-                    warn!(provider = %key.provider, message_id = %key.id, error = %format!("{error:#}"),
-                                    "updating an alert failed; its tracked lines stay unchanged")
+                    warn!(
+                        chat_provider = %key.chat_provider,
+                        message_id = %key.id,
+                        error = %format!("{error:#}"),
+                        "updating an alert failed; its tracked lines stay unchanged"
+                    );
                 }
             }
         }

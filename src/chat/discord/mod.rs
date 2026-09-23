@@ -7,7 +7,7 @@ use serenity::Client;
 use serenity::all::{GatewayIntents, GuildId};
 use serenity::async_trait;
 
-use crate::alerts::AlertLifecycle;
+use crate::alerts::AlertMessageLifecycle;
 use crate::chat::{ChatProvider, ReadySignal};
 use crate::config::DiscordSettings;
 use crate::model::ProviderUserRef;
@@ -40,11 +40,11 @@ pub struct DiscordProvider {
     token: String,
     guild_id: Option<GuildId>,
     admin_ids: HashSet<ProviderUserRef>,
-    alerts: Arc<AlertLifecycle>,
+    alert_lifecycle: Arc<AlertMessageLifecycle>,
 }
 
 impl DiscordProvider {
-    pub fn new(settings: DiscordSettings, alerts: Arc<AlertLifecycle>) -> Self {
+    pub fn new(settings: DiscordSettings, alert_lifecycle: Arc<AlertMessageLifecycle>) -> Self {
         Self {
             token: settings.token,
             guild_id: settings.guild_id.map(GuildId::new),
@@ -56,7 +56,7 @@ impl DiscordProvider {
                     user_id: id,
                 })
                 .collect(),
-            alerts,
+            alert_lifecycle,
         }
     }
 }
@@ -85,7 +85,10 @@ impl ChatProvider for DiscordProvider {
 
         service.register_sender(
             PROVIDER_NAME,
-            Arc::new(DiscordSender::new(client.http.clone(), self.alerts.clone())),
+            Arc::new(DiscordSender::new(
+                client.http.clone(),
+                self.alert_lifecycle.clone(),
+            )),
         );
 
         client.start().await.context("starting serenity client")?;
@@ -106,7 +109,7 @@ mod tests {
                 guild_id: Some(42),
                 admin_ids: HashSet::from(["123".to_string()]),
             },
-            Arc::new(AlertLifecycle::new(store)),
+            Arc::new(AlertMessageLifecycle::new(store)),
         );
         assert_eq!(
             provider.admins(),

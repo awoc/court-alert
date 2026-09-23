@@ -27,12 +27,12 @@ impl AlertMessageRepository for Repository {
     }
     async fn plan_strikes(
         &self,
-        provider: &str,
+        chat_provider: &str,
         surface: AlertSurface,
         slots: &[BookableSlotId],
     ) -> Result<Vec<StrikePlan>> {
         anyhow::ensure!(!self.faults.plan, "planning failed");
-        self.store.plan_strikes(provider, surface, slots).await
+        self.store.plan_strikes(chat_provider, surface, slots).await
     }
     async fn commit_strikes(&self, key: &AlertMessageKey, lines: &[u32]) -> Result<()> {
         anyhow::ensure!(!self.faults.commit, "commit failed");
@@ -52,7 +52,7 @@ impl AlertMessageRepository for Repository {
     }
 }
 
-async fn lifecycle(faults: Faults) -> (Arc<AlertLifecycle>, Arc<Repository>) {
+async fn lifecycle(faults: Faults) -> (Arc<AlertMessageLifecycle>, Arc<Repository>) {
     let repository = Arc::new(Repository {
         store: Arc::new(SqliteStore::open_in_memory().await.unwrap()),
         faults,
@@ -60,7 +60,7 @@ async fn lifecycle(faults: Faults) -> (Arc<AlertLifecycle>, Arc<Repository>) {
         fail_next_prune: AtomicBool::new(false),
     });
     (
-        Arc::new(AlertLifecycle::new(repository.clone())),
+        Arc::new(AlertMessageLifecycle::new(repository.clone())),
         repository,
     )
 }
@@ -85,7 +85,7 @@ fn slot(line: &AlertLine) -> BookableSlotId {
 }
 
 #[tokio::test]
-async fn providers_share_pruning_but_edit_only_their_own_messages() {
+async fn chat_providers_share_pruning_but_edit_only_their_own_messages() {
     let (lifecycle, repository) = lifecycle(Faults::default()).await;
     let first = lifecycle.tracker("first", AlertSurface::DirectMessage);
     let second = lifecycle.tracker("second", AlertSurface::DirectMessage);
@@ -104,25 +104,25 @@ async fn providers_share_pruning_but_edit_only_their_own_messages() {
         async { Ok(EditOutcome::Edited) }
     };
     let (a, b) = tokio::join!(
-        first.strike_taken(&slots, &edit),
-        second.strike_taken(&slots, &edit)
+        first.mark_taken(&slots, &edit),
+        second.mark_taken(&slots, &edit)
     );
     a.unwrap();
     b.unwrap();
-    let mut providers: Vec<_> = edited
+    let mut chat_providers: Vec<_> = edited
         .lock()
         .unwrap()
         .iter()
-        .map(|k| k.provider.clone())
+        .map(|k| k.chat_provider.clone())
         .collect();
-    providers.sort();
-    assert_eq!(providers, ["first", "second"]);
+    chat_providers.sort();
+    assert_eq!(chat_providers, ["first", "second"]);
     assert_eq!(repository.prunes.load(Ordering::SeqCst), 1);
-    for provider in ["first", "second"] {
+    for chat_provider in ["first", "second"] {
         assert!(
             repository
                 .store
-                .plan_strikes(provider, AlertSurface::DirectMessage, &slots)
+                .plan_strikes(chat_provider, AlertSurface::DirectMessage, &slots)
                 .await
                 .unwrap()
                 .is_empty()
@@ -142,7 +142,7 @@ async fn a_failed_edit_keeps_its_plan_and_does_not_block_other_messages() {
     }
     let slots = [slot(&announced)];
     tracker
-        .strike_taken(&slots, |message| async move {
+        .mark_taken(&slots, |message| async move {
             if message.key.id == "failed" {
                 anyhow::bail!("transport failed");
             }
@@ -159,7 +159,7 @@ async fn a_failed_edit_keeps_its_plan_and_does_not_block_other_messages() {
     assert_eq!(pending[0].message.key.id, "failed");
 
     tracker
-        .strike_taken(&slots, |_| async { Ok(EditOutcome::Gone) })
+        .mark_taken(&slots, |_| async { Ok(EditOutcome::Gone) })
         .await
         .unwrap();
     assert!(
@@ -188,7 +188,7 @@ async fn failed_edit_persistence_leaves_the_message_tracked() {
             .await;
         let slots = [slot(&announced)];
         tracker
-            .strike_taken(&slots, |_| async {
+            .mark_taken(&slots, |_| async {
                 Ok(if gone {
                     EditOutcome::Gone
                 } else {
@@ -221,7 +221,7 @@ async fn planning_failure_still_prunes_and_failed_pruning_can_be_retried() {
     repository.fail_next_prune.store(true, Ordering::SeqCst);
     assert!(
         tracker
-            .strike_taken(&[slot(&announced)], |_| async {
+            .mark_taken(&[slot(&announced)], |_| async {
                 panic!("no plan should reach the adapter")
             })
             .await
@@ -230,7 +230,7 @@ async fn planning_failure_still_prunes_and_failed_pruning_can_be_retried() {
     assert_eq!(repository.prunes.load(Ordering::SeqCst), 1);
     assert!(
         tracker
-            .strike_taken(&[slot(&announced)], |_| async {
+            .mark_taken(&[slot(&announced)], |_| async {
                 panic!("no plan should reach the adapter")
             })
             .await
@@ -239,7 +239,7 @@ async fn planning_failure_still_prunes_and_failed_pruning_can_be_retried() {
     assert_eq!(repository.prunes.load(Ordering::SeqCst), 2);
     assert!(
         tracker
-            .strike_taken(&[slot(&announced)], |_| async {
+            .mark_taken(&[slot(&announced)], |_| async {
                 panic!("no plan should reach the adapter")
             })
             .await
@@ -266,14 +266,14 @@ async fn edits_precede_pruning_and_the_grace_keeps_other_surfaces_available() {
         .await;
     let edits = AtomicUsize::new(0);
     channel
-        .strike_taken(&[slot(&old)], |_| async {
+        .mark_taken(&[slot(&old)], |_| async {
             assert_eq!(repository.prunes.load(Ordering::SeqCst), 0);
             edits.fetch_add(1, Ordering::SeqCst);
             Ok(EditOutcome::Edited)
         })
         .await
         .unwrap();
-    dm.strike_taken(&[slot(&recent)], |_| async {
+    dm.mark_taken(&[slot(&recent)], |_| async {
         edits.fetch_add(1, Ordering::SeqCst);
         Ok(EditOutcome::Edited)
     })

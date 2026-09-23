@@ -566,7 +566,7 @@ mod tests {
         conn.execute_batch(UPGRADE_TO_V6).unwrap();
         ensure_current(&mut conn).unwrap();
         let rows: Vec<(String, String, String, String, Option<String>, i64)> = conn
-            .prepare("SELECT provider, surface, destination, message_id, club, struck FROM alert_message_slots ORDER BY message_id").unwrap()
+            .prepare("SELECT chat_provider, surface, destination, message_id, club, struck FROM alert_message_slots ORDER BY message_id").unwrap()
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).unwrap()
             .collect::<rusqlite::Result<_>>().unwrap();
         assert_eq!(

@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use crate::alerts::{AlertLifecycle, AlertTracker, EditOutcome};
+use crate::alerts::{AlertMessageLifecycle, AlertMessageTracker, EditOutcome};
 use crate::model::{AlertSurface, AvailabilityChange};
 use crate::ports::AvailabilityChangeSink;
 
@@ -16,11 +16,14 @@ use super::{DISCORD_UNKNOWN_MESSAGE, PROVIDER_NAME};
 pub struct DiscordNotifier {
     webhook_url: reqwest::Url,
     client: reqwest::Client,
-    alerts: AlertTracker,
+    alert_tracker: AlertMessageTracker,
 }
 
 impl DiscordNotifier {
-    pub fn new(mut webhook_url: reqwest::Url, alerts: Arc<AlertLifecycle>) -> Result<Self> {
+    pub fn new(
+        mut webhook_url: reqwest::Url,
+        alert_lifecycle: Arc<AlertMessageLifecycle>,
+    ) -> Result<Self> {
         // Avoid producing `.../token//messages/{id}` in `edit_url`.
         webhook_url
             .path_segments_mut()
@@ -33,7 +36,7 @@ impl DiscordNotifier {
         Ok(Self {
             webhook_url,
             client,
-            alerts: alerts.tracker(PROVIDER_NAME, AlertSurface::Channel),
+            alert_tracker: alert_lifecycle.tracker(PROVIDER_NAME, AlertSurface::Channel),
         })
     }
 
@@ -75,7 +78,7 @@ impl DiscordNotifier {
                 "discord: posting"
             );
             match self.post(&content).await {
-                Ok(message_id) => self.alerts.record(None, &message_id, &chunk).await,
+                Ok(message_id) => self.alert_tracker.record(None, &message_id, &chunk).await,
                 Err(error) => warn!(
                     error = %format!("{error:#}"),
                     "discord: posting an alert failed; its slots cannot be struck later"
@@ -129,8 +132,8 @@ impl DiscordNotifier {
     async fn strike_removed(&self, changes: &[AvailabilityChange]) {
         let removed = AvailabilityChange::taken_ids(changes);
         let struck = self
-            .alerts
-            .strike_taken(&removed, |message| async move {
+            .alert_tracker
+            .mark_taken(&removed, |message| async move {
                 self.edit(&message.key.id, &render(&message.lines)).await
             })
             .await;
@@ -150,7 +153,6 @@ impl AvailabilityChangeSink for DiscordNotifier {
         if changes.is_empty() {
             return Ok(());
         }
-        // Strike before pruning can drop old rows; prune before recording new rows.
         self.strike_removed(changes).await;
         self.post_added(changes).await;
         Ok(())
@@ -186,12 +188,12 @@ mod tests {
         let url = format!("{}/api/webhooks/123/token", server.uri())
             .parse()
             .unwrap();
-        let alerts = Arc::new(AlertLifecycle::new(store.clone()));
-        (DiscordNotifier::new(url, alerts).unwrap(), store)
+        let alert_lifecycle = Arc::new(AlertMessageLifecycle::new(store.clone()));
+        (DiscordNotifier::new(url, alert_lifecycle).unwrap(), store)
     }
 
     fn disable_pruning_for_today(notifier: &DiscordNotifier) {
-        notifier.alerts.skip_pruning_today();
+        notifier.alert_tracker.skip_pruning_today();
     }
 
     async fn plan_strikes(store: &Arc<SqliteStore>, slot: &BookableSlot) -> Vec<StrikePlan> {
@@ -261,7 +263,7 @@ mod tests {
             "pruning ran before the post, not after it"
         );
         assert_eq!(
-            notifier.alerts.last_pruned(),
+            notifier.alert_tracker.last_pruned(),
             Some(crate::time::today_berlin()),
             "pruning did run — the rows survived on merit, not by being skipped"
         );
@@ -443,8 +445,8 @@ mod tests {
         let url = format!("{}/api/webhooks/123/token/", server.uri())
             .parse()
             .unwrap();
-        let alerts = Arc::new(AlertLifecycle::new(store.clone()));
-        let notifier = DiscordNotifier::new(url, alerts).unwrap();
+        let alert_lifecycle = Arc::new(AlertMessageLifecycle::new(store.clone()));
+        let notifier = DiscordNotifier::new(url, alert_lifecycle).unwrap();
         let gone = slot("Court 2", 18);
         seed(&store, "1408", &gone).await;
 
@@ -611,10 +613,10 @@ mod tests {
         let changes = [AvailabilityChange::BecameBookable(added)];
 
         notifier.publish(&changes).await.unwrap();
-        let after_first = notifier.alerts.last_pruned();
+        let after_first = notifier.alert_tracker.last_pruned();
         notifier.publish(&changes).await.unwrap();
 
         assert_eq!(after_first, Some(crate::time::today_berlin()));
-        assert_eq!(notifier.alerts.last_pruned(), after_first);
+        assert_eq!(notifier.alert_tracker.last_pruned(), after_first);
     }
 }

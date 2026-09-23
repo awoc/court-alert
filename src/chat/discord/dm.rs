@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use serenity::all::{ChannelId, EditMessage, Http, HttpError, MessageId, StatusCode, UserId};
 use serenity::async_trait;
 
-use crate::alerts::{AlertLifecycle, AlertTracker, EditOutcome};
+use crate::alerts::{AlertMessageLifecycle, AlertMessageTracker, EditOutcome};
 use crate::model::{AlertSurface, BookableSlotId};
 use crate::subscriptions::contract::{AvailabilityAlert, DirectMessageSender};
 
@@ -14,14 +14,14 @@ use super::{DISCORD_UNKNOWN_MESSAGE, PROVIDER_NAME};
 
 pub(super) struct DiscordSender {
     http: Arc<Http>,
-    alerts: AlertTracker,
+    alert_tracker: AlertMessageTracker,
 }
 
 impl DiscordSender {
-    pub(super) fn new(http: Arc<Http>, alerts: Arc<AlertLifecycle>) -> Self {
+    pub(super) fn new(http: Arc<Http>, alert_lifecycle: Arc<AlertMessageLifecycle>) -> Self {
         Self {
             http,
-            alerts: alerts.tracker(PROVIDER_NAME, AlertSurface::DirectMessage),
+            alert_tracker: alert_lifecycle.tracker(PROVIDER_NAME, AlertSurface::DirectMessage),
         }
     }
 
@@ -61,7 +61,7 @@ impl DirectMessageSender for DiscordSender {
                 .say(&self.http, render(&chunk))
                 .await
                 .context("sending DM")?;
-            self.alerts
+            self.alert_tracker
                 .record(Some(&channel.id.to_string()), &sent.id.to_string(), &chunk)
                 .await;
         }
@@ -69,8 +69,8 @@ impl DirectMessageSender for DiscordSender {
     }
 
     async fn strike_taken(&self, slots: &[BookableSlotId]) -> Result<()> {
-        self.alerts
-            .strike_taken(slots, |message| async move {
+        self.alert_tracker
+            .mark_taken(slots, |message| async move {
                 let channel = message.key.destination.as_deref().context(
                     "a recorded direct message has no channel, so it cannot be edited again",
                 )?;
@@ -143,8 +143,8 @@ mod tests {
             .proxy(server.uri())
             .ratelimiter_disabled(true)
             .build();
-        let alerts = Arc::new(AlertLifecycle::new(store.clone()));
-        (DiscordSender::new(Arc::new(http), alerts), store)
+        let alert_lifecycle = Arc::new(AlertMessageLifecycle::new(store.clone()));
+        (DiscordSender::new(Arc::new(http), alert_lifecycle), store)
     }
 
     fn slot(court: &str) -> BookableSlot {
@@ -265,7 +265,7 @@ mod tests {
             .mount(&server)
             .await;
         let (sender, store) = sender(&server).await;
-        sender.alerts.skip_pruning_today();
+        sender.alert_tracker.skip_pruning_today();
         let taken = slot("Court 2");
         seed(&store, "1408", &taken).await;
 
@@ -288,7 +288,7 @@ mod tests {
             .mount(&server)
             .await;
         let (sender, store) = sender(&server).await;
-        sender.alerts.skip_pruning_today();
+        sender.alert_tracker.skip_pruning_today();
         let taken = slot("Court 2");
         seed(&store, "1408", &taken).await;
 
@@ -311,7 +311,7 @@ mod tests {
             .mount(&server)
             .await;
         let (sender, store) = sender(&server).await;
-        sender.alerts.skip_pruning_today();
+        sender.alert_tracker.skip_pruning_today();
         let taken = slot("Court 2");
         seed(&store, "1408", &taken).await;
 
@@ -337,7 +337,7 @@ mod tests {
             .mount(&server)
             .await;
         let (sender, store) = sender(&server).await;
-        sender.alerts.skip_pruning_today();
+        sender.alert_tracker.skip_pruning_today();
         let taken = slot("Court 2");
         seed(&store, "1408", &taken).await;
 
@@ -366,7 +366,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            sender.alerts.last_pruned(),
+            sender.alert_tracker.last_pruned(),
             Some(crate::time::today_berlin())
         );
         assert_eq!(
