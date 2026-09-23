@@ -20,9 +20,33 @@ pub struct AlertLine {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AlertMessage {
+pub struct AlertMessageKey {
+    pub chat_provider: String,
+    pub surface: AlertSurface,
+    /// Nonempty address within the chat provider. None is an implicit channel destination.
+    pub destination: Option<String>,
     pub id: String,
-    pub channel_id: Option<String>,
+}
+
+impl AlertMessageKey {
+    pub fn new(
+        chat_provider: &str,
+        surface: AlertSurface,
+        destination: Option<&str>,
+        id: &str,
+    ) -> Self {
+        Self {
+            chat_provider: chat_provider.to_owned(),
+            surface,
+            destination: destination.map(str::to_owned),
+            id: id.to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlertMessage {
+    pub key: AlertMessageKey,
     pub lines: Vec<AlertLine>,
 }
 

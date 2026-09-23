@@ -7,11 +7,10 @@ use serenity::Client;
 use serenity::all::{GatewayIntents, GuildId};
 use serenity::async_trait;
 
-use crate::alerts::DailyPruner;
+use crate::alerts::AlertMessageLifecycle;
 use crate::chat::{ChatProvider, ReadySignal};
 use crate::config::DiscordSettings;
 use crate::model::ProviderUserRef;
-use crate::ports::AlertMessageRepository;
 use crate::subscriptions::SubscriptionService;
 
 mod commands;
@@ -22,7 +21,6 @@ mod handler;
 mod http;
 mod parse;
 mod render;
-mod strike;
 mod text;
 mod webhook;
 
@@ -32,6 +30,8 @@ pub use webhook::DiscordNotifier;
 use dm::DiscordSender;
 use handler::Handler;
 
+const DISCORD_UNKNOWN_MESSAGE: i64 = 10008;
+
 pub const PROVIDER_NAME: &str = "discord";
 
 pub const MAX_CLUB_CHOICES: usize = 25;
@@ -40,16 +40,11 @@ pub struct DiscordProvider {
     token: String,
     guild_id: Option<GuildId>,
     admin_ids: HashSet<ProviderUserRef>,
-    messages: Arc<dyn AlertMessageRepository>,
-    pruner: Arc<DailyPruner>,
+    alert_lifecycle: Arc<AlertMessageLifecycle>,
 }
 
 impl DiscordProvider {
-    pub fn new(
-        settings: DiscordSettings,
-        messages: Arc<dyn AlertMessageRepository>,
-        pruner: Arc<DailyPruner>,
-    ) -> Self {
+    pub fn new(settings: DiscordSettings, alert_lifecycle: Arc<AlertMessageLifecycle>) -> Self {
         Self {
             token: settings.token,
             guild_id: settings.guild_id.map(GuildId::new),
@@ -61,8 +56,7 @@ impl DiscordProvider {
                     user_id: id,
                 })
                 .collect(),
-            messages,
-            pruner,
+            alert_lifecycle,
         }
     }
 }
@@ -93,8 +87,7 @@ impl ChatProvider for DiscordProvider {
             PROVIDER_NAME,
             Arc::new(DiscordSender::new(
                 client.http.clone(),
-                self.messages.clone(),
-                self.pruner.clone(),
+                self.alert_lifecycle.clone(),
             )),
         );
 
@@ -116,8 +109,7 @@ mod tests {
                 guild_id: Some(42),
                 admin_ids: HashSet::from(["123".to_string()]),
             },
-            store.clone(),
-            Arc::new(DailyPruner::new(store)),
+            Arc::new(AlertMessageLifecycle::new(store)),
         );
         assert_eq!(
             provider.admins(),

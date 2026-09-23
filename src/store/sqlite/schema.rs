@@ -8,7 +8,7 @@
 use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 const SCHEMA: &str = include_str!("../../../sql/schema.sql");
 
@@ -66,6 +66,8 @@ mod tests {
         include_str!("../../../sql/migrations/0003_subscription_surface.sql");
     const UPGRADE_TO_V4: &str = include_str!("../../../sql/migrations/0004_multi_venue.sql");
     const UPGRADE_TO_V5: &str = include_str!("../../../sql/migrations/0005_dm_alert_messages.sql");
+    const UPGRADE_TO_V6: &str =
+        include_str!("../../../sql/migrations/0006_provider_scoped_alert_messages.sql");
 
     const LEGACY_SCHEMA: &str = "
         CREATE TABLE subscriptions (
@@ -113,6 +115,7 @@ mod tests {
         conn.execute_batch(UPGRADE_TO_V3).unwrap();
         conn.execute_batch(UPGRADE_TO_V4).unwrap();
         conn.execute_batch(UPGRADE_TO_V5).unwrap();
+        conn.execute_batch(UPGRADE_TO_V6).unwrap();
         ensure_current(conn).unwrap();
     }
 
@@ -180,6 +183,7 @@ mod tests {
         conn.execute_batch(UPGRADE_TO_V3).unwrap();
         conn.execute_batch(UPGRADE_TO_V4).unwrap();
         conn.execute_batch(UPGRADE_TO_V5).unwrap();
+        conn.execute_batch(UPGRADE_TO_V6).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         assert!(table_sql(&conn, "bookable_slots").is_none());
         assert!(table_sql(&conn, "venue_state").is_none());
@@ -409,20 +413,20 @@ mod tests {
                      '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z', 2)",
             // struck outside the 0/1 domain
             "INSERT INTO alert_message_slots
-             VALUES ('channel', NULL, '1408', 0, NULL, '123e4567-e89b-12d3-a456-426614174000',
+             VALUES ('discord', 'channel', '', '1408', 0, NULL, '123e4567-e89b-12d3-a456-426614174000',
                      'Court 1', '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z', 2)",
             // timestamp that is not canonical UTC RFC 3339
             "INSERT INTO alert_message_slots
-             VALUES ('channel', NULL, '1408', 0, NULL, '123e4567-e89b-12d3-a456-426614174000',
+             VALUES ('discord', 'channel', '', '1408', 0, NULL, '123e4567-e89b-12d3-a456-426614174000',
                      'Court 1', '2026-07-13T08:00:00+00:00', '2026-07-13T09:00:00.000Z', 0)",
             "INSERT INTO alert_message_slots
-             VALUES ('email', NULL, '1408', 0, NULL, '123e4567-e89b-12d3-a456-426614174000',
+             VALUES ('discord', 'email', '', '1408', 0, NULL, '123e4567-e89b-12d3-a456-426614174000',
                      'Court 1', '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z', 0)",
             "INSERT INTO alert_message_slots
-             VALUES ('dm', NULL, '1408', 0, 'ZHS München', '123e4567-e89b-12d3-a456-426614174000',
+             VALUES ('discord', 'dm', NULL, '1408', 0, 'ZHS München', '123e4567-e89b-12d3-a456-426614174000',
                      'Court 1', '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z', 0)",
             "INSERT INTO alert_message_slots
-             VALUES ('channel', '99', '1408', 0, NULL, '123e4567-e89b-12d3-a456-426614174000',
+             VALUES ('', 'channel', '99', '1408', 0, NULL, '123e4567-e89b-12d3-a456-426614174000',
                      'Court 1', '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z', 0)",
         ];
         for statement in rejected {
@@ -536,5 +540,96 @@ mod tests {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
             .unwrap();
         assert!(ensure_current(&mut conn).is_err());
+    }
+
+    #[test]
+    fn fresh_and_migrated_schemas_require_dm_destinations_but_allow_both_channel_forms() {
+        let mut fresh = Connection::open_in_memory().unwrap();
+        ensure_current(&mut fresh).unwrap();
+        let mut migrated = legacy_database();
+        migrate_by_hand(&mut migrated);
+
+        for conn in [fresh, migrated] {
+            let insert = "INSERT INTO alert_message_slots
+                          (chat_provider, surface, destination, message_id, line_index,
+                           court_id, court_name, starts_at, ends_at)
+                          VALUES ('test', ?1, ?2, '42', 0,
+                                  '123e4567-e89b-12d3-a456-426614174000', 'Court 1',
+                                  '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z')";
+            let error = conn.execute(insert, ["dm", ""]).unwrap_err();
+            assert_eq!(
+                error.sqlite_error_code(),
+                Some(rusqlite::ErrorCode::ConstraintViolation)
+            );
+            for (surface, destination) in [("dm", "77"), ("channel", ""), ("channel", "77")] {
+                conn.execute(insert, [surface, destination]).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn sixth_migration_preserves_both_discord_surfaces_and_strike_state() {
+        let mut conn = legacy_database();
+        for migration in [
+            UPGRADE_TO_V1,
+            UPGRADE_TO_V2,
+            UPGRADE_TO_V3,
+            UPGRADE_TO_V4,
+            UPGRADE_TO_V5,
+        ] {
+            conn.execute_batch(migration).unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO alert_message_slots
+             (surface, channel_id, message_id, line_index, club, court_id, court_name, starts_at, ends_at, struck)
+             VALUES ('channel', NULL, '1408', 0, NULL, '92db7384-2dec-4888-a92a-4c2b6faac5f7', 'Court 1',
+                     '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z', 1),
+                    ('dm', '77', '1409', 0, 'A Club', '92db7384-2dec-4888-a92a-4c2b6faac5f7', 'Court 1',
+                     '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z', 0);"
+        ).unwrap();
+        conn.execute_batch(UPGRADE_TO_V6).unwrap();
+        ensure_current(&mut conn).unwrap();
+        let rows: Vec<(String, String, String, String, Option<String>, i64)> = conn
+            .prepare(
+                "SELECT chat_provider, surface, destination, message_id, club, struck
+                 FROM alert_message_slots ORDER BY message_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "discord".into(),
+                    "channel".into(),
+                    "".into(),
+                    "1408".into(),
+                    None,
+                    1
+                ),
+                (
+                    "discord".into(),
+                    "dm".into(),
+                    "77".into(),
+                    "1409".into(),
+                    Some("A Club".into()),
+                    0
+                ),
+            ]
+        );
+        assert_eq!(schema_version(&conn).unwrap(), 6);
+        assert!(conn.execute_batch(UPGRADE_TO_V6).is_err());
     }
 }
