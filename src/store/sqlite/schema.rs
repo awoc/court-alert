@@ -66,7 +66,6 @@ mod tests {
         include_str!("../../../sql/migrations/0003_subscription_surface.sql");
     const UPGRADE_TO_V4: &str = include_str!("../../../sql/migrations/0004_multi_venue.sql");
     const UPGRADE_TO_V5: &str = include_str!("../../../sql/migrations/0005_dm_alert_messages.sql");
-
     const UPGRADE_TO_V6: &str =
         include_str!("../../../sql/migrations/0006_provider_scoped_alert_messages.sql");
 
@@ -544,6 +543,31 @@ mod tests {
     }
 
     #[test]
+    fn fresh_and_migrated_schemas_require_dm_destinations_but_allow_both_channel_forms() {
+        let mut fresh = Connection::open_in_memory().unwrap();
+        ensure_current(&mut fresh).unwrap();
+        let mut migrated = legacy_database();
+        migrate_by_hand(&mut migrated);
+
+        for conn in [fresh, migrated] {
+            let insert = "INSERT INTO alert_message_slots
+                          (chat_provider, surface, destination, message_id, line_index,
+                           court_id, court_name, starts_at, ends_at)
+                          VALUES ('test', ?1, ?2, '42', 0,
+                                  '123e4567-e89b-12d3-a456-426614174000', 'Court 1',
+                                  '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z')";
+            let error = conn.execute(insert, ["dm", ""]).unwrap_err();
+            assert_eq!(
+                error.sqlite_error_code(),
+                Some(rusqlite::ErrorCode::ConstraintViolation)
+            );
+            for (surface, destination) in [("dm", "77"), ("channel", ""), ("channel", "77")] {
+                conn.execute(insert, [surface, destination]).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn sixth_migration_preserves_both_discord_surfaces_and_strike_state() {
         let mut conn = legacy_database();
         for migration in [
@@ -566,9 +590,24 @@ mod tests {
         conn.execute_batch(UPGRADE_TO_V6).unwrap();
         ensure_current(&mut conn).unwrap();
         let rows: Vec<(String, String, String, String, Option<String>, i64)> = conn
-            .prepare("SELECT chat_provider, surface, destination, message_id, club, struck FROM alert_message_slots ORDER BY message_id").unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).unwrap()
-            .collect::<rusqlite::Result<_>>().unwrap();
+            .prepare(
+                "SELECT chat_provider, surface, destination, message_id, club, struck
+                 FROM alert_message_slots ORDER BY message_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
         assert_eq!(
             rows,
             vec![

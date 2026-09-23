@@ -23,7 +23,7 @@ pub struct AlertLine {
 pub struct AlertMessageKey {
     pub chat_provider: String,
     pub surface: AlertSurface,
-    /// Opaque address within the chat provider. None means the adapter knows the destination.
+    /// Nonempty address within the chat provider. None is an implicit channel destination.
     pub destination: Option<String>,
     pub id: String,
 }

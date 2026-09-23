@@ -10,18 +10,16 @@ use crate::model::{
 };
 use crate::ports::AlertMessageRepository;
 
+use super::alert_message_row::{destination_from_db, destination_to_db};
 use super::{AlertMessageRow, DbRepr, SqliteStore};
 
 #[async_trait]
 impl AlertMessageRepository for SqliteStore {
     async fn record_message(&self, key: &AlertMessageKey, lines: &[AlertLine]) -> Result<()> {
-        anyhow::ensure!(
-            key.destination.as_deref() != Some(""),
-            "an alert destination must not be empty"
-        );
         let key = key.clone();
         let lines = lines.to_vec();
         self.with_writer("record_alert_message", move |connection| {
+            let destination = destination_to_db(key.destination.as_deref())?;
             let transaction = connection
                 .transaction()
                 .context("starting alert-message insert transaction")?;
@@ -29,9 +27,9 @@ impl AlertMessageRepository for SqliteStore {
                 let mut statement = transaction
                     .prepare(
                         "INSERT INTO alert_message_slots
-                     (chat_provider, surface, destination, message_id, line_index, club,
-                      court_id, court_name, starts_at, ends_at, struck)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)",
+                         (chat_provider, surface, destination, message_id, line_index, club,
+                          court_id, court_name, starts_at, ends_at, struck)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)",
                     )
                     .context("preparing alert-message insert")?;
                 for (index, line) in lines.into_iter().enumerate() {
@@ -39,7 +37,7 @@ impl AlertMessageRepository for SqliteStore {
                         .execute(params![
                             key.chat_provider,
                             key.surface.as_db(),
-                            key.destination.as_deref().unwrap_or(""),
+                            destination,
                             key.id,
                             index as u32,
                             line.club,
@@ -141,7 +139,7 @@ impl AlertMessageRepository for SqliteStore {
                         key: AlertMessageKey::new(
                             &chat_provider,
                             surface,
-                            (!destination.is_empty()).then_some(destination.as_str()),
+                            destination_from_db(&destination),
                             &message_id,
                         ),
                         lines,
@@ -158,6 +156,7 @@ impl AlertMessageRepository for SqliteStore {
         let key = key.clone();
         let lines = lines.to_vec();
         self.with_writer("commit_alert_message_strikes", move |connection| {
+            let destination = destination_to_db(key.destination.as_deref())?;
             let transaction = connection
                 .transaction()
                 .context("starting alert-message strike transaction")?;
@@ -174,7 +173,7 @@ impl AlertMessageRepository for SqliteStore {
                         .execute(params![
                             key.chat_provider,
                             key.surface.as_db(),
-                            key.destination.as_deref().unwrap_or(""),
+                            destination,
                             key.id,
                             line
                         ])
@@ -191,14 +190,15 @@ impl AlertMessageRepository for SqliteStore {
     async fn forget_message(&self, key: &AlertMessageKey) -> Result<()> {
         let key = key.clone();
         self.with_writer("forget_alert_message", move |connection| {
+            let destination = destination_to_db(key.destination.as_deref())?;
             connection
                 .execute(
                     "DELETE FROM alert_message_slots
-                 WHERE chat_provider = ?1 AND surface = ?2 AND destination = ?3 AND message_id = ?4",
+                     WHERE chat_provider = ?1 AND surface = ?2 AND destination = ?3 AND message_id = ?4",
                     params![
                         key.chat_provider,
                         key.surface.as_db(),
-                        key.destination.as_deref().unwrap_or(""),
+                        destination,
                         key.id
                     ],
                 )
@@ -552,15 +552,14 @@ mod tests {
         assert_eq!(removed, 1);
     }
 
-    #[tokio::test]
-    async fn message_keys_isolate_chat_providers_destinations_and_surfaces() {
+    async fn seed_reused_message_ids() -> (SqliteStore, AlertLine, [AlertMessageKey; 4]) {
         let store = SqliteStore::open_in_memory().await.unwrap();
         let announced = line("Court 1", 8);
         let keys = [
-            AlertMessageKey::new("discord", AlertSurface::DirectMessage, Some("77"), "42"),
-            AlertMessageKey::new("telegram", AlertSurface::DirectMessage, Some("77"), "42"),
-            AlertMessageKey::new("telegram", AlertSurface::DirectMessage, Some("78"), "42"),
-            AlertMessageKey::new("telegram", AlertSurface::Channel, Some("77"), "42"),
+            AlertMessageKey::new("first", AlertSurface::DirectMessage, Some("77"), "42"),
+            AlertMessageKey::new("second", AlertSurface::DirectMessage, Some("77"), "42"),
+            AlertMessageKey::new("second", AlertSurface::DirectMessage, Some("78"), "42"),
+            AlertMessageKey::new("second", AlertSurface::Channel, Some("77"), "42"),
         ];
         for key in &keys {
             store
@@ -568,48 +567,117 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let slots = [id_of(&announced)];
-        let plans = store
-            .plan_strikes("telegram", AlertSurface::DirectMessage, &slots)
-            .await
-            .unwrap();
-        assert_eq!(plans.len(), 2);
-        assert_eq!(plans[0].message.key, keys[1]);
-        assert_eq!(plans[1].message.key, keys[2]);
+        (store, announced, keys)
+    }
 
-        store.commit_strikes(&keys[1], &[0]).await.unwrap();
-        let plans = store
-            .plan_strikes("telegram", AlertSurface::DirectMessage, &slots)
-            .await
-            .unwrap();
-        assert_eq!(plans.len(), 1);
-        assert_eq!(plans[0].message.key, keys[2]);
-        store.forget_message(&keys[2]).await.unwrap();
-        assert!(
-            store
-                .plan_strikes("telegram", AlertSurface::DirectMessage, &slots)
+    async fn assert_pending_keys(
+        store: &SqliteStore,
+        announced: &AlertLine,
+        expected: &[AlertMessageKey],
+    ) {
+        for (chat_provider, surface) in [
+            ("first", AlertSurface::DirectMessage),
+            ("second", AlertSurface::DirectMessage),
+            ("second", AlertSurface::Channel),
+        ] {
+            let actual: Vec<_> = store
+                .plan_strikes(chat_provider, surface, &[id_of(announced)])
                 .await
                 .unwrap()
-                .is_empty()
-        );
-        assert_eq!(
+                .into_iter()
+                .map(|plan| plan.message.key)
+                .collect();
+            let expected: Vec<_> = expected
+                .iter()
+                .filter(|key| key.chat_provider == chat_provider && key.surface == surface)
+                .cloned()
+                .collect();
+            assert_eq!(
+                actual.len(),
+                expected.len(),
+                "{chat_provider} {surface:?}: {actual:?}"
+            );
+            for key in &expected {
+                assert!(actual.contains(key), "missing {key:?} from {actual:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn planning_isolates_chat_providers_and_surfaces_with_reused_message_ids() {
+        let (store, announced, keys) = seed_reused_message_ids().await;
+        assert_pending_keys(&store, &announced, &keys).await;
+    }
+
+    #[tokio::test]
+    async fn committing_strikes_changes_only_the_complete_message_key() {
+        let (store, announced, keys) = seed_reused_message_ids().await;
+        store.commit_strikes(&keys[1], &[0]).await.unwrap();
+        let expected = [keys[0].clone(), keys[2].clone(), keys[3].clone()];
+        assert_pending_keys(&store, &announced, &expected).await;
+    }
+
+    #[tokio::test]
+    async fn forgetting_changes_only_the_complete_message_key() {
+        let (store, announced, keys) = seed_reused_message_ids().await;
+        store.forget_message(&keys[1]).await.unwrap();
+        let expected = [keys[0].clone(), keys[2].clone(), keys[3].clone()];
+        assert_pending_keys(&store, &announced, &expected).await;
+    }
+
+    #[tokio::test]
+    async fn an_empty_destination_cannot_commit_an_implicit_channel_message() {
+        let store = SqliteStore::open_in_memory().await.unwrap();
+        let announced = line("Court 1", 8);
+        record(&store, "42", std::slice::from_ref(&announced)).await;
+        let invalid = AlertMessageKey::new("discord", AlertSurface::Channel, Some(""), "42");
+
+        assert!(store.commit_strikes(&invalid, &[0]).await.is_err());
+        let pending = plan(&store, &[id_of(&announced)]).await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].message.key.destination, None);
+    }
+
+    #[tokio::test]
+    async fn an_empty_destination_cannot_forget_an_implicit_channel_message() {
+        let store = SqliteStore::open_in_memory().await.unwrap();
+        let announced = line("Court 1", 8);
+        record(&store, "42", std::slice::from_ref(&announced)).await;
+        let invalid = AlertMessageKey::new("discord", AlertSurface::Channel, Some(""), "42");
+
+        assert!(store.forget_message(&invalid).await.is_err());
+        let pending = plan(&store, &[id_of(&announced)]).await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].message.key.destination, None);
+    }
+
+    #[tokio::test]
+    async fn recording_an_empty_destination_is_rejected() {
+        let store = SqliteStore::open_in_memory().await.unwrap();
+        let announced = line("Court 1", 8);
+        let invalid = AlertMessageKey::new("discord", AlertSurface::Channel, Some(""), "42");
+
+        assert!(
             store
-                .plan_strikes("discord", AlertSurface::DirectMessage, &slots)
+                .record_message(&invalid, std::slice::from_ref(&announced))
                 .await
-                .unwrap()[0]
-                .message
-                .key,
-            keys[0]
+                .is_err()
         );
-        assert_eq!(
-            store
-                .plan_strikes("telegram", AlertSurface::Channel, &slots)
-                .await
-                .unwrap()[0]
-                .message
-                .key,
-            keys[3]
-        );
+        assert!(plan(&store, &[id_of(&announced)]).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn repeated_taken_slots_produce_one_strike_per_line() {
+        let store = SqliteStore::open_in_memory().await.unwrap();
+        let announced = line("Court 1", 8);
+        record(&store, "42", std::slice::from_ref(&announced)).await;
+
+        let plans = plan(&store, &[id_of(&announced), id_of(&announced)]).await;
+
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].newly_struck, vec![0]);
+        assert_eq!(plans[0].message.lines.len(), 1);
+        assert!(plans[0].message.lines[0].struck);
     }
 
     #[tokio::test]

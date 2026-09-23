@@ -6,6 +6,18 @@ use crate::model::{AlertLine, AlertSurface};
 
 use super::DbRepr;
 
+pub(super) fn destination_to_db(destination: Option<&str>) -> anyhow::Result<&str> {
+    anyhow::ensure!(
+        destination != Some(""),
+        "an alert destination must not be empty"
+    );
+    Ok(destination.unwrap_or(""))
+}
+
+pub(super) fn destination_from_db(destination: &str) -> Option<&str> {
+    (!destination.is_empty()).then_some(destination)
+}
+
 pub(super) struct AlertMessageRow {
     pub(super) line_index: u32,
     club: Option<String>,

@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS alert_message_slots (
     ends_at       TEXT    NOT NULL CHECK (ends_at IS strftime('%Y-%m-%dT%H:%M:%fZ', ends_at)),
     struck        INTEGER NOT NULL DEFAULT 0 CHECK (struck IN (0, 1)),
     PRIMARY KEY (chat_provider, surface, destination, message_id, line_index),
+    CHECK (surface <> 'dm' OR destination <> ''),
     CHECK (ends_at > starts_at)
 ) STRICT, WITHOUT ROWID;
 
