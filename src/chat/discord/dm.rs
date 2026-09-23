@@ -190,7 +190,7 @@ mod tests {
         store
             .record_message(
                 &AlertMessageKey::new(
-                    "discord",
+                    PROVIDER_NAME,
                     AlertSurface::DirectMessage,
                     Some(DM_CHANNEL),
                     message_id,
@@ -207,7 +207,7 @@ mod tests {
     async fn plans(store: &Arc<SqliteStore>, slot: &BookableSlot) -> Vec<crate::model::StrikePlan> {
         store
             .plan_strikes(
-                "discord",
+                PROVIDER_NAME,
                 AlertSurface::DirectMessage,
                 &[crate::model::BookableSlotId::from(slot)],
             )

@@ -56,6 +56,7 @@ impl AlertMessageTracker {
         if let Err(error) = self.lifecycle.messages.record_message(&key, lines).await {
             warn!(
                 chat_provider = %self.chat_provider,
+                surface = ?self.surface,
                 message_id,
                 error = %format!("{error:#}"),
                 "recording an alert failed; it cannot be updated later"
@@ -95,6 +96,7 @@ impl AlertMessageTracker {
                     if let Err(error) = messages.commit_strikes(&key, &plan.newly_struck).await {
                         warn!(
                             chat_provider = %key.chat_provider,
+                            surface = ?key.surface,
                             message_id = %key.id,
                             error = %format!("{error:#}"),
                             "alert edit succeeded but recording it failed"
@@ -104,12 +106,14 @@ impl AlertMessageTracker {
                 Ok(EditOutcome::Gone) => {
                     debug!(
                         chat_provider = %key.chat_provider,
+                        surface = ?key.surface,
                         message_id = %key.id,
                         "alert message no longer exists; forgetting it"
                     );
                     if let Err(error) = messages.forget_message(&key).await {
                         warn!(
                             chat_provider = %key.chat_provider,
+                            surface = ?key.surface,
                             message_id = %key.id,
                             error = %format!("{error:#}"),
                             "forgetting a deleted alert failed"
@@ -119,6 +123,7 @@ impl AlertMessageTracker {
                 Err(error) => {
                     warn!(
                         chat_provider = %key.chat_provider,
+                        surface = ?key.surface,
                         message_id = %key.id,
                         error = %format!("{error:#}"),
                         "updating an alert failed; its tracked lines stay unchanged"

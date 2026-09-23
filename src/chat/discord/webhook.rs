@@ -199,7 +199,7 @@ mod tests {
     async fn plan_strikes(store: &Arc<SqliteStore>, slot: &BookableSlot) -> Vec<StrikePlan> {
         store
             .plan_strikes(
-                "discord",
+                PROVIDER_NAME,
                 AlertSurface::Channel,
                 &[BookableSlotId::from(slot)],
             )
@@ -299,7 +299,7 @@ mod tests {
     async fn seed(store: &Arc<SqliteStore>, message_id: &str, slot: &BookableSlot) {
         store
             .record_message(
-                &AlertMessageKey::new("discord", AlertSurface::Channel, None, message_id),
+                &AlertMessageKey::new(PROVIDER_NAME, AlertSurface::Channel, None, message_id),
                 &[AlertLine::from(slot)],
             )
             .await
@@ -368,7 +368,7 @@ mod tests {
         let (notifier, store) = notifier(&server).await;
         store
             .record_message(
-                &AlertMessageKey::new("discord", AlertSurface::Channel, None, "1408"),
+                &AlertMessageKey::new(PROVIDER_NAME, AlertSurface::Channel, None, "1408"),
                 &[AlertLine::from(&staying), AlertLine::from(&gone)],
             )
             .await
