@@ -2,6 +2,7 @@ mod alerts;
 mod api;
 mod auth;
 mod response;
+mod slot;
 mod subscriptions;
 #[cfg(test)]
 mod tests;

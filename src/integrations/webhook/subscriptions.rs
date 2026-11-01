@@ -12,10 +12,11 @@ use tracing::error;
 
 use super::INTEGRATION;
 use super::response::{error, invalid_request, rejected};
+use super::slot::Slot;
 use crate::model::{CourtFilter, MINUTES_PER_DAY, Schedule, Sport, SubscriberRef, VenueId};
 use crate::subscriptions::SubscriptionService;
 use crate::subscriptions::contract::{
-    AvailableSlotSummary, SubscriptionCommand, SubscriptionResult, SubscriptionSummary,
+    SubscriptionCommand, SubscriptionResult, SubscriptionSummary,
 };
 use crate::time::fmt_hhmm;
 
@@ -76,27 +77,6 @@ impl From<SubscriptionSummary> for Subscription {
             end: fmt_hhmm(summary.time_range.end_minute()),
             courts: summary.courts,
             filter: summary.filter.as_str(),
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct OpenSlot {
-    club: String,
-    court: String,
-    court_id: uuid::Uuid,
-    starts_at: chrono::DateTime<chrono::Utc>,
-    ends_at: chrono::DateTime<chrono::Utc>,
-}
-
-impl From<AvailableSlotSummary> for OpenSlot {
-    fn from(slot: AvailableSlotSummary) -> Self {
-        Self {
-            club: slot.club,
-            court: slot.court,
-            court_id: slot.court_id,
-            starts_at: slot.starts_at,
-            ends_at: slot.ends_at,
         }
     }
 }
@@ -203,7 +183,7 @@ fn respond(result: SubscriptionResult) -> Response {
             StatusCode::CREATED,
             Json(json!({
                 "subscription": Subscription::from(summary),
-                "open_slots": open_slots.into_iter().map(OpenSlot::from).collect::<Vec<_>>(),
+                "open_slots": open_slots.iter().map(Slot::from).collect::<Vec<_>>(),
             })),
         )
             .into_response(),

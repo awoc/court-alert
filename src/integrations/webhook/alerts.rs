@@ -2,14 +2,15 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use hmac::{Hmac, KeyInit, Mac};
 use serde::Serialize;
 use sha2::Sha256;
 use uuid::Uuid;
 
+use super::slot::Slot;
 use crate::model::BookableSlotId;
-use crate::subscriptions::contract::{AlertSender, AvailabilityAlert, AvailableSlotSummary};
+use crate::subscriptions::contract::{AlertSender, AvailabilityAlert};
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -46,27 +47,6 @@ impl WebhookAlertSender {
 struct Alert<'a> {
     user_id: &'a str,
     slots: Vec<Slot<'a>>,
-}
-
-#[derive(Serialize)]
-struct Slot<'a> {
-    club: &'a str,
-    court: &'a str,
-    court_id: Uuid,
-    starts_at: DateTime<Utc>,
-    ends_at: DateTime<Utc>,
-}
-
-impl<'a> From<&'a AvailableSlotSummary> for Slot<'a> {
-    fn from(slot: &'a AvailableSlotSummary) -> Self {
-        Self {
-            club: &slot.club,
-            court: &slot.court,
-            court_id: slot.court_id,
-            starts_at: slot.starts_at,
-            ends_at: slot.ends_at,
-        }
-    }
 }
 
 #[async_trait]
