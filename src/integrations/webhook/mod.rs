@@ -1,3 +1,4 @@
+mod alerts;
 mod api;
 mod auth;
 mod response;
@@ -18,12 +19,15 @@ use crate::config::WebhookSettings;
 use crate::integrations::{Integration, ReadySignal};
 use crate::model::ProviderUserRef;
 use crate::subscriptions::SubscriptionService;
+use alerts::WebhookAlertSender;
 
 pub(crate) const INTEGRATION_NAME: &str = "webhook";
 
 pub struct WebhookIntegration {
     listen: SocketAddr,
     api_secret: Arc<str>,
+    alert_url: reqwest::Url,
+    alert_secret: String,
 }
 
 impl WebhookIntegration {
@@ -31,6 +35,8 @@ impl WebhookIntegration {
         Self {
             listen: settings.listen,
             api_secret: settings.api_secret.into(),
+            alert_url: settings.alert_url,
+            alert_secret: settings.alert_secret,
         }
     }
 
@@ -75,6 +81,8 @@ impl Integration for WebhookIntegration {
         service: Arc<SubscriptionService>,
         ready: ReadySignal,
     ) -> Result<()> {
+        let alerts = WebhookAlertSender::new(self.alert_url.clone(), self.alert_secret.clone())?;
+        service.register_sender(INTEGRATION_NAME, Arc::new(alerts));
         let webhook = self.bind().await?;
         info!(address = %webhook.local_addr()?, "webhook API listening");
         ready.ready();

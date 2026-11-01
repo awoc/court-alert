@@ -5,15 +5,21 @@ use hmac::{Hmac, KeyInit, Mac};
 use serde_json::{Value, json};
 use sha2::Sha256;
 
-use super::WebhookIntegration;
+use super::{INTEGRATION_NAME, WebhookIntegration};
 use crate::config::WebhookSettings;
 use crate::integrations::{Integration, readiness};
-use crate::model::{BookableSlot, CourtFilter, VenueId};
+use crate::model::{
+    AvailabilityChange, BookableSlot, BookableSlotId, CourtFilter, ProviderUserRef, Schedule,
+    Sport, VenueId,
+};
 use crate::ports::BookableSlotSnapshotRepository;
 use crate::store::SqliteStore;
+use crate::subscriptions::contract::{AlertSender, AvailabilityAlert, SubscriptionCommand};
 use crate::subscriptions::testing::registry;
 use crate::subscriptions::{BerlinClock, SubscriptionService};
 use uuid::Uuid;
+use wiremock::matchers::{body_partial_json, method, path};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 const API_SECRET: &str = "api-secret";
 
@@ -626,4 +632,284 @@ async fn a_subscription_may_end_at_midnight() {
     assert_eq!(response.status(), 201);
     let body: Value = response.json().await.unwrap();
     assert_eq!(body["subscription"]["end"], "24:00");
+}
+
+const ALERT_SECRET: &str = "alert-secret";
+const ALERT_PATH: &str = "/webhooks/court-alert";
+
+async fn run_against(hermes: &MockServer) -> Arc<SubscriptionService> {
+    let service = service().await;
+    let webhook = WebhookIntegration::new(WebhookSettings {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        api_secret: API_SECRET.into(),
+        alert_url: format!("{}{ALERT_PATH}", hermes.uri()).parse().unwrap(),
+        alert_secret: ALERT_SECRET.into(),
+    });
+    let (mut signals, barrier) = readiness(1);
+    tokio::spawn(Box::new(webhook).run(service.clone(), signals.remove(0)));
+    tokio::time::timeout(std::time::Duration::from_secs(5), barrier.wait())
+        .await
+        .expect("the webhook integration never signalled readiness");
+    service
+}
+
+fn subscriber(user_id: &str) -> ProviderUserRef {
+    ProviderUserRef {
+        provider: INTEGRATION_NAME.into(),
+        user_id: user_id.into(),
+    }
+}
+
+async fn subscribe_to_padel_on_tuesday_evenings(
+    service: &SubscriptionService,
+    user: &ProviderUserRef,
+) {
+    service
+        .handle(
+            user,
+            SubscriptionCommand::Subscribe {
+                sport: Sport::Padel,
+                venue: None,
+                schedule: Schedule::Weekday(chrono::Weekday::Tue),
+                start_minute: 18 * 60,
+                end_minute: 22 * 60,
+                courts: None,
+                filter: None,
+            },
+        )
+        .await
+        .unwrap();
+}
+
+fn tuesday_evening_padel(court_id: u128, court_name: &str) -> BookableSlot {
+    use chrono::TimeZone;
+    let starts_at = chrono::Utc.with_ymd_and_hms(2026, 6, 2, 18, 0, 0).unwrap();
+    BookableSlot {
+        venue_id: VenueId::new("casa-padel"),
+        court_id: Uuid::from_u128(court_id),
+        court_name: court_name.into(),
+        starts_at,
+        ends_at: starts_at + chrono::Duration::minutes(90),
+        available_places: 4,
+    }
+}
+
+fn indoor_slot() -> BookableSlot {
+    tuesday_evening_padel(101, "Court 1 (Indoor)")
+}
+
+fn outdoor_slot() -> BookableSlot {
+    tuesday_evening_padel(106, "Court 6 (Outdoor)")
+}
+
+async fn opens(service: &SubscriptionService, slot: BookableSlot) {
+    service
+        .dispatch(&[AvailabilityChange::BecameBookable(slot)])
+        .await;
+}
+
+async fn hermes_accepting_alerts() -> MockServer {
+    let hermes = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(ALERT_PATH))
+        .respond_with(ResponseTemplate::new(202))
+        .mount(&hermes)
+        .await;
+    hermes
+}
+
+async fn alerts_received(hermes: &MockServer) -> Vec<Request> {
+    hermes.received_requests().await.unwrap_or_default()
+}
+
+fn alerted_user(alert: &Request) -> String {
+    let body: Value = serde_json::from_slice(&alert.body).unwrap();
+    body["user_id"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn matching_slots_reach_hermes_in_one_alert_per_subscriber() {
+    let hermes = hermes_accepting_alerts().await;
+    let service = run_against(&hermes).await;
+    subscribe_to_padel_on_tuesday_evenings(&service, &subscriber("alice")).await;
+
+    service
+        .dispatch(&[
+            AvailabilityChange::BecameBookable(indoor_slot()),
+            AvailabilityChange::BecameBookable(outdoor_slot()),
+        ])
+        .await;
+
+    let received = alerts_received(&hermes).await;
+    assert_eq!(received.len(), 1);
+    let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(
+        body,
+        json!({
+            "user_id": "alice",
+            "slots": [
+                {
+                    "club": "Casa Padel",
+                    "court": "Court 1 (Indoor)",
+                    "court_id": "00000000-0000-0000-0000-000000000065",
+                    "starts_at": "2026-06-02T18:00:00Z",
+                    "ends_at": "2026-06-02T19:30:00Z",
+                },
+                {
+                    "club": "Casa Padel",
+                    "court": "Court 6 (Outdoor)",
+                    "court_id": "00000000-0000-0000-0000-00000000006a",
+                    "starts_at": "2026-06-02T18:00:00Z",
+                    "ends_at": "2026-06-02T19:30:00Z",
+                },
+            ],
+        })
+    );
+}
+
+#[tokio::test]
+async fn an_alert_is_signed_for_hermes_with_the_alert_secret() {
+    let hermes = hermes_accepting_alerts().await;
+    let service = run_against(&hermes).await;
+    subscribe_to_padel_on_tuesday_evenings(&service, &subscriber("alice")).await;
+
+    opens(&service, indoor_slot()).await;
+
+    let received = alerts_received(&hermes).await;
+    let alert = &received[0];
+    let header = |name: &str| {
+        alert
+            .headers
+            .get(name)
+            .unwrap_or_else(|| panic!("no {name} header"))
+            .to_str()
+            .unwrap()
+            .to_owned()
+    };
+    let timestamp = header("X-Webhook-Timestamp");
+    assert!(
+        now().abs_diff(timestamp.parse::<i64>().unwrap()) <= 5,
+        "timestamp {timestamp} is not now"
+    );
+    let mut mac = Hmac::<Sha256>::new_from_slice(ALERT_SECRET.as_bytes()).unwrap();
+    mac.update(timestamp.as_bytes());
+    mac.update(b".");
+    mac.update(&alert.body);
+    mac.verify_slice(&hex::decode(header("X-Webhook-Signature-V2")).unwrap())
+        .expect("the signature verifies with the alert secret");
+    assert_eq!(header("Content-Type"), "application/json");
+}
+
+#[tokio::test]
+async fn each_delivery_carries_its_own_webhook_id() {
+    let hermes = hermes_accepting_alerts().await;
+    let service = run_against(&hermes).await;
+    subscribe_to_padel_on_tuesday_evenings(&service, &subscriber("alice")).await;
+    subscribe_to_padel_on_tuesday_evenings(&service, &subscriber("bob")).await;
+
+    opens(&service, indoor_slot()).await;
+    opens(&service, outdoor_slot()).await;
+
+    let ids: HashSet<Uuid> = alerts_received(&hermes)
+        .await
+        .iter()
+        .map(|alert| {
+            let id = alert
+                .headers
+                .get("webhook-id")
+                .expect("a webhook-id header");
+            Uuid::parse_str(id.to_str().unwrap()).expect("a UUID")
+        })
+        .collect();
+    assert_eq!(ids.len(), 4, "webhook-ids repeat: {ids:?}");
+}
+
+#[tokio::test]
+async fn hermes_rejecting_one_subscribers_alert_does_not_stop_the_others() {
+    let hermes = MockServer::start().await;
+    Mock::given(body_partial_json(json!({"user_id": "alice"})))
+        .respond_with(ResponseTemplate::new(500))
+        .with_priority(1)
+        .mount(&hermes)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(202))
+        .mount(&hermes)
+        .await;
+    let service = run_against(&hermes).await;
+    for user in ["alice", "bob", "carol"] {
+        subscribe_to_padel_on_tuesday_evenings(&service, &subscriber(user)).await;
+    }
+
+    opens(&service, indoor_slot()).await;
+
+    let mut users: Vec<String> = alerts_received(&hermes)
+        .await
+        .iter()
+        .map(alerted_user)
+        .collect();
+    users.sort();
+    assert_eq!(users, ["alice", "bob", "carol"]);
+}
+
+#[tokio::test]
+async fn a_slot_that_is_taken_sends_hermes_nothing() {
+    let hermes = hermes_accepting_alerts().await;
+    let service = run_against(&hermes).await;
+    subscribe_to_padel_on_tuesday_evenings(&service, &subscriber("alice")).await;
+
+    service
+        .dispatch(&[AvailabilityChange::BecameUnbookable(indoor_slot())])
+        .await;
+
+    assert!(alerts_received(&hermes).await.is_empty());
+}
+
+#[derive(Default)]
+struct DiscordDms {
+    sent: std::sync::Mutex<Vec<String>>,
+    struck: std::sync::Mutex<Vec<BookableSlotId>>,
+}
+
+#[async_trait::async_trait]
+impl AlertSender for DiscordDms {
+    async fn send_alert(&self, user_id: &str, _alert: &AvailabilityAlert) -> anyhow::Result<()> {
+        self.sent.lock().unwrap().push(user_id.to_owned());
+        Ok(())
+    }
+
+    async fn strike_taken(&self, slots: &[BookableSlotId]) -> anyhow::Result<()> {
+        self.struck.lock().unwrap().extend_from_slice(slots);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn discord_dms_keep_flowing_alongside_webhook_alerts() {
+    let hermes = hermes_accepting_alerts().await;
+    let service = run_against(&hermes).await;
+    let dms = Arc::new(DiscordDms::default());
+    service.register_sender("discord", dms.clone());
+    let discord_user = ProviderUserRef {
+        provider: "discord".into(),
+        user_id: "42".into(),
+    };
+    subscribe_to_padel_on_tuesday_evenings(&service, &discord_user).await;
+    subscribe_to_padel_on_tuesday_evenings(&service, &subscriber("alice")).await;
+
+    opens(&service, indoor_slot()).await;
+    service
+        .dispatch(&[AvailabilityChange::BecameUnbookable(indoor_slot())])
+        .await;
+
+    let received = alerts_received(&hermes).await;
+    assert_eq!(
+        received.iter().map(alerted_user).collect::<Vec<_>>(),
+        ["alice"]
+    );
+    assert_eq!(*dms.sent.lock().unwrap(), ["42"]);
+    assert_eq!(
+        *dms.struck.lock().unwrap(),
+        [BookableSlotId::from(&indoor_slot())]
+    );
 }
