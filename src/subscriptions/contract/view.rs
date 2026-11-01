@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::model::{
-    Court, CourtFilter, CourtLocation, CourtSurface, ProviderUserRef, Schedule, Sport, TimeRange,
+    Court, CourtFilter, CourtLocation, CourtSurface, Schedule, Sport, SubscriberRef, TimeRange,
     VenueId,
 };
 
@@ -19,7 +19,7 @@ pub struct SubscriptionSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnedSubscriptionSummary {
-    pub user: ProviderUserRef,
+    pub user: SubscriberRef,
     pub summary: SubscriptionSummary,
 }
 

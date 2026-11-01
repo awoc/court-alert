@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::model::{
-    AvailabilityChange, BookableSlot, BookableSlotId, ProviderUserRef, Schedule, Subscription,
+    AvailabilityChange, BookableSlot, BookableSlotId, Schedule, SubscriberRef, Subscription,
     VenueRegistry,
 };
 use crate::time::local_slot_time;
@@ -45,9 +45,9 @@ pub fn match_subscriptions(
     changes: &[AvailabilityChange],
     subs: &[Subscription],
     registry: &VenueRegistry,
-) -> HashMap<ProviderUserRef, Vec<BookableSlot>> {
-    let mut out: HashMap<ProviderUserRef, Vec<BookableSlot>> = HashMap::new();
-    let mut seen: HashMap<ProviderUserRef, HashSet<BookableSlotId>> = HashMap::new();
+) -> HashMap<SubscriberRef, Vec<BookableSlot>> {
+    let mut out: HashMap<SubscriberRef, Vec<BookableSlot>> = HashMap::new();
+    let mut seen: HashMap<SubscriberRef, HashSet<BookableSlotId>> = HashMap::new();
 
     for t in changes {
         let slot = match t {
@@ -147,7 +147,7 @@ mod tests {
     fn match_subscriptions(
         changes: &[AvailabilityChange],
         subs: &[Subscription],
-    ) -> HashMap<ProviderUserRef, Vec<BookableSlot>> {
+    ) -> HashMap<SubscriberRef, Vec<BookableSlot>> {
         let registry = registry();
         let registry = registry.read().unwrap();
         super::match_subscriptions(changes, subs, &registry)

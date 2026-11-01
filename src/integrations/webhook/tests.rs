@@ -5,12 +5,12 @@ use hmac::{Hmac, KeyInit, Mac};
 use serde_json::{Value, json};
 use sha2::Sha256;
 
-use super::{INTEGRATION_NAME, WebhookIntegration};
+use super::{INTEGRATION, WebhookIntegration};
 use crate::config::WebhookSettings;
 use crate::integrations::{Integration, readiness};
 use crate::model::{
-    AvailabilityChange, BookableSlot, BookableSlotId, CourtFilter, ProviderUserRef, Schedule,
-    Sport, VenueId,
+    AvailabilityChange, BookableSlot, BookableSlotId, CourtFilter, Schedule, Sport, SubscriberRef,
+    VenueId,
 };
 use crate::ports::BookableSlotSnapshotRepository;
 use crate::store::SqliteStore;
@@ -657,16 +657,16 @@ async fn run_against(hermes: &MockServer) -> Arc<SubscriptionService> {
     service
 }
 
-fn subscriber(user_id: &str) -> ProviderUserRef {
-    ProviderUserRef {
-        provider: INTEGRATION_NAME.into(),
+fn subscriber(user_id: &str) -> SubscriberRef {
+    SubscriberRef {
+        integration: INTEGRATION,
         user_id: user_id.into(),
     }
 }
 
 async fn subscribe_to_padel_on_tuesday_evenings(
     service: &SubscriptionService,
-    user: &ProviderUserRef,
+    user: &SubscriberRef,
 ) {
     service
         .handle(
@@ -893,9 +893,9 @@ async fn discord_dms_keep_flowing_alongside_webhook_alerts() {
     let hermes = hermes_accepting_alerts().await;
     let service = run_against(&hermes).await;
     let dms = Arc::new(DiscordDms::default());
-    service.register_sender("discord", dms.clone());
-    let discord_user = ProviderUserRef {
-        provider: "discord".into(),
+    service.register_sender("discord".into(), dms.clone());
+    let discord_user = SubscriberRef {
+        integration: "discord".into(),
         user_id: "42".into(),
     };
     subscribe_to_padel_on_tuesday_evenings(&service, &discord_user).await;

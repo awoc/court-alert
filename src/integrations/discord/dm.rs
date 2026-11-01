@@ -10,7 +10,7 @@ use crate::model::{AlertSurface, BookableSlotId};
 use crate::subscriptions::contract::{AlertSender, AvailabilityAlert};
 
 use super::format::{alert_lines, chunk_lines, render};
-use super::{DISCORD_UNKNOWN_MESSAGE, PROVIDER_NAME};
+use super::{DISCORD_UNKNOWN_MESSAGE, INTEGRATION};
 
 pub(super) struct DiscordSender {
     http: Arc<Http>,
@@ -21,7 +21,8 @@ impl DiscordSender {
     pub(super) fn new(http: Arc<Http>, alert_lifecycle: Arc<AlertMessageLifecycle>) -> Self {
         Self {
             http,
-            alert_tracker: alert_lifecycle.tracker(PROVIDER_NAME, AlertSurface::DirectMessage),
+            alert_tracker: alert_lifecycle
+                .tracker(INTEGRATION.as_str(), AlertSurface::DirectMessage),
         }
     }
 
@@ -190,7 +191,7 @@ mod tests {
         store
             .record_message(
                 &AlertMessageKey::new(
-                    PROVIDER_NAME,
+                    INTEGRATION.as_str(),
                     AlertSurface::DirectMessage,
                     Some(DM_CHANNEL),
                     message_id,
@@ -207,7 +208,7 @@ mod tests {
     async fn plans(store: &Arc<SqliteStore>, slot: &BookableSlot) -> Vec<crate::model::StrikePlan> {
         store
             .plan_strikes(
-                PROVIDER_NAME,
+                INTEGRATION.as_str(),
                 AlertSurface::DirectMessage,
                 &[crate::model::BookableSlotId::from(slot)],
             )

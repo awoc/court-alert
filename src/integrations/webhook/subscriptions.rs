@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::error;
 
-use super::INTEGRATION_NAME;
+use super::INTEGRATION;
 use super::response::{error, invalid_request, rejected};
-use crate::model::{CourtFilter, MINUTES_PER_DAY, ProviderUserRef, Schedule, Sport, VenueId};
+use crate::model::{CourtFilter, MINUTES_PER_DAY, Schedule, Sport, SubscriberRef, VenueId};
 use crate::subscriptions::SubscriptionService;
 use crate::subscriptions::contract::{
     AvailableSlotSummary, SubscriptionCommand, SubscriptionResult, SubscriptionSummary,
@@ -176,8 +176,8 @@ async fn handle(
     if user_id.is_empty() || user_id.chars().count() > MAX_USER_ID_CHARS {
         return rejected(json!({ "error": "invalid_user_id" }));
     }
-    let user = ProviderUserRef {
-        provider: INTEGRATION_NAME.to_owned(),
+    let user = SubscriberRef {
+        integration: INTEGRATION,
         user_id: user_id.to_owned(),
     };
     match service.handle(&user, command).await {

@@ -11,12 +11,12 @@ use tokio::sync::watch;
 
 use crate::alerts::AlertMessageLifecycle;
 use crate::config::{Config, DiscordSettings, Settings};
-use crate::model::{ProviderUserRef, Sport};
+use crate::model::{Sport, SubscriberRef};
 use crate::subscriptions::SubscriptionService;
 
 #[async_trait]
 pub trait Integration: Send {
-    fn admins(&self) -> HashSet<ProviderUserRef>;
+    fn admins(&self) -> HashSet<SubscriberRef>;
 
     async fn run(
         self: Box<Self>,
@@ -224,7 +224,7 @@ base_url = "https://kurse.zhs-muenchen.de"
 
     #[async_trait]
     impl Integration for InstantReady {
-        fn admins(&self) -> HashSet<ProviderUserRef> {
+        fn admins(&self) -> HashSet<SubscriberRef> {
             HashSet::new()
         }
 

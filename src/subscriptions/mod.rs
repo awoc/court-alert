@@ -11,7 +11,9 @@ use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, NaiveDate, Utc};
 
-use crate::model::{CourtCatalog, CourtFilter, ProviderUserRef, Sport, VenueId, VenueRegistry};
+use crate::model::{
+    CourtCatalog, CourtFilter, IntegrationId, Sport, SubscriberRef, VenueId, VenueRegistry,
+};
 use crate::ports::{BookableSlotSnapshotRepository, SubscriptionRepository};
 use contract::AlertSender;
 
@@ -34,8 +36,8 @@ impl Clock for BerlinClock {
 pub struct SubscriptionService {
     store: Arc<dyn SubscriptionRepository>,
     slot_snapshots: Arc<dyn BookableSlotSnapshotRepository>,
-    senders: RwLock<HashMap<String, Arc<dyn AlertSender>>>,
-    admins: HashSet<ProviderUserRef>,
+    senders: RwLock<HashMap<IntegrationId, Arc<dyn AlertSender>>>,
+    admins: HashSet<SubscriberRef>,
     registry: Arc<RwLock<VenueRegistry>>,
     tennis_default_filter: CourtFilter,
     clock: Arc<dyn Clock>,
@@ -45,7 +47,7 @@ impl SubscriptionService {
     pub fn new(
         store: Arc<dyn SubscriptionRepository>,
         slot_snapshots: Arc<dyn BookableSlotSnapshotRepository>,
-        admins: HashSet<ProviderUserRef>,
+        admins: HashSet<SubscriberRef>,
         registry: Arc<RwLock<VenueRegistry>>,
         tennis_default_filter: CourtFilter,
         clock: Arc<dyn Clock>,
@@ -61,7 +63,7 @@ impl SubscriptionService {
         }
     }
 
-    fn is_admin(&self, user: &ProviderUserRef) -> bool {
+    fn is_admin(&self, user: &SubscriberRef) -> bool {
         self.admins.contains(user)
     }
 
@@ -125,11 +127,11 @@ impl SubscriptionService {
             .collect()
     }
 
-    pub fn register_sender(&self, integration: &str, sender: Arc<dyn AlertSender>) {
+    pub fn register_sender(&self, integration: IntegrationId, sender: Arc<dyn AlertSender>) {
         self.senders
             .write()
             .expect("senders lock poisoned")
-            .insert(integration.to_string(), sender);
+            .insert(integration, sender);
     }
 }
 

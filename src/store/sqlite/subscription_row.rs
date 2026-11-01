@@ -2,9 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{NaiveDate, Weekday};
 use rusqlite::Row;
 
-use crate::model::{
-    CourtFilter, ProviderUserRef, Schedule, Sport, Subscription, TimeRange, VenueId,
-};
+use crate::model::{CourtFilter, Schedule, Sport, SubscriberRef, Subscription, TimeRange, VenueId};
 
 use super::DbRepr;
 
@@ -54,8 +52,8 @@ impl TryFrom<SubscriptionRow> for Subscription {
         })?;
         Ok(Self {
             id: row.id,
-            user: ProviderUserRef {
-                provider: row.provider,
+            user: SubscriberRef {
+                integration: row.provider.into(),
                 user_id: row.user_id,
             },
             sport: Sport::from_db(row.sport)?,

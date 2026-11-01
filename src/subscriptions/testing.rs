@@ -5,7 +5,7 @@ use chrono::{DateTime, NaiveDate, Utc, Weekday};
 
 use crate::model::{
     BookableSlot, BookableSlotSnapshot, Court, CourtAttributes, CourtCatalog, CourtFilter,
-    CourtLocation, CourtSurface, ProviderUserRef, Schedule, Sport, Venue, VenueId, VenueIdentity,
+    CourtLocation, CourtSurface, Schedule, Sport, SubscriberRef, Venue, VenueId, VenueIdentity,
     VenueRegistry,
 };
 use crate::ports::BookableSlotSnapshotRepository;
@@ -15,9 +15,9 @@ use uuid::Uuid;
 
 use super::{BerlinClock, Clock, SubscriptionService};
 
-pub(super) fn uref(id: &str) -> ProviderUserRef {
-    ProviderUserRef {
-        provider: "discord".into(),
+pub(super) fn uref(id: &str) -> SubscriberRef {
+    SubscriberRef {
+        integration: "discord".into(),
         user_id: id.into(),
     }
 }
@@ -146,7 +146,7 @@ async fn store() -> Arc<SqliteStore> {
 
 fn build(
     store: Arc<SqliteStore>,
-    admins: HashSet<ProviderUserRef>,
+    admins: HashSet<SubscriberRef>,
     clock: Arc<dyn Clock>,
 ) -> Arc<SubscriptionService> {
     Arc::new(SubscriptionService::new(
@@ -191,7 +191,7 @@ pub(super) async fn service_with_store() -> (Arc<SubscriptionService>, Arc<Sqlit
     )
 }
 
-pub(super) fn admin_uref() -> ProviderUserRef {
+pub(super) fn admin_uref() -> SubscriberRef {
     uref("999")
 }
 

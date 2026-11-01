@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use chrono::NaiveDate;
 use rusqlite::{Row, params};
 
-use crate::model::{ProviderUserRef, Subscription, SubscriptionDraft};
+use crate::model::{SubscriberRef, Subscription, SubscriptionDraft};
 use crate::ports::SubscriptionRepository;
 
 use super::{DbRepr, SqliteStore, SubscriptionRow};
@@ -29,7 +29,7 @@ impl SubscriptionRepository for SqliteStore {
                   start_minute, end_minute, courts, court_filter)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
-                    sub.user.provider,
+                    sub.user.integration.as_str(),
                     sub.user.user_id,
                     sport,
                     sub.venue.map(|venue| venue.to_string()),
@@ -49,7 +49,7 @@ impl SubscriptionRepository for SqliteStore {
 
     async fn list_for_user(
         &self,
-        user: &ProviderUserRef,
+        user: &SubscriberRef,
         today: NaiveDate,
     ) -> Result<Vec<Subscription>> {
         let user = user.clone();
@@ -66,7 +66,7 @@ impl SubscriptionRepository for SqliteStore {
                 .context("preparing list_for_user")?;
             let rows = stmt
                 .query_map(
-                    params![user.provider, user.user_id, today],
+                    params![user.integration.as_str(), user.user_id, today],
                     map_subscription,
                 )
                 .context("querying subscriptions")?;
@@ -96,14 +96,14 @@ impl SubscriptionRepository for SqliteStore {
         .await
     }
 
-    async fn remove(&self, id: i64, user: &ProviderUserRef) -> Result<bool> {
+    async fn remove(&self, id: i64, user: &SubscriberRef) -> Result<bool> {
         let user = user.clone();
         self.with_writer("remove", move |conn| {
             let affected = conn
                 .execute(
                     "DELETE FROM subscriptions
                      WHERE id = ?1 AND provider = ?2 AND user_id = ?3",
-                    params![id, user.provider, user.user_id],
+                    params![id, user.integration.as_str(), user.user_id],
                 )
                 .context("deleting subscription")?;
             Ok(affected > 0)
@@ -142,9 +142,9 @@ mod tests {
     use crate::model::{CourtFilter, CourtLocation, CourtSurface, Schedule, Sport, TimeRange};
     use chrono::{NaiveDate, Weekday};
 
-    fn uref(id: &str) -> ProviderUserRef {
-        ProviderUserRef {
-            provider: "discord".into(),
+    fn uref(id: &str) -> SubscriberRef {
+        SubscriberRef {
+            integration: "discord".into(),
             user_id: id.into(),
         }
     }
@@ -219,8 +219,8 @@ mod tests {
         other_user.user = uref("99999");
         store.add(other_user).await.unwrap();
         let mut other_provider = sample(Weekday::Thu);
-        other_provider.user = ProviderUserRef {
-            provider: "telegram".into(),
+        other_provider.user = SubscriberRef {
+            integration: "telegram".into(),
             user_id: "12345".into(),
         };
         store.add(other_provider).await.unwrap();
@@ -248,8 +248,8 @@ mod tests {
         let store = SqliteStore::open_in_memory().await.unwrap();
         let id = store.add(sample(Weekday::Tue)).await.unwrap();
         assert!(!store.remove(id, &uref("99999")).await.unwrap());
-        let foreign = ProviderUserRef {
-            provider: "telegram".into(),
+        let foreign = SubscriberRef {
+            integration: "telegram".into(),
             user_id: "12345".into(),
         };
         assert!(!store.remove(id, &foreign).await.unwrap());

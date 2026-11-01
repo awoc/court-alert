@@ -2,7 +2,7 @@ use anyhow::Result;
 use tracing::warn;
 
 use crate::model::{
-    BookableSlot, CourtFilter, ProviderUserRef, Schedule, Sport, Subscription, SubscriptionDraft,
+    BookableSlot, CourtFilter, Schedule, Sport, SubscriberRef, Subscription, SubscriptionDraft,
     TimeRange, VenueId,
 };
 use crate::subscriptions::contract::{
@@ -16,7 +16,7 @@ use super::{SubscriptionService, slot_summary};
 impl SubscriptionService {
     pub async fn handle(
         &self,
-        user: &ProviderUserRef,
+        user: &SubscriberRef,
         command: SubscriptionCommand,
     ) -> Result<SubscriptionResult> {
         match command {
@@ -98,7 +98,7 @@ impl SubscriptionService {
     #[allow(clippy::too_many_arguments)]
     fn validate_subscribe(
         &self,
-        user: &ProviderUserRef,
+        user: &SubscriberRef,
         sport: Sport,
         venue: Option<VenueId>,
         schedule: Schedule,

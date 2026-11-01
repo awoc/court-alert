@@ -1,4 +1,4 @@
-use super::PROVIDER_NAME;
+use super::INTEGRATION;
 use super::text::{DISCORD_CHUNK_BUDGET, chunk_lines, fmt_club_slot_line};
 use crate::model::{CourtFilter, Schedule, TimeRange};
 use crate::subscriptions::contract::{
@@ -187,7 +187,7 @@ fn club_label(s: &SubscriptionSummary) -> String {
 
 fn owned_summary_line(owned: &OwnedSubscriptionSummary) -> String {
     let user = &owned.user;
-    let owner = if user.provider == PROVIDER_NAME {
+    let owner = if user.integration == INTEGRATION {
         format!("<@{}>", user.user_id)
     } else {
         user.user_id.clone()
@@ -195,7 +195,7 @@ fn owned_summary_line(owned: &OwnedSubscriptionSummary) -> String {
     format!(
         "{} – {owner} ({})",
         summary_line(&owned.summary),
-        user.provider
+        user.integration
     )
 }
 
@@ -225,7 +225,7 @@ fn schedule_label(schedule: Schedule) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ProviderUserRef, Sport};
+    use crate::model::{Sport, SubscriberRef};
     use crate::subscriptions::contract::{AvailableSlotSummary, OwnedSubscriptionSummary};
     use chrono::{TimeZone, Utc, Weekday};
 
@@ -512,8 +512,8 @@ mod tests {
     #[test]
     fn renders_listall_with_owner_and_schedule() {
         let reply = SubscriptionResult::AllSubscriptions(vec![OwnedSubscriptionSummary {
-            user: ProviderUserRef {
-                provider: PROVIDER_NAME.to_string(),
+            user: SubscriberRef {
+                integration: INTEGRATION,
                 user_id: "42".to_string(),
             },
             summary: summary(),
@@ -529,8 +529,8 @@ mod tests {
     #[test]
     fn renders_listall_owners_of_other_integrations_without_a_mention() {
         let reply = SubscriptionResult::AllSubscriptions(vec![OwnedSubscriptionSummary {
-            user: ProviderUserRef {
-                provider: crate::integrations::webhook::INTEGRATION_NAME.to_string(),
+            user: SubscriberRef {
+                integration: crate::integrations::webhook::INTEGRATION,
                 user_id: "hermes:alice".to_string(),
             },
             summary: summary(),

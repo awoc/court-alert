@@ -14,12 +14,12 @@ use serenity::async_trait;
 use tracing::{error, info, warn};
 
 use crate::integrations::ReadySignal;
-use crate::model::ProviderUserRef;
 use crate::model::Sport;
+use crate::model::SubscriberRef;
 use crate::subscriptions::SubscriptionService;
 use crate::subscriptions::contract::{SubscriptionCommand, SubscriptionResult};
 
-use super::PROVIDER_NAME;
+use super::INTEGRATION;
 use super::commands::register_commands;
 use super::parse::{parse_component, parse_interaction, unsubscribe_custom_id};
 use super::render::{ReplyMessage, render_button_reply, render_help, render_reply, render_text};
@@ -122,8 +122,8 @@ impl Handler {
         command: SubscriptionCommand,
         render: impl Fn(&SubscriptionResult) -> Vec<ReplyMessage> + Send,
     ) -> Vec<ReplyMessage> {
-        let user = ProviderUserRef {
-            provider: PROVIDER_NAME.to_string(),
+        let user = SubscriberRef {
+            integration: INTEGRATION,
             user_id: user_id.get().to_string(),
         };
         match self.service.handle(&user, command).await {

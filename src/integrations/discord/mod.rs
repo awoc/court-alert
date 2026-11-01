@@ -10,7 +10,7 @@ use serenity::async_trait;
 use crate::alerts::AlertMessageLifecycle;
 use crate::config::DiscordSettings;
 use crate::integrations::{Integration, ReadySignal};
-use crate::model::ProviderUserRef;
+use crate::model::{IntegrationId, SubscriberRef};
 use crate::subscriptions::SubscriptionService;
 
 mod commands;
@@ -32,14 +32,14 @@ use handler::Handler;
 
 const DISCORD_UNKNOWN_MESSAGE: i64 = 10008;
 
-pub const PROVIDER_NAME: &str = "discord";
+pub const INTEGRATION: IntegrationId = IntegrationId::from_static("discord");
 
 pub const MAX_CLUB_CHOICES: usize = 25;
 
 pub struct DiscordProvider {
     token: String,
     guild_id: Option<GuildId>,
-    admin_ids: HashSet<ProviderUserRef>,
+    admin_ids: HashSet<SubscriberRef>,
     alert_lifecycle: Arc<AlertMessageLifecycle>,
 }
 
@@ -51,8 +51,8 @@ impl DiscordProvider {
             admin_ids: settings
                 .admin_ids
                 .into_iter()
-                .map(|id| ProviderUserRef {
-                    provider: PROVIDER_NAME.to_string(),
+                .map(|id| SubscriberRef {
+                    integration: INTEGRATION,
                     user_id: id,
                 })
                 .collect(),
@@ -63,7 +63,7 @@ impl DiscordProvider {
 
 #[async_trait]
 impl Integration for DiscordProvider {
-    fn admins(&self) -> HashSet<ProviderUserRef> {
+    fn admins(&self) -> HashSet<SubscriberRef> {
         self.admin_ids.clone()
     }
 
@@ -84,7 +84,7 @@ impl Integration for DiscordProvider {
             .context("building serenity client")?;
 
         service.register_sender(
-            PROVIDER_NAME,
+            INTEGRATION,
             Arc::new(DiscordSender::new(
                 client.http.clone(),
                 self.alert_lifecycle.clone(),
@@ -101,7 +101,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn admin_ids_become_provider_scoped_user_refs() {
+    async fn admin_ids_become_integration_scoped_subscriber_refs() {
         let store = Arc::new(crate::store::SqliteStore::open_in_memory().await.unwrap());
         let provider = DiscordProvider::new(
             DiscordSettings {
@@ -113,8 +113,8 @@ mod tests {
         );
         assert_eq!(
             provider.admins(),
-            HashSet::from([ProviderUserRef {
-                provider: PROVIDER_NAME.to_string(),
+            HashSet::from([SubscriberRef {
+                integration: INTEGRATION,
                 user_id: "123".to_string(),
             }])
         );

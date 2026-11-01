@@ -17,11 +17,11 @@ use tracing::info;
 
 use crate::config::WebhookSettings;
 use crate::integrations::{Integration, ReadySignal};
-use crate::model::ProviderUserRef;
+use crate::model::{IntegrationId, SubscriberRef};
 use crate::subscriptions::SubscriptionService;
 use alerts::WebhookAlertSender;
 
-pub(crate) const INTEGRATION_NAME: &str = "webhook";
+pub(crate) const INTEGRATION: IntegrationId = IntegrationId::from_static("webhook");
 
 pub struct WebhookIntegration {
     listen: SocketAddr,
@@ -72,7 +72,7 @@ impl BoundWebhookApi {
 
 #[async_trait]
 impl Integration for WebhookIntegration {
-    fn admins(&self) -> HashSet<ProviderUserRef> {
+    fn admins(&self) -> HashSet<SubscriberRef> {
         HashSet::new()
     }
 
@@ -82,7 +82,7 @@ impl Integration for WebhookIntegration {
         ready: ReadySignal,
     ) -> Result<()> {
         let alerts = WebhookAlertSender::new(self.alert_url.clone(), self.alert_secret.clone())?;
-        service.register_sender(INTEGRATION_NAME, Arc::new(alerts));
+        service.register_sender(INTEGRATION, Arc::new(alerts));
         let webhook = self.bind().await?;
         info!(address = %webhook.local_addr()?, "webhook API listening");
         ready.ready();

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Receiver;
 use tracing::warn;
 
-use crate::model::AvailabilityChange;
+use crate::model::{AvailabilityChange, IntegrationId};
 use crate::subscriptions::contract::{AlertSender, AvailabilityAlert};
 
 use super::matcher::match_subscriptions;
@@ -72,11 +72,11 @@ impl SubscriptionService {
                 .senders
                 .read()
                 .expect("senders lock poisoned")
-                .get(&user.provider)
+                .get(&user.integration)
                 .cloned();
             let Some(sender) = sender else {
                 warn!(
-                    provider = %user.provider,
+                    integration = %user.integration,
                     user = %user.user_id,
                     "dispatch: no sender registered for integration"
                 );
@@ -85,7 +85,7 @@ impl SubscriptionService {
             if let Err(e) = sender.send_alert(&user.user_id, &alert).await {
                 warn!(
                     error = %format!("{e:#}"),
-                    provider = %user.provider,
+                    integration = %user.integration,
                     user = %user.user_id,
                     "dispatch: failed to send alert"
                 );
@@ -98,7 +98,7 @@ impl SubscriptionService {
         if taken.is_empty() {
             return;
         }
-        let senders: Vec<(String, Arc<dyn AlertSender>)> = self
+        let senders: Vec<(IntegrationId, Arc<dyn AlertSender>)> = self
             .senders
             .read()
             .expect("senders lock poisoned")
@@ -109,7 +109,7 @@ impl SubscriptionService {
             if let Err(e) = sender.strike_taken(&taken).await {
                 warn!(
                     error = %format!("{e:#}"),
-                    provider = %integration,
+                    integration = %integration,
                     slots = taken.len(),
                     "dispatch: failed to strike slots that were taken"
                 );
@@ -219,7 +219,7 @@ mod tests {
     async fn dispatch_sends_alert_to_matching_subscriber() {
         let svc = service().await;
         let sender = RecordingSender::new(false);
-        svc.register_sender("discord", sender.clone());
+        svc.register_sender("discord".into(), sender.clone());
         svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
             .await
             .unwrap();
@@ -237,7 +237,7 @@ mod tests {
     async fn an_alert_names_the_club_each_court_belongs_to() {
         let svc = service().await;
         let sender = RecordingSender::new(false);
-        svc.register_sender("discord", sender.clone());
+        svc.register_sender("discord".into(), sender.clone());
         svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
             .await
             .unwrap();
@@ -252,7 +252,7 @@ mod tests {
     async fn courts_of_the_same_name_at_different_clubs_are_distinguishable() {
         let svc = service().await;
         let sender = RecordingSender::new(false);
-        svc.register_sender("discord", sender.clone());
+        svc.register_sender("discord".into(), sender.clone());
         svc.handle(
             &uref("1"),
             SubscriptionCommand::Subscribe {
@@ -283,7 +283,7 @@ mod tests {
     async fn dispatch_skips_non_matching_subscriber() {
         let svc = service().await;
         let sender = RecordingSender::new(false);
-        svc.register_sender("discord", sender.clone());
+        svc.register_sender("discord".into(), sender.clone());
         svc.handle(&uref("1"), subscribe_cmd(8 * 60, 10 * 60))
             .await
             .unwrap();
@@ -297,7 +297,7 @@ mod tests {
     async fn dispatch_failing_send_does_not_abort_batch() {
         let svc = service().await;
         let sender = RecordingSender::new(true); // every send errors
-        svc.register_sender("discord", sender.clone());
+        svc.register_sender("discord".into(), sender.clone());
         svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
             .await
             .unwrap();
@@ -323,7 +323,7 @@ mod tests {
     async fn a_slot_that_stops_being_bookable_is_struck_where_it_was_announced() {
         let svc = service().await;
         let sender = RecordingSender::new(false);
-        svc.register_sender("discord", sender.clone());
+        svc.register_sender("discord".into(), sender.clone());
         let taken = unbookable("Court 2");
 
         svc.dispatch(std::slice::from_ref(&taken)).await;
@@ -339,7 +339,7 @@ mod tests {
     async fn slots_are_struck_even_when_no_subscription_matches_them() {
         let svc = service().await;
         let sender = RecordingSender::new(false);
-        svc.register_sender("discord", sender.clone());
+        svc.register_sender("discord".into(), sender.clone());
         let taken = unbookable("Court 2");
 
         svc.dispatch(std::slice::from_ref(&taken)).await;
@@ -351,7 +351,7 @@ mod tests {
     async fn alerts_go_out_before_anything_is_struck() {
         let svc = service().await;
         let sender = RecordingSender::new(false);
-        svc.register_sender("discord", sender.clone());
+        svc.register_sender("discord".into(), sender.clone());
         svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
             .await
             .unwrap();
@@ -366,7 +366,7 @@ mod tests {
     async fn a_batch_of_new_slots_strikes_nothing() {
         let svc = service().await;
         let sender = RecordingSender::new(false);
-        svc.register_sender("discord", sender.clone());
+        svc.register_sender("discord".into(), sender.clone());
         svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
             .await
             .unwrap();
@@ -381,7 +381,7 @@ mod tests {
     async fn a_failing_strike_does_not_stop_the_alerts_in_the_same_batch() {
         let svc = service().await;
         let sender = RecordingSender::new(true);
-        svc.register_sender("discord", sender.clone());
+        svc.register_sender("discord".into(), sender.clone());
         svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
             .await
             .unwrap();
