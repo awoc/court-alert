@@ -77,7 +77,7 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
                 "Available clubs: {}.",
                 available
                     .iter()
-                    .map(|(_, name)| name.as_str())
+                    .map(|club| club.name.as_str())
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -226,7 +226,7 @@ fn schedule_label(schedule: Schedule) -> String {
 mod tests {
     use super::*;
     use crate::model::{Sport, SubscriberRef};
-    use crate::subscriptions::contract::{AvailableSlotSummary, OwnedSubscriptionSummary};
+    use crate::subscriptions::contract::{AvailableSlotSummary, ClubRef, OwnedSubscriptionSummary};
     use chrono::{TimeZone, Utc, Weekday};
 
     fn summary() -> SubscriptionSummary {
@@ -457,10 +457,10 @@ mod tests {
     fn renders_an_unknown_club_with_available_alternatives() {
         let text = reply_text(&SubscriptionResult::UnknownClub {
             unknown: "not-a-club".into(),
-            available: vec![(
-                crate::model::VenueId::new("casa-padel"),
-                "Casa Padel".into(),
-            )],
+            available: vec![ClubRef {
+                venue_id: crate::model::VenueId::new("casa-padel"),
+                name: "Casa Padel".into(),
+            }],
         });
         assert!(text.contains("Unknown club: not-a-club."));
         assert!(text.contains("Available clubs: Casa Padel."));

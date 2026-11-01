@@ -1,6 +1,6 @@
 use crate::model::{CourtFilter, Schedule, Sport, VenueId};
 
-use super::{AvailableSlotSummary, OwnedSubscriptionSummary, SubscriptionSummary};
+use super::{AvailableSlotSummary, ClubRef, OwnedSubscriptionSummary, SubscriptionSummary};
 
 #[derive(Debug, Clone)]
 pub enum SubscriptionCommand {
@@ -41,7 +41,7 @@ pub enum SubscriptionResult {
     },
     UnknownClub {
         unknown: String,
-        available: Vec<(VenueId, String)>,
+        available: Vec<ClubRef>,
     },
     NoClubsConfigured {
         sport: Sport,

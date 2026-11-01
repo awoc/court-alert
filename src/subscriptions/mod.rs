@@ -89,14 +89,14 @@ impl SubscriptionService {
             .collect()
     }
 
-    pub fn clubs_of(&self, sport: Sport) -> Vec<(VenueId, String)> {
+    pub fn clubs_of(&self, sport: Sport) -> Vec<contract::ClubRef> {
         let registry = self.registry.read().expect("venue registry poisoned");
         registry
             .venues_of_sport(sport)
             .into_iter()
-            .map(|venue_id| {
-                let name = registry.club_label(&venue_id);
-                (venue_id, name)
+            .map(|venue_id| contract::ClubRef {
+                name: registry.club_label(&venue_id),
+                venue_id,
             })
             .collect()
     }

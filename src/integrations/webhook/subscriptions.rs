@@ -223,7 +223,7 @@ fn respond(result: SubscriptionResult) -> Response {
             "unknown": unknown,
             "available": available
                 .into_iter()
-                .map(|(id, name)| json!({ "id": id.as_str(), "name": name }))
+                .map(|club| json!({ "id": club.venue_id.as_str(), "name": club.name }))
                 .collect::<Vec<_>>(),
         })),
         SubscriptionResult::NoClubsConfigured { sport } => rejected(json!({

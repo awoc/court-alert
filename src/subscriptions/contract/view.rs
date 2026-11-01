@@ -33,6 +33,12 @@ pub struct AvailableSlotSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClubRef {
+    pub venue_id: VenueId,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClubSummary {
     pub venue_id: VenueId,
     pub name: String,

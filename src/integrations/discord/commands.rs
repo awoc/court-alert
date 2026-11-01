@@ -5,14 +5,14 @@ use serenity::all::{
 };
 use tracing::info;
 
-use crate::model::VenueId;
+use crate::subscriptions::contract::ClubRef;
 
 use super::MAX_CLUB_CHOICES;
 
 pub(super) async fn register_commands(
     ctx: &Context,
     guild_id: Option<GuildId>,
-    padel_clubs: &[(VenueId, String)],
+    padel_clubs: &[ClubRef],
 ) -> Result<()> {
     let cmds = vec![
         build_tennis_cmd(),
@@ -93,7 +93,7 @@ fn build_tennis_cmd() -> CreateCommand {
     )
 }
 
-fn build_padel_cmd(clubs: &[(VenueId, String)]) -> CreateCommand {
+fn build_padel_cmd(clubs: &[ClubRef]) -> CreateCommand {
     let command = with_day_from_to(
         CreateCommand::new("padel")
             .description("Get a DM when padel courts become free in a time window"),
@@ -108,8 +108,8 @@ fn build_padel_cmd(clubs: &[(VenueId, String)]) -> CreateCommand {
             "Club to watch; defaults to all clubs",
         )
         .required(false);
-        for (id, display_name) in clubs.iter().take(MAX_CLUB_CHOICES) {
-            club = club.add_string_choice(display_name, id.as_str());
+        for choice in clubs.iter().take(MAX_CLUB_CHOICES) {
+            club = club.add_string_choice(&choice.name, choice.venue_id.as_str());
         }
         command.add_option(club)
     };
@@ -153,9 +153,12 @@ fn build_help_cmd() -> CreateCommand {
 mod tests {
     use super::*;
 
-    fn clubs(count: usize) -> Vec<(VenueId, String)> {
+    fn clubs(count: usize) -> Vec<ClubRef> {
         (0..count)
-            .map(|i| (VenueId::new(format!("club-{i}")), format!("Club {i}")))
+            .map(|i| ClubRef {
+                venue_id: crate::model::VenueId::new(format!("club-{i}")),
+                name: format!("Club {i}"),
+            })
             .collect()
     }
 

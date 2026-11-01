@@ -112,7 +112,7 @@ impl SubscriptionService {
             return Err(SubscriptionResult::NoClubsConfigured { sport });
         }
         if let Some(chosen) = &venue
-            && !clubs.iter().any(|(id, _)| id == chosen)
+            && !clubs.iter().any(|club| &club.venue_id == chosen)
         {
             return Err(SubscriptionResult::UnknownClub {
                 unknown: chosen.to_string(),
@@ -275,7 +275,7 @@ mod tests {
     };
     use crate::model::{CourtFilter, CourtSurface, Schedule, Sport, SubscriptionDraft, TimeRange};
     use crate::ports::SubscriptionRepository;
-    use crate::subscriptions::contract::{SubscriptionCommand, SubscriptionResult};
+    use crate::subscriptions::contract::{ClubRef, SubscriptionCommand, SubscriptionResult};
     use chrono::Weekday;
 
     #[tokio::test]
@@ -793,7 +793,10 @@ mod tests {
         assert_eq!(unknown, "not-a-club");
         assert_eq!(
             available,
-            vec![(padel_venue_id(), PADEL_CLUB_NAME.to_string())]
+            vec![ClubRef {
+                venue_id: padel_venue_id(),
+                name: PADEL_CLUB_NAME.to_string(),
+            }]
         );
         assert_eq!(
             svc.handle(&uref("1"), SubscriptionCommand::List)
