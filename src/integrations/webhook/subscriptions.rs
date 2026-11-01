@@ -188,6 +188,12 @@ fn respond(result: SubscriptionResult) -> Response {
         SubscriptionResult::NotFound { .. } => error(StatusCode::NOT_FOUND, "not_found"),
         SubscriptionResult::InvalidTimeRange => rejected(json!({ "error": "invalid_time_range" })),
         SubscriptionResult::InvalidSchedule => rejected(json!({ "error": "invalid_schedule" })),
+        SubscriptionResult::TooManyCourts { max } => {
+            rejected(json!({ "error": "too_many_courts", "max": max }))
+        }
+        SubscriptionResult::CourtNameTooLong { max } => {
+            rejected(json!({ "error": "court_name_too_long", "max": max }))
+        }
         SubscriptionResult::UnknownCourts { unknown, available } => rejected(json!({
             "error": "unknown_courts",
             "unknown": unknown,

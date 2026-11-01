@@ -570,6 +570,14 @@ async fn each_validation_rejection_is_unprocessable_with_its_details() {
             }),
         ),
         (
+            with(tennis.clone(), json!({"courts": vec!["Court 2"; 21]})),
+            json!({"error": "too_many_courts", "max": 20}),
+        ),
+        (
+            with(tennis.clone(), json!({"courts": ["x".repeat(101)]})),
+            json!({"error": "court_name_too_long", "max": 100}),
+        ),
+        (
             with(tennis.clone(), json!({"filter": "indoor"})),
             json!({"error": "filter_not_for_sport", "sport": "tennis", "filter": "indoor"}),
         ),

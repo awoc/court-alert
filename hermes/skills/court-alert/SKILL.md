@@ -57,7 +57,7 @@ court-alert.sh POST /subscriptions '{"subscriber_id":"telegram:123456789","sport
 | `date`          | one of   | One day, `YYYY-MM-DD`, today or later. Send exactly one of `weekday` and `date`. |
 | `start`         | yes      | `HH:MM`, Europe/Berlin local time. Slots starting at or after it match.          |
 | `end`           | yes      | `HH:MM`, after `start`. Slots starting before it match. `24:00` means midnight.  |
-| `courts`        | no       | Court names from `GET /clubs`. Omit for every court.                             |
+| `courts`        | no       | Up to 20 court names from `GET /clubs`. Omit for every court.                    |
 | `filter`        | no       | `any`, `clay`, `synthetic`, `indoor` or `outdoor`. See below for the default.    |
 
 Without `filter`, a tennis subscription without `courts` takes court-alert's configured surface (usually `clay`); every other subscription takes `any`. Tennis courts have no `location`, so `indoor` and `outdoor` are padel filters.
@@ -86,6 +86,8 @@ Every error body is JSON with an `error` kind. Recover as follows:
 | 422    | `invalid_time_range`     |                      | Make `end` later than `start`.                                                                         |
 | 422    | `invalid_schedule`       |                      | Send exactly one of `weekday` and `date`, and a `date` of today or later.                              |
 | 422    | `unknown_club`           | `unknown, available` | `available` lists `{"id", "name"}` of each club; retry with the right `id`.                            |
+| 422    | `too_many_courts`        | `max`                | Name at most `max` courts, or drop `courts` for every court.                                           |
+| 422    | `court_name_too_long`    | `max`                | Court names are at most `max` characters; use the names from `GET /clubs`.                             |
 | 422    | `unknown_courts`         | `unknown, available` | Ask the person to pick from `available`, or drop `courts`.                                             |
 | 422    | `no_clubs_configured`    | `sport`              | court-alert monitors no clubs for that sport; tell the person.                                         |
 | 422    | `filter_excludes_courts` | `courts, filter`     | The chosen courts don't match `filter`; drop one of them or use `"filter": "any"`.                     |

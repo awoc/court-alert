@@ -35,6 +35,12 @@ pub enum SubscriptionResult {
     },
     InvalidTimeRange,
     InvalidSchedule,
+    TooManyCourts {
+        max: usize,
+    },
+    CourtNameTooLong {
+        max: usize,
+    },
     UnknownCourts {
         unknown: Vec<String>,
         available: Vec<String>,

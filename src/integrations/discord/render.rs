@@ -59,6 +59,12 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
             "Invalid 'day': use a weekday (e.g. Thu) or a date that is not in the past."
                 .to_string(),
         ],
+        SubscriptionResult::TooManyCourts { max } => {
+            vec![format!("Name at most {max} courts.")]
+        }
+        SubscriptionResult::CourtNameTooLong { max } => {
+            vec![format!("Court names are at most {max} characters.")]
+        }
         SubscriptionResult::UnknownCourts { unknown, available } => vec![
             format!("Unknown court(s): {}.", unknown.join(", ")),
             format!("Available courts: {}.", available.join(", ")),

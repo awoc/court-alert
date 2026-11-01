@@ -11,6 +11,9 @@ use crate::subscriptions::contract::{
 };
 
 use super::matcher::slot_matches;
+
+const MAX_COURTS: usize = 20;
+const MAX_COURT_NAME_CHARS: usize = 100;
 use super::{SubscriptionService, slot_summary};
 
 impl SubscriptionService {
@@ -141,6 +144,22 @@ impl SubscriptionService {
             }));
         }
 
+        if let Some(courts) = &courts {
+            if courts.len() > MAX_COURTS {
+                return Err(Box::new(SubscriptionResult::TooManyCourts {
+                    max: MAX_COURTS,
+                }));
+            }
+            if courts
+                .iter()
+                .any(|court| court.chars().count() > MAX_COURT_NAME_CHARS)
+            {
+                return Err(Box::new(SubscriptionResult::CourtNameTooLong {
+                    max: MAX_COURT_NAME_CHARS,
+                }));
+            }
+        }
+
         let courts = self
             .canonicalize_courts(sport, venue.as_ref(), courts)
             .map_err(|unknown| {
@@ -208,6 +227,7 @@ impl SubscriptionService {
                 .iter()
                 .find_map(|(_, catalog)| catalog.resolve(&court))
             {
+                Some(known) if canonical.iter().any(|name| name == known.name()) => {}
                 Some(known) => canonical.push(known.name().to_owned()),
                 None => unknown.push(court),
             }
@@ -588,6 +608,59 @@ mod tests {
             };
             assert_eq!(summary.courts, Some(vec!["Court 2".to_string()]));
         }
+    }
+
+    fn courts_cmd(courts: Vec<String>) -> SubscriptionCommand {
+        SubscriptionCommand::Subscribe {
+            sport: Sport::Tennis,
+            venue: None,
+            schedule: Schedule::Weekday(Weekday::Tue),
+            start_minute: 18 * 60,
+            end_minute: 20 * 60,
+            courts: Some(courts),
+            filter: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn too_many_or_overlong_court_names_are_rejected_and_store_nothing() {
+        let svc = service().await;
+        let too_many = vec!["Court 2".to_string(); 21];
+        assert_eq!(
+            svc.handle(&uref("1"), courts_cmd(too_many)).await.unwrap(),
+            SubscriptionResult::TooManyCourts { max: 20 }
+        );
+        assert_eq!(
+            svc.handle(&uref("1"), courts_cmd(vec!["x".repeat(101)]))
+                .await
+                .unwrap(),
+            SubscriptionResult::CourtNameTooLong { max: 100 }
+        );
+        assert_eq!(
+            svc.handle(&uref("1"), SubscriptionCommand::List)
+                .await
+                .unwrap(),
+            SubscriptionResult::SubscriptionList(vec![])
+        );
+    }
+
+    #[tokio::test]
+    async fn courts_named_twice_are_stored_once() {
+        let svc = service().await;
+        let SubscriptionResult::Subscribed { summary, .. } = svc
+            .handle(
+                &uref("1"),
+                courts_cmd(vec!["2".into(), "Court 2".into(), "5".into()]),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected Subscribed");
+        };
+        assert_eq!(
+            summary.courts,
+            Some(vec!["Court 2".to_string(), "Court 5".to_string()])
+        );
     }
 
     #[tokio::test]

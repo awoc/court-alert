@@ -7,8 +7,6 @@ use crate::model::{CourtFilter, Schedule, Sport, VenueId};
 use crate::subscriptions::contract::SubscriptionCommand;
 use crate::time::today_berlin;
 
-const MAX_COURTS: usize = 20;
-const MAX_COURT_NAME_CHARS: usize = 100;
 const MAX_COURT_FILTER_CHARS: usize = 500;
 
 const UNSUBSCRIBE_PREFIX: &str = "unsubscribe:";
@@ -91,16 +89,6 @@ fn parse_courts(input: Option<String>) -> Result<Option<Vec<String>>> {
         .filter(|court| !court.is_empty())
         .map(str::to_string)
         .collect();
-    anyhow::ensure!(
-        courts.len() <= MAX_COURTS,
-        "'courts' must contain at most {MAX_COURTS} names"
-    );
-    anyhow::ensure!(
-        courts
-            .iter()
-            .all(|court| court.chars().count() <= MAX_COURT_NAME_CHARS),
-        "each court name must be at most {MAX_COURT_NAME_CHARS} characters"
-    );
     Ok(Some(courts))
 }
 
@@ -282,12 +270,6 @@ mod tests {
     #[test]
     fn court_filter_rejects_oversized_input() {
         assert!(parse_courts(Some("x".repeat(MAX_COURT_FILTER_CHARS + 1))).is_err());
-        let too_many = (0..=MAX_COURTS)
-            .map(|i| format!("Court {i}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        assert!(parse_courts(Some(too_many)).is_err());
-        assert!(parse_courts(Some("x".repeat(MAX_COURT_NAME_CHARS + 1))).is_err());
     }
 
     #[test]
