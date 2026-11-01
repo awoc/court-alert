@@ -180,7 +180,7 @@ fn summary_line(s: &SubscriptionSummary) -> String {
 
 fn club_label(s: &SubscriptionSummary) -> String {
     match &s.club {
-        Some(club) => club.clone(),
+        Some(club) => club.name.clone(),
         None => format!("all {} clubs", s.sport),
     }
 }
@@ -447,7 +447,10 @@ mod tests {
         s.club = None;
         assert!(reply_text(&subscribed(s.clone())).contains("all padel clubs"));
 
-        s.club = Some("Casa Padel".into());
+        s.club = Some(ClubRef {
+            venue_id: crate::model::VenueId::new("casa-padel"),
+            name: "Casa Padel".into(),
+        });
         let text = reply_text(&subscribed(s));
         assert!(text.contains("Casa Padel"));
         assert!(!text.contains("all padel clubs"));

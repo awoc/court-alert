@@ -62,11 +62,11 @@ court-alert.sh POST /subscriptions '{"user_id":"telegram:123456789","sport":"pad
 
 Without `filter`, a tennis subscription without `courts` takes court-alert's configured surface (usually `clay`); every other subscription takes `any`. Tennis courts have no `location`, so `indoor` and `outdoor` are padel filters.
 
-`201` with `{"subscription": {...}, "open_slots": [...]}`. `open_slots` are matching slots that are already bookable: tell the person straight away, because no alert will be sent for them. In the returned subscription, `club` is the club's display name.
+`201` with `{"subscription": {...}, "open_slots": [...]}`. `open_slots` are matching slots that are already bookable: tell the person straight away, because no alert will be sent for them. In the returned subscription, `club` is the club `id` and `club_name` its display name; both are null for a subscription to every club.
 
 ### List subscriptions: `GET /subscriptions?user=<subscriber id>`
 
-`200` with `{"subscriptions": [{"id", "sport", "club", "weekday" or "date", "start", "end", "courts", "filter"}]}`.
+`200` with `{"subscriptions": [{"id", "sport", "club", "club_name", "weekday" or "date", "start", "end", "courts", "filter"}]}`.
 
 ### Delete a subscription: `DELETE /subscriptions/<id>?user=<subscriber id>`
 

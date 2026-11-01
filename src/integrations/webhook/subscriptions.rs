@@ -45,6 +45,7 @@ struct Subscription {
     id: i64,
     sport: &'static str,
     club: Option<String>,
+    club_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     weekday: Option<Weekday>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -64,7 +65,11 @@ impl From<SubscriptionSummary> for Subscription {
         Self {
             id: summary.id,
             sport: summary.sport.as_str(),
-            club: summary.club,
+            club: summary
+                .club
+                .as_ref()
+                .map(|club| club.venue_id.as_str().to_owned()),
+            club_name: summary.club.map(|club| club.name),
             weekday,
             date,
             start: fmt_hhmm(summary.time_range.start_minute()),

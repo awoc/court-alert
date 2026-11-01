@@ -6,8 +6,8 @@ use crate::model::{
     TimeRange, VenueId,
 };
 use crate::subscriptions::contract::{
-    AvailableSlotSummary, OwnedSubscriptionSummary, SubscriptionCommand, SubscriptionResult,
-    SubscriptionSummary,
+    AvailableSlotSummary, ClubRef, OwnedSubscriptionSummary, SubscriptionCommand,
+    SubscriptionResult, SubscriptionSummary,
 };
 
 use super::matcher::slot_matches;
@@ -40,7 +40,7 @@ impl SubscriptionService {
                     filter,
                 ) {
                     Ok(draft) => draft,
-                    Err(rejection) => return Ok(rejection),
+                    Err(rejection) => return Ok(*rejection),
                 };
 
                 let id = self.store.add(draft.clone()).await?;
@@ -106,44 +106,46 @@ impl SubscriptionService {
         end_minute: u32,
         courts: Option<Vec<String>>,
         filter: Option<CourtFilter>,
-    ) -> Result<SubscriptionDraft, SubscriptionResult> {
+    ) -> Result<SubscriptionDraft, Box<SubscriptionResult>> {
         let clubs = self.clubs_of(sport);
         if clubs.is_empty() {
-            return Err(SubscriptionResult::NoClubsConfigured { sport });
+            return Err(Box::new(SubscriptionResult::NoClubsConfigured { sport }));
         }
         if let Some(chosen) = &venue
             && !clubs.iter().any(|club| &club.venue_id == chosen)
         {
-            return Err(SubscriptionResult::UnknownClub {
+            return Err(Box::new(SubscriptionResult::UnknownClub {
                 unknown: chosen.to_string(),
                 available: clubs,
-            });
+            }));
         }
 
         let Some(time_range) = TimeRange::new(start_minute, end_minute) else {
-            return Err(SubscriptionResult::InvalidTimeRange);
+            return Err(Box::new(SubscriptionResult::InvalidTimeRange));
         };
         if let Schedule::Date(date) = schedule
             && date < self.clock.today()
         {
-            return Err(SubscriptionResult::InvalidSchedule);
+            return Err(Box::new(SubscriptionResult::InvalidSchedule));
         }
 
         let courts = self
             .canonicalize_courts(sport, venue.as_ref(), courts)
-            .map_err(|unknown| SubscriptionResult::UnknownCourts {
-                unknown,
-                available: self.court_names(sport, venue.as_ref()),
+            .map_err(|unknown| {
+                Box::new(SubscriptionResult::UnknownCourts {
+                    unknown,
+                    available: self.court_names(sport, venue.as_ref()),
+                })
             })?;
 
         if let Some(chosen) = filter
             && let Some(excluded) =
                 self.courts_excluded_by(sport, venue.as_ref(), chosen, courts.as_deref())
         {
-            return Err(SubscriptionResult::FilterExcludesCourts {
+            return Err(Box::new(SubscriptionResult::FilterExcludesCourts {
                 courts: excluded,
                 filter: chosen,
-            });
+            }));
         }
 
         Ok(SubscriptionDraft {
@@ -158,13 +160,13 @@ impl SubscriptionService {
     }
 
     fn summarize(&self, sub: Subscription) -> SubscriptionSummary {
-        let club = sub.venue.as_ref().map(|venue_id| {
-            self.registry
+        let club = sub.venue.map(|venue_id| ClubRef {
+            name: self
+                .registry
                 .read()
                 .expect("venue registry poisoned")
-                .display_name(venue_id)
-                .unwrap_or_else(|| venue_id.as_str())
-                .to_owned()
+                .club_label(&venue_id),
+            venue_id,
         });
         SubscriptionSummary {
             id: sub.id,
@@ -765,7 +767,13 @@ mod tests {
         else {
             panic!("expected Subscribed");
         };
-        assert_eq!(summary.club.as_deref(), Some(PADEL_CLUB_NAME));
+        assert_eq!(
+            summary.club,
+            Some(ClubRef {
+                venue_id: padel_venue_id(),
+                name: PADEL_CLUB_NAME.to_string(),
+            })
+        );
 
         let SubscriptionResult::Subscribed { summary, .. } =
             svc.handle(&uref("1"), padel_cmd(None)).await.unwrap()

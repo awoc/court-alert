@@ -10,7 +10,7 @@ use crate::model::{
 pub struct SubscriptionSummary {
     pub id: i64,
     pub sport: Sport,
-    pub club: Option<String>,
+    pub club: Option<ClubRef>,
     pub schedule: Schedule,
     pub time_range: TimeRange,
     pub courts: Option<Vec<String>>,

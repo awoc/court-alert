@@ -339,7 +339,8 @@ async fn a_subscriber_can_subscribe_list_and_delete_their_subscriptions() {
             "subscription": {
                 "id": id,
                 "sport": "padel",
-                "club": "Casa Padel",
+                "club": "casa-padel",
+                "club_name": "Casa Padel",
                 "weekday": "Thu",
                 "start": "18:00",
                 "end": "21:30",
