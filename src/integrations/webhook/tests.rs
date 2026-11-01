@@ -913,3 +913,70 @@ async fn discord_dms_keep_flowing_alongside_webhook_alerts() {
         [BookableSlotId::from(&indoor_slot())]
     );
 }
+
+const HELPER_SUBSCRIBER: &str = "telegram:42";
+
+struct HelperResponse {
+    status: std::process::ExitStatus,
+    body: Value,
+}
+
+async fn run_helper(api: &Api, args: &[&str]) -> HelperResponse {
+    let output = tokio::process::Command::new("bash")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/hermes/skills/court-alert/scripts/court-alert.sh"
+        ))
+        .args(args)
+        .env("COURT_ALERT_URL", &api.base)
+        .env("COURT_ALERT_API_SECRET", API_SECRET)
+        .output()
+        .await
+        .expect("run the Hermes helper");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    HelperResponse {
+        status: output.status,
+        body: if stdout.trim().is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout:?}"))
+        },
+    }
+}
+
+#[tokio::test]
+async fn the_hermes_helper_signs_requests_the_api_accepts() {
+    let api = start().await;
+
+    let clubs = run_helper(&api, &["GET", "/clubs?sport=padel"]).await;
+    assert!(clubs.status.success());
+    assert_eq!(clubs.body["clubs"][0]["id"], "casa-padel");
+
+    let subscription = json!({
+        "user_id": HELPER_SUBSCRIBER,
+        "sport": "padel",
+        "club": "casa-padel",
+        "weekday": "Thu",
+        "start": "18:00",
+        "end": "21:30",
+    });
+    let created = run_helper(&api, &["POST", "/subscriptions", &subscription.to_string()]).await;
+    assert!(created.status.success());
+    let id = created.body["subscription"]["id"].as_i64().expect("an id");
+
+    let listing = format!("/subscriptions?user={HELPER_SUBSCRIBER}");
+    let listed = run_helper(&api, &["GET", &listing]).await;
+    assert_eq!(
+        listed.body,
+        json!({ "subscriptions": [created.body["subscription"]] })
+    );
+
+    let path = format!("/subscriptions/{id}?user={HELPER_SUBSCRIBER}");
+    let deleted = run_helper(&api, &["DELETE", &path]).await;
+    assert!(deleted.status.success());
+    assert_eq!(deleted.body, Value::Null);
+
+    let missing = run_helper(&api, &["DELETE", &path]).await;
+    assert!(!missing.status.success());
+    assert_eq!(missing.body, json!({ "error": "not_found" }));
+}

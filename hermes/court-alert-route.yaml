@@ -1,0 +1,23 @@
+# Sample route for court-alert alerts; setup steps are in the README's "Connecting Hermes".
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      port: 8644
+      routes:
+        court-alert:
+          secret: "replace-with-COURT_ALERT_WEBHOOK_ALERT_SECRET"
+          filters:
+            - field: "user_id"
+              regex: "^telegram:"
+          script: "court-alert-alert.py"
+          skills: ["court-alert"]
+          prompt: |
+            court-alert found newly bookable court slots for the person you
+            subscribed as {user_id}. Tell them which slots opened, in their
+            local time (Europe/Berlin), grouped by club and day. Keep it short.
+            Slots (start and end are UTC):
+            {slot_lines}
+          deliver: "telegram"
+          deliver_extra:
+            chat_id: "{chat_id}"
