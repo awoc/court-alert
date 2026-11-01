@@ -85,7 +85,7 @@ Every error body is JSON with an `error` kind. Recover as follows:
 | 422    | `invalid_user_id`        |                      | Use a non-empty subscriber ID of at most 128 characters.                                               |
 | 422    | `invalid_time_range`     |                      | Make `end` later than `start`.                                                                         |
 | 422    | `invalid_schedule`       |                      | Use a `date` of today or later.                                                                        |
-| 422    | `unknown_club`           | `unknown, available` | `available` lists club names; call `GET /clubs` and use the matching `id`.                             |
+| 422    | `unknown_club`           | `unknown, available` | `available` lists `{"id", "name"}` of each club; retry with the right `id`.                            |
 | 422    | `unknown_courts`         | `unknown, available` | Ask the person to pick from `available`, or drop `courts`.                                             |
 | 422    | `no_clubs_configured`    | `sport`              | court-alert monitors no clubs for that sport; tell the person.                                         |
 | 422    | `filter_excludes_courts` | `courts, filter`     | The chosen courts don't match `filter`; drop one of them or use `"filter": "any"`.                     |

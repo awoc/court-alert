@@ -221,7 +221,10 @@ fn respond(result: SubscriptionResult) -> Response {
         SubscriptionResult::UnknownClub { unknown, available } => rejected(json!({
             "error": "unknown_club",
             "unknown": unknown,
-            "available": available,
+            "available": available
+                .into_iter()
+                .map(|(id, name)| json!({ "id": id.as_str(), "name": name }))
+                .collect::<Vec<_>>(),
         })),
         SubscriptionResult::NoClubsConfigured { sport } => rejected(json!({
             "error": "no_clubs_configured",

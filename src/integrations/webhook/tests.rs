@@ -535,7 +535,11 @@ async fn each_validation_rejection_is_unprocessable_with_its_details() {
         ),
         (
             with(tennis.clone(), json!({"club": "nowhere"})),
-            json!({"error": "unknown_club", "unknown": "nowhere", "available": ["ZHS München"]}),
+            json!({
+                "error": "unknown_club",
+                "unknown": "nowhere",
+                "available": [{"id": "zhs-munich", "name": "ZHS München"}],
+            }),
         ),
         (
             with(

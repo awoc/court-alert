@@ -116,7 +116,7 @@ impl SubscriptionService {
         {
             return Err(SubscriptionResult::UnknownClub {
                 unknown: chosen.to_string(),
-                available: clubs.into_iter().map(|(_, name)| name).collect(),
+                available: clubs,
             });
         }
 
@@ -791,7 +791,10 @@ mod tests {
             panic!("expected UnknownClub, got {reply:?}");
         };
         assert_eq!(unknown, "not-a-club");
-        assert_eq!(available, vec![PADEL_CLUB_NAME.to_string()]);
+        assert_eq!(
+            available,
+            vec![(padel_venue_id(), PADEL_CLUB_NAME.to_string())]
+        );
         assert_eq!(
             svc.handle(&uref("1"), SubscriptionCommand::List)
                 .await

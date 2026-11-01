@@ -73,7 +73,14 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
         )],
         SubscriptionResult::UnknownClub { unknown, available } => vec![
             format!("Unknown club: {unknown}."),
-            format!("Available clubs: {}.", available.join(", ")),
+            format!(
+                "Available clubs: {}.",
+                available
+                    .iter()
+                    .map(|(_, name)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         ],
         SubscriptionResult::NoClubsConfigured { sport } => {
             vec![format!(
@@ -450,7 +457,10 @@ mod tests {
     fn renders_an_unknown_club_with_available_alternatives() {
         let text = reply_text(&SubscriptionResult::UnknownClub {
             unknown: "not-a-club".into(),
-            available: vec!["Casa Padel".into()],
+            available: vec![(
+                crate::model::VenueId::new("casa-padel"),
+                "Casa Padel".into(),
+            )],
         });
         assert!(text.contains("Unknown club: not-a-club."));
         assert!(text.contains("Available clubs: Casa Padel."));

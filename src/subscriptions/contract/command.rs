@@ -41,7 +41,7 @@ pub enum SubscriptionResult {
     },
     UnknownClub {
         unknown: String,
-        available: Vec<String>,
+        available: Vec<(VenueId, String)>,
     },
     NoClubsConfigured {
         sport: Sport,
