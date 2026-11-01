@@ -29,8 +29,8 @@ impl SubscriptionRepository for SqliteStore {
                   start_minute, end_minute, courts, court_filter)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
-                    sub.user.integration.as_str(),
-                    sub.user.user_id,
+                    sub.subscriber.integration.as_str(),
+                    sub.subscriber.user_id,
                     sport,
                     sub.venue.map(|venue| venue.to_string()),
                     weekday,
@@ -159,7 +159,7 @@ mod tests {
 
     fn sample(weekday: Weekday) -> SubscriptionDraft {
         SubscriptionDraft {
-            user: uref("12345"),
+            subscriber: uref("12345"),
             sport: Sport::Tennis,
             venue: None,
             schedule: Schedule::Weekday(weekday),
@@ -179,7 +179,7 @@ mod tests {
             .unwrap();
         assert_eq!(subs.len(), 1);
         assert_eq!(subs[0].id, id);
-        assert_eq!(subs[0].user, uref("12345"));
+        assert_eq!(subs[0].subscriber, uref("12345"));
         assert_eq!(subs[0].schedule, Schedule::Weekday(Weekday::Tue));
         assert_eq!(subs[0].time_range, range(1080, 1320));
         assert!(subs[0].courts.is_none());
@@ -216,10 +216,10 @@ mod tests {
         let store = SqliteStore::open_in_memory().await.unwrap();
         store.add(sample(Weekday::Tue)).await.unwrap();
         let mut other_user = sample(Weekday::Wed);
-        other_user.user = uref("99999");
+        other_user.subscriber = uref("99999");
         store.add(other_user).await.unwrap();
         let mut other_provider = sample(Weekday::Thu);
-        other_provider.user = SubscriberRef {
+        other_provider.subscriber = SubscriberRef {
             integration: "telegram".into(),
             user_id: "12345".into(),
         };
@@ -238,7 +238,7 @@ mod tests {
         let store = SqliteStore::open_in_memory().await.unwrap();
         store.add(sample(Weekday::Tue)).await.unwrap();
         let mut other = sample(Weekday::Wed);
-        other.user = uref("99999");
+        other.subscriber = uref("99999");
         store.add(other).await.unwrap();
         assert_eq!(store.list_all(query_date()).await.unwrap().len(), 2);
     }
@@ -282,7 +282,7 @@ mod tests {
 
     fn date_sample(date: NaiveDate) -> SubscriptionDraft {
         SubscriptionDraft {
-            user: uref("12345"),
+            subscriber: uref("12345"),
             sport: Sport::Tennis,
             venue: None,
             schedule: Schedule::Date(date),

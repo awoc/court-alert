@@ -59,8 +59,14 @@ pub fn match_subscriptions(
                 continue;
             }
             let slot_key = BookableSlotId::from(slot);
-            if seen.entry(sub.user.clone()).or_default().insert(slot_key) {
-                out.entry(sub.user.clone()).or_default().push(slot.clone());
+            if seen
+                .entry(sub.subscriber.clone())
+                .or_default()
+                .insert(slot_key)
+            {
+                out.entry(sub.subscriber.clone())
+                    .or_default()
+                    .push(slot.clone());
             }
         }
     }
@@ -121,7 +127,7 @@ mod tests {
     ) -> Subscription {
         Subscription {
             id: 1,
-            user: uref(user),
+            subscriber: uref(user),
             sport: Sport::Tennis,
             venue: None,
             schedule: Schedule::Weekday(weekday),
@@ -134,7 +140,7 @@ mod tests {
     fn date_sub(user: &str, date: NaiveDate, from: u32, to: u32) -> Subscription {
         Subscription {
             id: 1,
-            user: uref(user),
+            subscriber: uref(user),
             sport: Sport::Tennis,
             venue: None,
             schedule: Schedule::Date(date),

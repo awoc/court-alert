@@ -80,7 +80,7 @@ impl TimeRange {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Subscription {
     pub id: i64,
-    pub user: SubscriberRef,
+    pub subscriber: SubscriberRef,
     pub sport: Sport,
     pub venue: Option<VenueId>,
     pub schedule: Schedule,
@@ -91,7 +91,7 @@ pub struct Subscription {
 
 #[derive(Debug, Clone)]
 pub struct SubscriptionDraft {
-    pub user: SubscriberRef,
+    pub subscriber: SubscriberRef,
     pub sport: Sport,
     pub venue: Option<VenueId>,
     pub schedule: Schedule,

@@ -19,7 +19,7 @@ pub struct SubscriptionSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnedSubscriptionSummary {
-    pub user: SubscriberRef,
+    pub subscriber: SubscriberRef,
     pub summary: SubscriptionSummary,
 }
 

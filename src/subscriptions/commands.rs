@@ -46,7 +46,7 @@ impl SubscriptionService {
                 let id = self.store.add(draft.clone()).await?;
                 let sub = Subscription {
                     id,
-                    user: draft.user,
+                    subscriber: draft.subscriber,
                     sport: draft.sport,
                     venue: draft.venue,
                     schedule: draft.schedule,
@@ -74,7 +74,7 @@ impl SubscriptionService {
                 Ok(SubscriptionResult::AllSubscriptions(
                     subs.into_iter()
                         .map(|sub| OwnedSubscriptionSummary {
-                            user: sub.user.clone(),
+                            subscriber: sub.subscriber.clone(),
                             summary: self.summarize(sub),
                         })
                         .collect(),
@@ -149,7 +149,7 @@ impl SubscriptionService {
         }
 
         Ok(SubscriptionDraft {
-            user: user.clone(),
+            subscriber: user.clone(),
             sport,
             venue,
             schedule,
@@ -351,7 +351,7 @@ mod tests {
         let (svc, store) = super::super::testing::service_with_store().await;
         store
             .add(SubscriptionDraft {
-                user: uref("1"),
+                subscriber: uref("1"),
                 sport: Sport::Tennis,
                 venue: None,
                 schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),

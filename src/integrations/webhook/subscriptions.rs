@@ -37,7 +37,7 @@ pub(super) struct SubscribeRequest {
 }
 
 #[derive(Deserialize)]
-pub(super) struct UserQuery {
+pub(super) struct SubscriberQuery {
     user: String,
 }
 
@@ -112,7 +112,7 @@ pub(super) async fn subscribe(
 
 pub(super) async fn list(
     State(service): State<Arc<SubscriptionService>>,
-    query: Result<Query<UserQuery>, QueryRejection>,
+    query: Result<Query<SubscriberQuery>, QueryRejection>,
 ) -> Result<Response, InvalidRequest> {
     let Query(query) = query?;
     Ok(handle(&service, &query.user, SubscriptionCommand::List).await)
@@ -121,7 +121,7 @@ pub(super) async fn list(
 pub(super) async fn unsubscribe(
     State(service): State<Arc<SubscriptionService>>,
     id: Result<Path<i64>, PathRejection>,
-    query: Result<Query<UserQuery>, QueryRejection>,
+    query: Result<Query<SubscriberQuery>, QueryRejection>,
 ) -> Result<Response, InvalidRequest> {
     let Path(id) = id?;
     let Query(query) = query?;

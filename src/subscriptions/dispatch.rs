@@ -398,7 +398,7 @@ mod tests {
         let (svc, store) = service_with_store().await;
         store
             .add(SubscriptionDraft {
-                user: uref("1"),
+                subscriber: uref("1"),
                 sport: Sport::Tennis,
                 venue: None,
                 schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
@@ -419,7 +419,7 @@ mod tests {
 
         store
             .add(SubscriptionDraft {
-                user: uref("1"),
+                subscriber: uref("1"),
                 sport: Sport::Tennis,
                 venue: None,
                 schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),

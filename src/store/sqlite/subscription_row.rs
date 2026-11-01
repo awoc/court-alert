@@ -52,7 +52,7 @@ impl TryFrom<SubscriptionRow> for Subscription {
         })?;
         Ok(Self {
             id: row.id,
-            user: SubscriberRef {
+            subscriber: SubscriberRef {
                 integration: row.provider.into(),
                 user_id: row.user_id,
             },

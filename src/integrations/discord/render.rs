@@ -186,7 +186,7 @@ fn club_label(s: &SubscriptionSummary) -> String {
 }
 
 fn owned_summary_line(owned: &OwnedSubscriptionSummary) -> String {
-    let user = &owned.user;
+    let user = &owned.subscriber;
     let owner = if user.integration == INTEGRATION {
         format!("<@{}>", user.user_id)
     } else {
@@ -515,7 +515,7 @@ mod tests {
     #[test]
     fn renders_listall_with_owner_and_schedule() {
         let reply = SubscriptionResult::AllSubscriptions(vec![OwnedSubscriptionSummary {
-            user: SubscriberRef {
+            subscriber: SubscriberRef {
                 integration: INTEGRATION,
                 user_id: "42".to_string(),
             },
@@ -532,7 +532,7 @@ mod tests {
     #[test]
     fn renders_listall_owners_of_other_integrations_without_a_mention() {
         let reply = SubscriptionResult::AllSubscriptions(vec![OwnedSubscriptionSummary {
-            user: SubscriberRef {
+            subscriber: SubscriberRef {
                 integration: crate::integrations::webhook::INTEGRATION,
                 user_id: "hermes:alice".to_string(),
             },
