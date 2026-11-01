@@ -135,9 +135,9 @@ impl Api {
         self.signed_post("/subscriptions", &body.to_string()).await
     }
 
-    async fn subscriptions_of(&self, user: &str) -> Value {
+    async fn subscriptions_of(&self, subscriber: &str) -> Value {
         let response = self
-            .signed_get(&format!("/subscriptions?user={user}"))
+            .signed_get(&format!("/subscriptions?subscriber_id={subscriber}"))
             .await;
         assert_eq!(response.status(), 200);
         response.json().await.unwrap()
@@ -260,7 +260,11 @@ async fn a_valid_signature_reused_for_another_path_or_method_is_unauthorized() {
     assert_eq!(other_query.status(), 401);
 
     let other_path = api
-        .send(reqwest::Method::GET, "/subscriptions?user=a", &headers)
+        .send(
+            reqwest::Method::GET,
+            "/subscriptions?subscriber_id=a",
+            &headers,
+        )
         .await;
     assert_eq!(other_path.status(), 401);
 
@@ -321,7 +325,7 @@ async fn a_subscriber_can_subscribe_list_and_delete_their_subscriptions() {
 
     let response = api
         .subscribe(json!({
-            "user_id": "alice",
+            "subscriber_id": "alice",
             "sport": "padel",
             "club": "casa-padel",
             "weekday": "Thu",
@@ -357,7 +361,7 @@ async fn a_subscriber_can_subscribe_list_and_delete_their_subscriptions() {
     );
 
     let deleted = api
-        .signed_delete(&format!("/subscriptions/{id}?user=alice"))
+        .signed_delete(&format!("/subscriptions/{id}?subscriber_id=alice"))
         .await;
     assert_eq!(deleted.status(), 204);
     assert_eq!(
@@ -398,7 +402,7 @@ async fn subscribing_returns_the_open_slots_that_already_match() {
 
     let response = api
         .subscribe(json!({
-            "user_id": "alice",
+            "subscriber_id": "alice",
             "sport": "padel",
             "date": tomorrow.to_string(),
             "start": "09:00",
@@ -422,9 +426,9 @@ async fn subscribing_returns_the_open_slots_that_already_match() {
     );
 }
 
-fn tennis_subscription(user_id: &str) -> Value {
+fn tennis_subscription(subscriber_id: &str) -> Value {
     json!({
-        "user_id": user_id,
+        "subscriber_id": subscriber_id,
         "sport": "tennis",
         "weekday": "Tue",
         "start": "08:00",
@@ -449,11 +453,11 @@ async fn one_subscriber_cannot_see_or_delete_another_subscribers_subscriptions()
     );
 
     let foreign = api
-        .signed_delete(&format!("/subscriptions/{id}?user=bob"))
+        .signed_delete(&format!("/subscriptions/{id}?subscriber_id=bob"))
         .await;
     assert_eq!(foreign.status(), 404);
     let missing = api
-        .signed_delete(&format!("/subscriptions/{}?user=bob", id + 1))
+        .signed_delete(&format!("/subscriptions/{}?subscriber_id=bob", id + 1))
         .await;
     assert_eq!(missing.status(), 404);
     assert_eq!(
@@ -469,27 +473,31 @@ async fn one_subscriber_cannot_see_or_delete_another_subscribers_subscriptions()
 }
 
 #[tokio::test]
-async fn an_empty_or_overlong_user_id_is_rejected() {
+async fn an_empty_or_overlong_subscriber_id_is_rejected() {
     let api = start().await;
     let overlong = "x".repeat(129);
 
-    for user_id in ["", overlong.as_str()] {
-        let response = api.subscribe(tennis_subscription(user_id)).await;
-        assert_eq!(response.status(), 422, "subscribe as {user_id:?}");
+    for subscriber_id in ["", overlong.as_str()] {
+        let response = api.subscribe(tennis_subscription(subscriber_id)).await;
+        assert_eq!(response.status(), 422, "subscribe as {subscriber_id:?}");
         assert_eq!(
             response.json::<Value>().await.unwrap(),
-            json!({ "error": "invalid_user_id" })
+            json!({ "error": "invalid_subscriber_id" })
         );
         for response in [
-            api.signed_get(&format!("/subscriptions?user={user_id}"))
+            api.signed_get(&format!("/subscriptions?subscriber_id={subscriber_id}"))
                 .await,
-            api.signed_delete(&format!("/subscriptions/1?user={user_id}"))
+            api.signed_delete(&format!("/subscriptions/1?subscriber_id={subscriber_id}"))
                 .await,
         ] {
-            assert_eq!(response.status(), 422, "list or delete as {user_id:?}");
+            assert_eq!(
+                response.status(),
+                422,
+                "list or delete as {subscriber_id:?}"
+            );
             assert_eq!(
                 response.json::<Value>().await.unwrap()["error"],
-                "invalid_user_id"
+                "invalid_subscriber_id"
             );
         }
     }
@@ -598,7 +606,7 @@ async fn malformed_requests_are_bad_requests() {
 
     for body in [
         "{not json".to_owned(),
-        with(tennis.clone(), json!({"user_id": null})).to_string(),
+        with(tennis.clone(), json!({"subscriber_id": null})).to_string(),
         with(tennis.clone(), json!({"sport": "squash"})).to_string(),
         with(tennis.clone(), json!({"weekday": "Funday"})).to_string(),
         with(tennis.clone(), json!({"start": "8"})).to_string(),
@@ -617,7 +625,7 @@ async fn malformed_requests_are_bad_requests() {
 
     for path in [
         "/subscriptions",
-        "/subscriptions/abc?user=alice",
+        "/subscriptions/abc?subscriber_id=alice",
         "/subscriptions/1",
     ] {
         let response = if path == "/subscriptions" {
@@ -664,20 +672,20 @@ async fn run_against(hermes: &MockServer) -> Arc<SubscriptionService> {
     service
 }
 
-fn subscriber(user_id: &str) -> SubscriberRef {
+fn subscriber(subscriber_id: &str) -> SubscriberRef {
     SubscriberRef {
         integration: INTEGRATION,
-        user_id: user_id.into(),
+        subscriber_id: subscriber_id.into(),
     }
 }
 
 async fn subscribe_to_padel_on_tuesday_evenings(
     service: &SubscriptionService,
-    user: &SubscriberRef,
+    subscriber: &SubscriberRef,
 ) {
     service
         .handle(
-            user,
+            subscriber,
             SubscriptionCommand::Subscribe {
                 sport: Sport::Padel,
                 venue: None,
@@ -733,9 +741,9 @@ async fn alerts_received(hermes: &MockServer) -> Vec<Request> {
     hermes.received_requests().await.unwrap_or_default()
 }
 
-fn alerted_user(alert: &Request) -> String {
+fn alerted_subscriber(alert: &Request) -> String {
     let body: Value = serde_json::from_slice(&alert.body).unwrap();
-    body["user_id"].as_str().unwrap().to_owned()
+    body["subscriber_id"].as_str().unwrap().to_owned()
 }
 
 #[tokio::test]
@@ -757,7 +765,7 @@ async fn matching_slots_reach_hermes_in_one_alert_per_subscriber() {
     assert_eq!(
         body,
         json!({
-            "user_id": "alice",
+            "subscriber_id": "alice",
             "slots": [
                 {
                     "club": "Casa Padel",
@@ -838,7 +846,7 @@ async fn each_delivery_carries_its_own_webhook_id() {
 #[tokio::test]
 async fn hermes_rejecting_one_subscribers_alert_does_not_stop_the_others() {
     let hermes = MockServer::start().await;
-    Mock::given(body_partial_json(json!({"user_id": "alice"})))
+    Mock::given(body_partial_json(json!({"subscriber_id": "alice"})))
         .respond_with(ResponseTemplate::new(500))
         .with_priority(1)
         .mount(&hermes)
@@ -848,8 +856,8 @@ async fn hermes_rejecting_one_subscribers_alert_does_not_stop_the_others() {
         .mount(&hermes)
         .await;
     let service = run_against(&hermes).await;
-    for user in ["alice", "bob", "carol"] {
-        subscribe_to_padel_on_tuesday_evenings(&service, &subscriber(user)).await;
+    for id in ["alice", "bob", "carol"] {
+        subscribe_to_padel_on_tuesday_evenings(&service, &subscriber(id)).await;
     }
 
     opens(&service, indoor_slot()).await;
@@ -857,7 +865,7 @@ async fn hermes_rejecting_one_subscribers_alert_does_not_stop_the_others() {
     let mut users: Vec<String> = alerts_received(&hermes)
         .await
         .iter()
-        .map(alerted_user)
+        .map(alerted_subscriber)
         .collect();
     users.sort();
     assert_eq!(users, ["alice", "bob", "carol"]);
@@ -884,8 +892,12 @@ struct DiscordDms {
 
 #[async_trait::async_trait]
 impl AlertSender for DiscordDms {
-    async fn send_alert(&self, user_id: &str, _alert: &AvailabilityAlert) -> anyhow::Result<()> {
-        self.sent.lock().unwrap().push(user_id.to_owned());
+    async fn send_alert(
+        &self,
+        subscriber_id: &str,
+        _alert: &AvailabilityAlert,
+    ) -> anyhow::Result<()> {
+        self.sent.lock().unwrap().push(subscriber_id.to_owned());
         Ok(())
     }
 
@@ -901,11 +913,11 @@ async fn discord_dms_keep_flowing_alongside_webhook_alerts() {
     let service = run_against(&hermes).await;
     let dms = Arc::new(DiscordDms::default());
     service.register_sender("discord".into(), dms.clone());
-    let discord_user = SubscriberRef {
+    let discord_subscriber = SubscriberRef {
         integration: "discord".into(),
-        user_id: "42".into(),
+        subscriber_id: "42".into(),
     };
-    subscribe_to_padel_on_tuesday_evenings(&service, &discord_user).await;
+    subscribe_to_padel_on_tuesday_evenings(&service, &discord_subscriber).await;
     subscribe_to_padel_on_tuesday_evenings(&service, &subscriber("alice")).await;
 
     opens(&service, indoor_slot()).await;
@@ -915,7 +927,7 @@ async fn discord_dms_keep_flowing_alongside_webhook_alerts() {
 
     let received = alerts_received(&hermes).await;
     assert_eq!(
-        received.iter().map(alerted_user).collect::<Vec<_>>(),
+        received.iter().map(alerted_subscriber).collect::<Vec<_>>(),
         ["alice"]
     );
     assert_eq!(*dms.sent.lock().unwrap(), ["42"]);
@@ -964,7 +976,7 @@ async fn the_hermes_helper_signs_requests_the_api_accepts() {
     assert_eq!(clubs.body["clubs"][0]["id"], "casa-padel");
 
     let subscription = json!({
-        "user_id": HELPER_SUBSCRIBER,
+        "subscriber_id": HELPER_SUBSCRIBER,
         "sport": "padel",
         "club": "casa-padel",
         "weekday": "Thu",
@@ -975,14 +987,14 @@ async fn the_hermes_helper_signs_requests_the_api_accepts() {
     assert!(created.status.success());
     let id = created.body["subscription"]["id"].as_i64().expect("an id");
 
-    let listing = format!("/subscriptions?user={HELPER_SUBSCRIBER}");
+    let listing = format!("/subscriptions?subscriber_id={HELPER_SUBSCRIBER}");
     let listed = run_helper(&api, &["GET", &listing]).await;
     assert_eq!(
         listed.body,
         json!({ "subscriptions": [created.body["subscription"]] })
     );
 
-    let path = format!("/subscriptions/{id}?user={HELPER_SUBSCRIBER}");
+    let path = format!("/subscriptions/{id}?subscriber_id={HELPER_SUBSCRIBER}");
     let deleted = run_helper(&api, &["DELETE", &path]).await;
     assert!(deleted.status.success());
     assert_eq!(deleted.body, Value::Null);

@@ -54,7 +54,7 @@ impl TryFrom<SubscriptionRow> for Subscription {
             id: row.id,
             subscriber: SubscriberRef {
                 integration: row.provider.into(),
-                user_id: row.user_id,
+                subscriber_id: row.user_id,
             },
             sport: Sport::from_db(row.sport)?,
             venue: row.venue.map(VenueId::from),

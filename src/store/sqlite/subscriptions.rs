@@ -30,7 +30,7 @@ impl SubscriptionRepository for SqliteStore {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     sub.subscriber.integration.as_str(),
-                    sub.subscriber.user_id,
+                    sub.subscriber.subscriber_id,
                     sport,
                     sub.venue.map(|venue| venue.to_string()),
                     weekday,
@@ -47,14 +47,14 @@ impl SubscriptionRepository for SqliteStore {
         .await
     }
 
-    async fn list_for_user(
+    async fn list_for_subscriber(
         &self,
-        user: &SubscriberRef,
+        subscriber: &SubscriberRef,
         today: NaiveDate,
     ) -> Result<Vec<Subscription>> {
-        let user = user.clone();
+        let subscriber = subscriber.clone();
         let today = today.format("%Y-%m-%d").to_string();
-        self.with_reader("list_for_user", move |conn| {
+        self.with_reader("list_for_subscriber", move |conn| {
             let mut stmt = conn
                 .prepare(&format!(
                     "SELECT {SUB_COLUMNS}
@@ -63,10 +63,14 @@ impl SubscriptionRepository for SqliteStore {
                        AND (on_date IS NULL OR on_date >= ?3)
                      ORDER BY id"
                 ))
-                .context("preparing list_for_user")?;
+                .context("preparing list_for_subscriber")?;
             let rows = stmt
                 .query_map(
-                    params![user.integration.as_str(), user.user_id, today],
+                    params![
+                        subscriber.integration.as_str(),
+                        subscriber.subscriber_id,
+                        today
+                    ],
                     map_subscription,
                 )
                 .context("querying subscriptions")?;
@@ -96,14 +100,18 @@ impl SubscriptionRepository for SqliteStore {
         .await
     }
 
-    async fn remove(&self, id: i64, user: &SubscriberRef) -> Result<bool> {
-        let user = user.clone();
+    async fn remove(&self, id: i64, subscriber: &SubscriberRef) -> Result<bool> {
+        let subscriber = subscriber.clone();
         self.with_writer("remove", move |conn| {
             let affected = conn
                 .execute(
                     "DELETE FROM subscriptions
                      WHERE id = ?1 AND provider = ?2 AND user_id = ?3",
-                    params![id, user.integration.as_str(), user.user_id],
+                    params![
+                        id,
+                        subscriber.integration.as_str(),
+                        subscriber.subscriber_id
+                    ],
                 )
                 .context("deleting subscription")?;
             Ok(affected > 0)
@@ -145,7 +153,7 @@ mod tests {
     fn uref(id: &str) -> SubscriberRef {
         SubscriberRef {
             integration: "discord".into(),
-            user_id: id.into(),
+            subscriber_id: id.into(),
         }
     }
 
@@ -170,11 +178,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_then_list_for_user_returns_inserted_row() {
+    async fn add_then_list_for_subscriber_returns_inserted_row() {
         let store = SqliteStore::open_in_memory().await.unwrap();
         let id = store.add(sample(Weekday::Tue)).await.unwrap();
         let subs = store
-            .list_for_user(&uref("12345"), query_date())
+            .list_for_subscriber(&uref("12345"), query_date())
             .await
             .unwrap();
         assert_eq!(subs.len(), 1);
@@ -212,21 +220,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_for_user_filters_by_user_and_provider() {
+    async fn list_for_subscriber_filters_by_subscriber_and_integration() {
         let store = SqliteStore::open_in_memory().await.unwrap();
         store.add(sample(Weekday::Tue)).await.unwrap();
-        let mut other_user = sample(Weekday::Wed);
-        other_user.subscriber = uref("99999");
-        store.add(other_user).await.unwrap();
-        let mut other_provider = sample(Weekday::Thu);
-        other_provider.subscriber = SubscriberRef {
+        let mut other_subscriber = sample(Weekday::Wed);
+        other_subscriber.subscriber = uref("99999");
+        store.add(other_subscriber).await.unwrap();
+        let mut other_integration = sample(Weekday::Thu);
+        other_integration.subscriber = SubscriberRef {
             integration: "telegram".into(),
-            user_id: "12345".into(),
+            subscriber_id: "12345".into(),
         };
-        store.add(other_provider).await.unwrap();
+        store.add(other_integration).await.unwrap();
 
         let subs = store
-            .list_for_user(&uref("12345"), query_date())
+            .list_for_subscriber(&uref("12345"), query_date())
             .await
             .unwrap();
         assert_eq!(subs.len(), 1);
@@ -250,13 +258,13 @@ mod tests {
         assert!(!store.remove(id, &uref("99999")).await.unwrap());
         let foreign = SubscriberRef {
             integration: "telegram".into(),
-            user_id: "12345".into(),
+            subscriber_id: "12345".into(),
         };
         assert!(!store.remove(id, &foreign).await.unwrap());
         assert!(store.remove(id, &uref("12345")).await.unwrap());
         assert_eq!(
             store
-                .list_for_user(&uref("12345"), query_date())
+                .list_for_subscriber(&uref("12345"), query_date())
                 .await
                 .unwrap()
                 .len(),
@@ -271,7 +279,7 @@ mod tests {
         sub.courts = Some(vec!["Court 2".into(), "Court 5".into()]);
         store.add(sub).await.unwrap();
         let subs = store
-            .list_for_user(&uref("12345"), query_date())
+            .list_for_subscriber(&uref("12345"), query_date())
             .await
             .unwrap();
         assert_eq!(
@@ -298,7 +306,7 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2026, 6, 23).unwrap();
         store.add(date_sample(date)).await.unwrap();
         let subs = store
-            .list_for_user(&uref("12345"), query_date())
+            .list_for_subscriber(&uref("12345"), query_date())
             .await
             .unwrap();
         assert_eq!(subs[0].schedule, Schedule::Date(date));
@@ -349,7 +357,7 @@ mod tests {
 
         assert_eq!(
             store
-                .list_for_user(&uref("12345"), today)
+                .list_for_subscriber(&uref("12345"), today)
                 .await
                 .unwrap()
                 .len(),

@@ -30,7 +30,7 @@ It prints the JSON response on stdout and `HTTP <status>` on stderr, and exits n
 
 ## Subscriber IDs
 
-Each request names a subscriber. Use `<platform>:<chat id>` for the person you are acting for, for example `telegram:123456789`. Use the same ID on every request for that person: court-alert scopes each subscription to its exact subscriber ID, and alerts carry it back as `user_id` so you know whom to tell. IDs are 1 to 128 characters.
+Each request names a subscriber. Use `<platform>:<chat id>` for the person you are acting for, for example `telegram:123456789`. Use the same ID on every request for that person: court-alert scopes each subscription to its exact subscriber ID, and alerts carry it back as `subscriber_id` so you know whom to tell. IDs are 1 to 128 characters.
 
 ## Endpoints
 
@@ -45,30 +45,30 @@ court-alert.sh GET '/clubs?sport=padel'
 ### Subscribe: `POST /subscriptions`
 
 ```sh
-court-alert.sh POST /subscriptions '{"user_id":"telegram:123456789","sport":"padel","club":"casa-padel","weekday":"Thu","start":"18:00","end":"21:30","filter":"indoor"}'
+court-alert.sh POST /subscriptions '{"subscriber_id":"telegram:123456789","sport":"padel","club":"casa-padel","weekday":"Thu","start":"18:00","end":"21:30","filter":"indoor"}'
 ```
 
-| Field     | Required | Value                                                                            |
-| --------- | -------- | -------------------------------------------------------------------------------- |
-| `user_id` | yes      | The subscriber ID.                                                               |
-| `sport`   | yes      | `tennis` or `padel`.                                                             |
-| `club`    | no       | A club `id` from `GET /clubs`. Omit to watch every club of the sport.            |
-| `weekday` | one of   | Recurring day: `Mon` … `Sun`.                                                    |
-| `date`    | one of   | One day, `YYYY-MM-DD`, today or later. Send exactly one of `weekday` and `date`. |
-| `start`   | yes      | `HH:MM`, Europe/Berlin local time. Slots starting at or after it match.          |
-| `end`     | yes      | `HH:MM`, after `start`. Slots starting before it match. `24:00` means midnight.  |
-| `courts`  | no       | Court names from `GET /clubs`. Omit for every court.                             |
-| `filter`  | no       | `any`, `clay`, `synthetic`, `indoor` or `outdoor`. See below for the default.    |
+| Field           | Required | Value                                                                            |
+| --------------- | -------- | -------------------------------------------------------------------------------- |
+| `subscriber_id` | yes      | The subscriber ID.                                                               |
+| `sport`         | yes      | `tennis` or `padel`.                                                             |
+| `club`          | no       | A club `id` from `GET /clubs`. Omit to watch every club of the sport.            |
+| `weekday`       | one of   | Recurring day: `Mon` … `Sun`.                                                    |
+| `date`          | one of   | One day, `YYYY-MM-DD`, today or later. Send exactly one of `weekday` and `date`. |
+| `start`         | yes      | `HH:MM`, Europe/Berlin local time. Slots starting at or after it match.          |
+| `end`           | yes      | `HH:MM`, after `start`. Slots starting before it match. `24:00` means midnight.  |
+| `courts`        | no       | Court names from `GET /clubs`. Omit for every court.                             |
+| `filter`        | no       | `any`, `clay`, `synthetic`, `indoor` or `outdoor`. See below for the default.    |
 
 Without `filter`, a tennis subscription without `courts` takes court-alert's configured surface (usually `clay`); every other subscription takes `any`. Tennis courts have no `location`, so `indoor` and `outdoor` are padel filters.
 
 `201` with `{"subscription": {...}, "open_slots": [...]}`. `open_slots` are matching slots that are already bookable: tell the person straight away, because no alert will be sent for them. In the returned subscription, `club` is the club `id` and `club_name` its display name; both are null for a subscription to every club.
 
-### List subscriptions: `GET /subscriptions?user=<subscriber id>`
+### List subscriptions: `GET /subscriptions?subscriber_id=<subscriber id>`
 
 `200` with `{"subscriptions": [{"id", "sport", "club", "club_name", "weekday" or "date", "start", "end", "courts", "filter"}]}`.
 
-### Delete a subscription: `DELETE /subscriptions/<id>?user=<subscriber id>`
+### Delete a subscription: `DELETE /subscriptions/<id>?subscriber_id=<subscriber id>`
 
 `204` with an empty body when deleted. `404` `{"error": "not_found"}` when the subscription does not exist or belongs to another subscriber. List the person's subscriptions first to find the `id`.
 
@@ -82,7 +82,7 @@ Every error body is JSON with an `error` kind. Recover as follows:
 | 401    | `unauthorized`           |                      | Check `COURT_ALERT_API_SECRET` and that this host's clock is within 5 minutes of court-alert's.        |
 | 413    | `body_too_large`         |                      | Keep request bodies under 64 KiB.                                                                      |
 | 404    | `not_found`              |                      | List the subscriber's subscriptions and use an `id` from there.                                        |
-| 422    | `invalid_user_id`        |                      | Use a non-empty subscriber ID of at most 128 characters.                                               |
+| 422    | `invalid_subscriber_id`  |                      | Use a non-empty subscriber ID of at most 128 characters.                                               |
 | 422    | `invalid_time_range`     |                      | Make `end` later than `start`.                                                                         |
 | 422    | `invalid_schedule`       |                      | Send exactly one of `weekday` and `date`, and a `date` of today or later.                              |
 | 422    | `unknown_club`           | `unknown, available` | `available` lists `{"id", "name"}` of each club; retry with the right `id`.                            |
@@ -97,7 +97,7 @@ When matching slots open, court-alert POSTs one alert per subscriber to your `co
 
 ```json
 {
-  "user_id": "telegram:123456789",
+  "subscriber_id": "telegram:123456789",
   "slots": [
     {
       "club": "Casa Padel",

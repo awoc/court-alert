@@ -44,15 +44,15 @@ impl WebhookAlertSender {
 
 #[derive(Serialize)]
 struct Alert<'a> {
-    user_id: &'a str,
+    subscriber_id: &'a str,
     slots: Vec<Slot<'a>>,
 }
 
 #[async_trait]
 impl AlertSender for WebhookAlertSender {
-    async fn send_alert(&self, user_id: &str, alert: &AvailabilityAlert) -> Result<()> {
+    async fn send_alert(&self, subscriber_id: &str, alert: &AvailabilityAlert) -> Result<()> {
         let body = serde_json::to_vec(&Alert {
-            user_id,
+            subscriber_id,
             slots: alert.slots.iter().map(Slot::from).collect(),
         })
         .context("encoding the webhook alert")?;

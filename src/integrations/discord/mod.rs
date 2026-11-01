@@ -68,7 +68,7 @@ impl DiscordIntegration {
                 .into_iter()
                 .map(|id| SubscriberRef {
                     integration: INTEGRATION,
-                    user_id: id,
+                    subscriber_id: id,
                 })
                 .collect(),
             alert_lifecycle,
@@ -176,7 +176,7 @@ base_url = "https://kurse.zhs-muenchen.de"
             integration.admins(),
             HashSet::from([SubscriberRef {
                 integration: INTEGRATION,
-                user_id: "123".to_string(),
+                subscriber_id: "123".to_string(),
             }])
         );
         assert_eq!(integration.guild_id, Some(GuildId::new(42)));

@@ -18,7 +18,7 @@ use super::{BerlinClock, Clock, SubscriptionService};
 pub(super) fn uref(id: &str) -> SubscriberRef {
     SubscriberRef {
         integration: "discord".into(),
-        user_id: id.into(),
+        subscriber_id: id.into(),
     }
 }
 

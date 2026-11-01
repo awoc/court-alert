@@ -16,7 +16,7 @@ use super::{SubscriptionService, slot_summary};
 impl SubscriptionService {
     pub async fn handle(
         &self,
-        user: &SubscriberRef,
+        subscriber: &SubscriberRef,
         command: SubscriptionCommand,
     ) -> Result<SubscriptionResult> {
         match command {
@@ -30,7 +30,7 @@ impl SubscriptionService {
                 filter,
             } => {
                 let draft = match self.validate_subscribe(
-                    user,
+                    subscriber,
                     sport,
                     venue,
                     schedule,
@@ -61,13 +61,16 @@ impl SubscriptionService {
                 })
             }
             SubscriptionCommand::List => {
-                let subs = self.store.list_for_user(user, self.clock.today()).await?;
+                let subs = self
+                    .store
+                    .list_for_subscriber(subscriber, self.clock.today())
+                    .await?;
                 Ok(SubscriptionResult::SubscriptionList(
                     subs.into_iter().map(|sub| self.summarize(sub)).collect(),
                 ))
             }
             SubscriptionCommand::ListAll => {
-                if !self.is_admin(user) {
+                if !self.is_admin(subscriber) {
                     return Ok(SubscriptionResult::NotAuthorized);
                 }
                 let subs = self.store.list_all(self.clock.today()).await?;
@@ -81,10 +84,10 @@ impl SubscriptionService {
                 ))
             }
             SubscriptionCommand::Unsubscribe { id } => {
-                let removed = if self.is_admin(user) {
+                let removed = if self.is_admin(subscriber) {
                     self.store.remove_any(id).await?
                 } else {
-                    self.store.remove(id, user).await?
+                    self.store.remove(id, subscriber).await?
                 };
                 if removed {
                     Ok(SubscriptionResult::Unsubscribed { id })
@@ -98,7 +101,7 @@ impl SubscriptionService {
     #[allow(clippy::too_many_arguments)]
     fn validate_subscribe(
         &self,
-        user: &SubscriberRef,
+        subscriber: &SubscriberRef,
         sport: Sport,
         venue: Option<VenueId>,
         schedule: Schedule,
@@ -149,7 +152,7 @@ impl SubscriptionService {
         }
 
         Ok(SubscriptionDraft {
-            subscriber: user.clone(),
+            subscriber: subscriber.clone(),
             sport,
             venue,
             schedule,

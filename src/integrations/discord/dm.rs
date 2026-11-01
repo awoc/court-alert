@@ -48,10 +48,10 @@ impl DiscordSender {
 
 #[async_trait]
 impl AlertSender for DiscordSender {
-    async fn send_alert(&self, user_id: &str, alert: &AvailabilityAlert) -> Result<()> {
-        let id: u64 = user_id
+    async fn send_alert(&self, subscriber_id: &str, alert: &AvailabilityAlert) -> Result<()> {
+        let id: u64 = subscriber_id
             .parse()
-            .with_context(|| format!("invalid Discord user id {user_id:?}"))?;
+            .with_context(|| format!("invalid Discord user id {subscriber_id:?}"))?;
         let channel = UserId::new(id)
             .create_dm_channel(&self.http)
             .await

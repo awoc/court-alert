@@ -58,7 +58,7 @@ impl SubscriptionService {
             let registry = self.registry.read().expect("venue registry poisoned");
             match_subscriptions(changes, &subs, &registry)
         };
-        for (user, slots) in matched {
+        for (subscriber, slots) in matched {
             let alert = {
                 let registry = self.registry.read().expect("venue registry poisoned");
                 AvailabilityAlert {
@@ -72,21 +72,21 @@ impl SubscriptionService {
                 .senders
                 .read()
                 .expect("senders lock poisoned")
-                .get(&user.integration)
+                .get(&subscriber.integration)
                 .cloned();
             let Some(sender) = sender else {
                 warn!(
-                    integration = %user.integration,
-                    user = %user.user_id,
+                    integration = %subscriber.integration,
+                    subscriber = %subscriber.subscriber_id,
                     "dispatch: no sender registered for integration"
                 );
                 continue;
             };
-            if let Err(e) = sender.send_alert(&user.user_id, &alert).await {
+            if let Err(e) = sender.send_alert(&subscriber.subscriber_id, &alert).await {
                 warn!(
                     error = %format!("{e:#}"),
-                    integration = %user.integration,
-                    user = %user.user_id,
+                    integration = %subscriber.integration,
+                    subscriber = %subscriber.subscriber_id,
                     "dispatch: failed to send alert"
                 );
             }
@@ -162,11 +162,15 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AlertSender for RecordingSender {
-        async fn send_alert(&self, user_id: &str, alert: &AvailabilityAlert) -> anyhow::Result<()> {
+        async fn send_alert(
+            &self,
+            subscriber_id: &str,
+            alert: &AvailabilityAlert,
+        ) -> anyhow::Result<()> {
             self.sent
                 .lock()
                 .unwrap()
-                .push((user_id.to_string(), alert.clone()));
+                .push((subscriber_id.to_string(), alert.clone()));
             self.order.lock().unwrap().push("send");
             if self.fail {
                 anyhow::bail!("simulated alert failure");

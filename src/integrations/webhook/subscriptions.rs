@@ -20,12 +20,12 @@ use crate::subscriptions::contract::{
 };
 use crate::time::fmt_hhmm;
 
-const MAX_USER_ID_CHARS: usize = 128;
+const MAX_SUBSCRIBER_ID_CHARS: usize = 128;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SubscribeRequest {
-    user_id: String,
+    subscriber_id: String,
     sport: Sport,
     club: Option<VenueId>,
     weekday: Option<Weekday>,
@@ -38,7 +38,7 @@ pub(super) struct SubscribeRequest {
 
 #[derive(Deserialize)]
 pub(super) struct SubscriberQuery {
-    user: String,
+    subscriber_id: String,
 }
 
 #[derive(Serialize)]
@@ -107,7 +107,7 @@ pub(super) async fn subscribe(
         courts: request.courts,
         filter: request.filter,
     };
-    Ok(handle(&service, &request.user_id, command).await)
+    Ok(handle(&service, &request.subscriber_id, command).await)
 }
 
 pub(super) async fn list(
@@ -115,7 +115,7 @@ pub(super) async fn list(
     query: Result<Query<SubscriberQuery>, QueryRejection>,
 ) -> Result<Response, InvalidRequest> {
     let Query(query) = query?;
-    Ok(handle(&service, &query.user, SubscriptionCommand::List).await)
+    Ok(handle(&service, &query.subscriber_id, SubscriptionCommand::List).await)
 }
 
 pub(super) async fn unsubscribe(
@@ -127,7 +127,7 @@ pub(super) async fn unsubscribe(
     let Query(query) = query?;
     Ok(handle(
         &service,
-        &query.user,
+        &query.subscriber_id,
         SubscriptionCommand::Unsubscribe { id },
     )
     .await)
@@ -145,17 +145,17 @@ fn minute_of_day(raw: &str) -> Option<u32> {
 
 async fn handle(
     service: &SubscriptionService,
-    user_id: &str,
+    subscriber_id: &str,
     command: SubscriptionCommand,
 ) -> Response {
-    if user_id.is_empty() || user_id.chars().count() > MAX_USER_ID_CHARS {
-        return rejected(json!({ "error": "invalid_user_id" }));
+    if subscriber_id.is_empty() || subscriber_id.chars().count() > MAX_SUBSCRIBER_ID_CHARS {
+        return rejected(json!({ "error": "invalid_subscriber_id" }));
     }
-    let user = SubscriberRef {
+    let subscriber = SubscriberRef {
         integration: INTEGRATION,
-        user_id: user_id.to_owned(),
+        subscriber_id: subscriber_id.to_owned(),
     };
-    match service.handle(&user, command).await {
+    match service.handle(&subscriber, command).await {
         Ok(result) => respond(result),
         Err(e) => {
             error!(error = %format!("{e:#}"), "webhook API subscription command failed");

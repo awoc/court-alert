@@ -63,8 +63,8 @@ impl SubscriptionService {
         }
     }
 
-    fn is_admin(&self, user: &SubscriberRef) -> bool {
-        self.admins.contains(user)
+    fn is_admin(&self, subscriber: &SubscriberRef) -> bool {
+        self.admins.contains(subscriber)
     }
 
     fn catalogs_for(

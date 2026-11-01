@@ -60,12 +60,12 @@ The webhook integration lets an agent, such as a [Hermes](https://github.com/Nou
 
 The API is plain HTTP and JSON, meant for the LAN only. Every request carries a subscriber ID chosen by the caller, so one agent can act for several people; subscribers can't see or delete each other's subscriptions.
 
-| Request                                        | Success                                    |
-| ---------------------------------------------- | ------------------------------------------ |
-| `GET /clubs?sport=<tennis\|padel>`             | `200` with clubs, their IDs and courts     |
-| `POST /subscriptions`                          | `201` with the subscription and open slots |
-| `GET /subscriptions?user=<subscriber>`         | `200` with the subscriber's subscriptions  |
-| `DELETE /subscriptions/<id>?user=<subscriber>` | `204`                                      |
+| Request                                                 | Success                                    |
+| ------------------------------------------------------- | ------------------------------------------ |
+| `GET /clubs?sport=<tennis\|padel>`                      | `200` with clubs, their IDs and courts     |
+| `POST /subscriptions`                                   | `201` with the subscription and open slots |
+| `GET /subscriptions?subscriber_id=<subscriber>`         | `200` with the subscriber's subscriptions  |
+| `DELETE /subscriptions/<id>?subscriber_id=<subscriber>` | `204`                                      |
 
 Errors are JSON with an `error` kind: `400` for malformed JSON or query parameters, `401` for a missing or invalid signature, `404` for a missing subscription, `413` for a body over 64 KiB, `422` for validation rejections (with the valid alternatives where there are any) and `500` for a server failure. [`hermes/skills/court-alert/SKILL.md`](hermes/skills/court-alert/SKILL.md) documents the request fields and every error kind.
 
@@ -80,12 +80,12 @@ hermes/skills/court-alert/scripts/court-alert.sh GET '/clubs?sport=padel'
 
 ### Alerts
 
-When slots open that match a webhook subscriber's subscriptions, court-alert sends one `POST` per subscriber per poll to `COURT_ALERT_WEBHOOK_ALERT_URL`, with the body `{"user_id": "...", "slots": [{"club", "court", "court_id", "starts_at", "ends_at"}]}` and times in UTC. Alerts are signed with Hermes Generic V2 (`X-Webhook-Timestamp`, plus `X-Webhook-Signature-V2` over `"<timestamp>.<body>"` keyed by `COURT_ALERT_WEBHOOK_ALERT_SECRET`) and carry a unique `webhook-id` header. A failed delivery is logged and dropped without retries. Slots that become unbookable send nothing.
+When slots open that match a webhook subscriber's subscriptions, court-alert sends one `POST` per subscriber per poll to `COURT_ALERT_WEBHOOK_ALERT_URL`, with the body `{"subscriber_id": "...", "slots": [{"club", "court", "court_id", "starts_at", "ends_at"}]}` and times in UTC. Alerts are signed with Hermes Generic V2 (`X-Webhook-Timestamp`, plus `X-Webhook-Signature-V2` over `"<timestamp>.<body>"` keyed by `COURT_ALERT_WEBHOOK_ALERT_SECRET`) and carry a unique `webhook-id` header. A failed delivery is logged and dropped without retries. Slots that become unbookable send nothing.
 
 ### Connecting Hermes
 
 1. Generate two secrets, one for the API and one for alerts, e.g. with `openssl rand -hex 32`.
 2. Set the four `COURT_ALERT_WEBHOOK_*` variables for court-alert, with the alert URL pointing at the Hermes route, e.g. `http://<hermes-host>:8644/webhooks/court-alert`, and restart it.
 3. Copy `hermes/skills/court-alert` to `~/.hermes/skills/court-alert`, and set `COURT_ALERT_URL` (e.g. `http://pi2:8645`) and `COURT_ALERT_API_SECRET` in `~/.hermes/.env`.
-4. Copy `hermes/scripts/court-alert-alert.py` to `~/.hermes/scripts/`, and merge [`hermes/court-alert-route.yaml`](hermes/court-alert-route.yaml) into `~/.hermes/config.yaml` with the alert secret. The sample route delivers to Telegram and ignores alerts for subscriber IDs with another prefix. For another platform, change `deliver` and the `user_id` filter; Hermes fixes `deliver` per route and court-alert sends to one URL, so a single deployment serves one platform.
+4. Copy `hermes/scripts/court-alert-alert.py` to `~/.hermes/scripts/`, and merge [`hermes/court-alert-route.yaml`](hermes/court-alert-route.yaml) into `~/.hermes/config.yaml` with the alert secret. The sample route delivers to Telegram and ignores alerts for subscriber IDs with another prefix. For another platform, change `deliver` and the `subscriber_id` filter; Hermes fixes `deliver` per route and court-alert sends to one URL, so a single deployment serves one platform.
 5. Restart the Hermes gateway and ask the agent to list the padel clubs. It should answer from `GET /clubs`.

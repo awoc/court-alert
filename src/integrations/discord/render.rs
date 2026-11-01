@@ -186,16 +186,16 @@ fn club_label(s: &SubscriptionSummary) -> String {
 }
 
 fn owned_summary_line(owned: &OwnedSubscriptionSummary) -> String {
-    let user = &owned.subscriber;
-    let owner = if user.integration == INTEGRATION {
-        format!("<@{}>", user.user_id)
+    let subscriber = &owned.subscriber;
+    let owner = if subscriber.integration == INTEGRATION {
+        format!("<@{}>", subscriber.subscriber_id)
     } else {
-        user.user_id.clone()
+        subscriber.subscriber_id.clone()
     };
     format!(
         "{} – {owner} ({})",
         summary_line(&owned.summary),
-        user.integration
+        subscriber.integration
     )
 }
 
@@ -517,7 +517,7 @@ mod tests {
         let reply = SubscriptionResult::AllSubscriptions(vec![OwnedSubscriptionSummary {
             subscriber: SubscriberRef {
                 integration: INTEGRATION,
-                user_id: "42".to_string(),
+                subscriber_id: "42".to_string(),
             },
             summary: summary(),
         }]);
@@ -534,7 +534,7 @@ mod tests {
         let reply = SubscriptionResult::AllSubscriptions(vec![OwnedSubscriptionSummary {
             subscriber: SubscriberRef {
                 integration: crate::integrations::webhook::INTEGRATION,
-                user_id: "hermes:alice".to_string(),
+                subscriber_id: "hermes:alice".to_string(),
             },
             summary: summary(),
         }]);

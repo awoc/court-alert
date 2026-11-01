@@ -41,7 +41,7 @@ impl fmt::Display for IntegrationId {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SubscriberRef {
     pub integration: IntegrationId,
-    pub user_id: String,
+    pub subscriber_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

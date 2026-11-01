@@ -122,11 +122,11 @@ impl Handler {
         command: SubscriptionCommand,
         render: impl Fn(&SubscriptionResult) -> Vec<ReplyMessage> + Send,
     ) -> Vec<ReplyMessage> {
-        let user = SubscriberRef {
+        let subscriber = SubscriberRef {
             integration: INTEGRATION,
-            user_id: user_id.get().to_string(),
+            subscriber_id: user_id.get().to_string(),
         };
-        match self.service.handle(&user, command).await {
+        match self.service.handle(&subscriber, command).await {
             Ok(reply) => render(&reply),
             Err(e) => {
                 error!(error = %format!("{e:#}"), "command handling failed");

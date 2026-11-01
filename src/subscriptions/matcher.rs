@@ -110,16 +110,16 @@ mod tests {
         }
     }
 
-    fn padel_sub(user: &str, venue: Option<crate::model::VenueId>) -> Subscription {
+    fn padel_sub(subscriber: &str, venue: Option<crate::model::VenueId>) -> Subscription {
         Subscription {
             sport: Sport::Padel,
             venue,
-            ..sub(user, Weekday::Tue, 18 * 60, 22 * 60, None)
+            ..sub(subscriber, Weekday::Tue, 18 * 60, 22 * 60, None)
         }
     }
 
     fn sub(
-        user: &str,
+        subscriber: &str,
         weekday: Weekday,
         from: u32,
         to: u32,
@@ -127,7 +127,7 @@ mod tests {
     ) -> Subscription {
         Subscription {
             id: 1,
-            subscriber: uref(user),
+            subscriber: uref(subscriber),
             sport: Sport::Tennis,
             venue: None,
             schedule: Schedule::Weekday(weekday),
@@ -137,10 +137,10 @@ mod tests {
         }
     }
 
-    fn date_sub(user: &str, date: NaiveDate, from: u32, to: u32) -> Subscription {
+    fn date_sub(subscriber: &str, date: NaiveDate, from: u32, to: u32) -> Subscription {
         Subscription {
             id: 1,
-            subscriber: uref(user),
+            subscriber: uref(subscriber),
             sport: Sport::Tennis,
             venue: None,
             schedule: Schedule::Date(date),
@@ -345,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn dedups_when_multiple_subs_match_same_slot_for_same_user() {
+    fn dedups_when_multiple_subs_match_same_slot_for_same_subscriber() {
         let changes = vec![AvailabilityChange::BecameBookable(slot("Court 2", 18, 0))];
         let subs = vec![
             sub("1", Weekday::Tue, 18 * 60, 22 * 60, None),
