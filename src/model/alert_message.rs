@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use super::BookableSlot;
+use super::{BookableSlot, IntegrationId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlertSurface {
@@ -21,7 +21,7 @@ pub struct AlertLine {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlertMessageKey {
-    pub chat_provider: String,
+    pub chat_provider: IntegrationId,
     pub surface: AlertSurface,
     /// Nonempty address within the chat provider. None is an implicit channel destination.
     pub destination: Option<String>,
@@ -30,13 +30,13 @@ pub struct AlertMessageKey {
 
 impl AlertMessageKey {
     pub fn new(
-        chat_provider: &str,
+        chat_provider: IntegrationId,
         surface: AlertSurface,
         destination: Option<&str>,
         id: &str,
     ) -> Self {
         Self {
-            chat_provider: chat_provider.to_owned(),
+            chat_provider,
             surface,
             destination: destination.map(str::to_owned),
             id: id.to_owned(),

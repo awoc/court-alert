@@ -84,7 +84,7 @@ mod tests {
 
         async fn plan_strikes(
             &self,
-            _chat_provider: &str,
+            _chat_provider: &crate::model::IntegrationId,
             _surface: AlertSurface,
             _slots: &[crate::model::BookableSlotId],
         ) -> Result<Vec<StrikePlan>> {

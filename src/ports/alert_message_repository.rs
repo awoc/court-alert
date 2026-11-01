@@ -2,7 +2,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-use crate::model::{AlertLine, AlertMessageKey, AlertSurface, BookableSlotId, StrikePlan};
+use crate::model::{
+    AlertLine, AlertMessageKey, AlertSurface, BookableSlotId, IntegrationId, StrikePlan,
+};
 
 /// Stores announced slots and their state under each complete alert message key.
 #[async_trait]
@@ -13,7 +15,7 @@ pub trait AlertMessageRepository: Send + Sync {
     /// index, and every matching message within the chat provider and surface is returned.
     async fn plan_strikes(
         &self,
-        chat_provider: &str,
+        chat_provider: &IntegrationId,
         surface: AlertSurface,
         slots: &[BookableSlotId],
     ) -> Result<Vec<StrikePlan>>;

@@ -36,7 +36,7 @@ impl DiscordNotifier {
         Ok(Self {
             webhook_url,
             client,
-            alert_tracker: alert_lifecycle.tracker(INTEGRATION.as_str(), AlertSurface::Channel),
+            alert_tracker: alert_lifecycle.tracker(INTEGRATION, AlertSurface::Channel),
         })
     }
 
@@ -199,7 +199,7 @@ mod tests {
     async fn plan_strikes(store: &Arc<SqliteStore>, slot: &BookableSlot) -> Vec<StrikePlan> {
         store
             .plan_strikes(
-                INTEGRATION.as_str(),
+                &INTEGRATION,
                 AlertSurface::Channel,
                 &[BookableSlotId::from(slot)],
             )
@@ -299,12 +299,7 @@ mod tests {
     async fn seed(store: &Arc<SqliteStore>, message_id: &str, slot: &BookableSlot) {
         store
             .record_message(
-                &AlertMessageKey::new(
-                    INTEGRATION.as_str(),
-                    AlertSurface::Channel,
-                    None,
-                    message_id,
-                ),
+                &AlertMessageKey::new(INTEGRATION, AlertSurface::Channel, None, message_id),
                 &[AlertLine::from(slot)],
             )
             .await
@@ -373,7 +368,7 @@ mod tests {
         let (notifier, store) = notifier(&server).await;
         store
             .record_message(
-                &AlertMessageKey::new(INTEGRATION.as_str(), AlertSurface::Channel, None, "1408"),
+                &AlertMessageKey::new(INTEGRATION, AlertSurface::Channel, None, "1408"),
                 &[AlertLine::from(&staying), AlertLine::from(&gone)],
             )
             .await

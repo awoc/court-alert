@@ -6,7 +6,8 @@ use chrono::{DateTime, Utc};
 use rusqlite::params;
 
 use crate::model::{
-    AlertLine, AlertMessage, AlertMessageKey, AlertSurface, BookableSlotId, StrikePlan,
+    AlertLine, AlertMessage, AlertMessageKey, AlertSurface, BookableSlotId, IntegrationId,
+    StrikePlan,
 };
 use crate::ports::AlertMessageRepository;
 
@@ -35,7 +36,7 @@ impl AlertMessageRepository for SqliteStore {
                 for (index, line) in lines.into_iter().enumerate() {
                     statement
                         .execute(params![
-                            key.chat_provider,
+                            key.chat_provider.as_str(),
                             key.surface.as_db(),
                             destination,
                             key.id,
@@ -58,11 +59,11 @@ impl AlertMessageRepository for SqliteStore {
 
     async fn plan_strikes(
         &self,
-        chat_provider: &str,
+        chat_provider: &IntegrationId,
         surface: AlertSurface,
         slots: &[BookableSlotId],
     ) -> Result<Vec<StrikePlan>> {
-        let chat_provider = chat_provider.to_owned();
+        let chat_provider = chat_provider.clone();
         let slots = slots.to_vec();
         self.with_reader("plan_alert_message_strikes", move |connection| {
             // Lookups and complete message loads must observe the same snapshot.
@@ -82,7 +83,7 @@ impl AlertMessageRepository for SqliteStore {
                     let rows = find
                         .query_map(
                             params![
-                                chat_provider,
+                                chat_provider.as_str(),
                                 surface.as_db(),
                                 slot.court_id.into_db()?,
                                 slot.starts_at.into_db()?
@@ -120,7 +121,12 @@ impl AlertMessageRepository for SqliteStore {
                 newly_struck.dedup();
                 let rows = load
                     .query_map(
-                        params![chat_provider, surface.as_db(), destination, message_id],
+                        params![
+                            chat_provider.as_str(),
+                            surface.as_db(),
+                            destination,
+                            message_id
+                        ],
                         |row| {
                             let row = AlertMessageRow::try_from(row)?;
                             let index = row.line_index;
@@ -137,7 +143,7 @@ impl AlertMessageRepository for SqliteStore {
                 plans.push(StrikePlan {
                     message: AlertMessage {
                         key: AlertMessageKey::new(
-                            &chat_provider,
+                            chat_provider.clone(),
                             surface,
                             AlertDestination::from_db(&destination)?.0,
                             &message_id,
@@ -171,7 +177,7 @@ impl AlertMessageRepository for SqliteStore {
                 for line in lines {
                     statement
                         .execute(params![
-                            key.chat_provider,
+                            key.chat_provider.as_str(),
                             key.surface.as_db(),
                             destination,
                             key.id,
@@ -196,7 +202,7 @@ impl AlertMessageRepository for SqliteStore {
                     "DELETE FROM alert_message_slots
                      WHERE chat_provider = ?1 AND surface = ?2 AND destination = ?3 AND message_id = ?4",
                     params![
-                        key.chat_provider,
+                        key.chat_provider.as_str(),
                         key.surface.as_db(),
                         destination,
                         key.id
@@ -289,7 +295,7 @@ mod tests {
     async fn record(store: &SqliteStore, message_id: &str, lines: &[AlertLine]) {
         store
             .record_message(
-                &AlertMessageKey::new("discord", AlertSurface::Channel, None, message_id),
+                &AlertMessageKey::new("discord".into(), AlertSurface::Channel, None, message_id),
                 lines,
             )
             .await
@@ -298,7 +304,7 @@ mod tests {
 
     async fn plan(store: &SqliteStore, slots: &[BookableSlotId]) -> Vec<StrikePlan> {
         store
-            .plan_strikes("discord", AlertSurface::Channel, slots)
+            .plan_strikes(&"discord".into(), AlertSurface::Channel, slots)
             .await
             .unwrap()
     }
@@ -319,7 +325,7 @@ mod tests {
 
         store
             .commit_strikes(
-                &AlertMessageKey::new("discord", AlertSurface::Channel, None, "1408"),
+                &AlertMessageKey::new("discord".into(), AlertSurface::Channel, None, "1408"),
                 &[1],
             )
             .await
@@ -385,7 +391,12 @@ mod tests {
         record(&store, "1408", std::slice::from_ref(&announced)).await;
         store
             .record_message(
-                &AlertMessageKey::new("discord", AlertSurface::DirectMessage, Some("77"), "1409"),
+                &AlertMessageKey::new(
+                    "discord".into(),
+                    AlertSurface::DirectMessage,
+                    Some("77"),
+                    "1409",
+                ),
                 &[AlertLine {
                     club: Some("ZHS München".into()),
                     ..announced.clone()
@@ -396,7 +407,11 @@ mod tests {
 
         let channel = plan(&store, &[id_of(&announced)]).await;
         let dms = store
-            .plan_strikes("discord", AlertSurface::DirectMessage, &[id_of(&announced)])
+            .plan_strikes(
+                &"discord".into(),
+                AlertSurface::DirectMessage,
+                &[id_of(&announced)],
+            )
             .await
             .unwrap();
 
@@ -426,7 +441,7 @@ mod tests {
             store
                 .record_message(
                     &AlertMessageKey::new(
-                        "discord",
+                        "discord".into(),
                         AlertSurface::DirectMessage,
                         Some(channel),
                         message,
@@ -438,7 +453,11 @@ mod tests {
         }
 
         let plans = store
-            .plan_strikes("discord", AlertSurface::DirectMessage, &[id_of(&announced)])
+            .plan_strikes(
+                &"discord".into(),
+                AlertSurface::DirectMessage,
+                &[id_of(&announced)],
+            )
             .await
             .unwrap();
 
@@ -464,7 +483,7 @@ mod tests {
 
         store
             .forget_message(&AlertMessageKey::new(
-                "discord",
+                "discord".into(),
                 AlertSurface::Channel,
                 None,
                 "1408",
@@ -526,7 +545,12 @@ mod tests {
         };
         store
             .record_message(
-                &AlertMessageKey::new("discord", AlertSurface::DirectMessage, Some("77"), "1408"),
+                &AlertMessageKey::new(
+                    "discord".into(),
+                    AlertSurface::DirectMessage,
+                    Some("77"),
+                    "1408",
+                ),
                 std::slice::from_ref(&only),
             )
             .await
@@ -556,10 +580,25 @@ mod tests {
         let store = SqliteStore::open_in_memory().await.unwrap();
         let announced = line("Court 1", 8);
         let keys = [
-            AlertMessageKey::new("first", AlertSurface::DirectMessage, Some("77"), "42"),
-            AlertMessageKey::new("second", AlertSurface::DirectMessage, Some("77"), "42"),
-            AlertMessageKey::new("second", AlertSurface::DirectMessage, Some("78"), "42"),
-            AlertMessageKey::new("second", AlertSurface::Channel, Some("77"), "42"),
+            AlertMessageKey::new(
+                "first".into(),
+                AlertSurface::DirectMessage,
+                Some("77"),
+                "42",
+            ),
+            AlertMessageKey::new(
+                "second".into(),
+                AlertSurface::DirectMessage,
+                Some("77"),
+                "42",
+            ),
+            AlertMessageKey::new(
+                "second".into(),
+                AlertSurface::DirectMessage,
+                Some("78"),
+                "42",
+            ),
+            AlertMessageKey::new("second".into(), AlertSurface::Channel, Some("77"), "42"),
         ];
         for key in &keys {
             store
@@ -578,7 +617,7 @@ mod tests {
     ) {
         let mut scopes = Vec::new();
         for key in seeded {
-            let scope = (key.chat_provider.as_str(), key.surface);
+            let scope = (&key.chat_provider, key.surface);
             if !scopes.contains(&scope) {
                 scopes.push(scope);
             }
@@ -593,7 +632,7 @@ mod tests {
                 .collect();
             let expected: Vec<_> = expected
                 .iter()
-                .filter(|key| key.chat_provider == chat_provider && key.surface == surface)
+                .filter(|key| &key.chat_provider == chat_provider && key.surface == surface)
                 .cloned()
                 .collect();
             assert_eq!(
@@ -641,7 +680,7 @@ mod tests {
         let store = SqliteStore::open_in_memory().await.unwrap();
         let announced = line("Court 1", 8);
         record(&store, "42", std::slice::from_ref(&announced)).await;
-        let invalid = AlertMessageKey::new("discord", AlertSurface::Channel, Some(""), "42");
+        let invalid = AlertMessageKey::new("discord".into(), AlertSurface::Channel, Some(""), "42");
         (store, announced, invalid)
     }
 
@@ -671,7 +710,7 @@ mod tests {
     async fn recording_an_empty_destination_is_rejected() {
         let store = SqliteStore::open_in_memory().await.unwrap();
         let announced = line("Court 1", 8);
-        let invalid = AlertMessageKey::new("discord", AlertSurface::Channel, Some(""), "42");
+        let invalid = AlertMessageKey::new("discord".into(), AlertSurface::Channel, Some(""), "42");
 
         assert!(
             store
@@ -702,10 +741,25 @@ mod tests {
         let early = line("Court 1", 8);
         let late = line("Court 2", 20);
         let keys = [
-            AlertMessageKey::new("discord", AlertSurface::DirectMessage, Some("77"), "42"),
-            AlertMessageKey::new("telegram", AlertSurface::DirectMessage, Some("77"), "42"),
-            AlertMessageKey::new("telegram", AlertSurface::DirectMessage, Some("78"), "42"),
-            AlertMessageKey::new("telegram", AlertSurface::Channel, Some("77"), "42"),
+            AlertMessageKey::new(
+                "discord".into(),
+                AlertSurface::DirectMessage,
+                Some("77"),
+                "42",
+            ),
+            AlertMessageKey::new(
+                "telegram".into(),
+                AlertSurface::DirectMessage,
+                Some("77"),
+                "42",
+            ),
+            AlertMessageKey::new(
+                "telegram".into(),
+                AlertSurface::DirectMessage,
+                Some("78"),
+                "42",
+            ),
+            AlertMessageKey::new("telegram".into(), AlertSurface::Channel, Some("77"), "42"),
         ];
         for key in &keys[..3] {
             store
@@ -719,7 +773,7 @@ mod tests {
             .unwrap();
         assert_eq!(store.prune_ended(early.ends_at).await.unwrap(), 3);
         let plans = store
-            .plan_strikes("telegram", AlertSurface::Channel, &[id_of(&late)])
+            .plan_strikes(&"telegram".into(), AlertSurface::Channel, &[id_of(&late)])
             .await
             .unwrap();
         assert_eq!(plans.len(), 1);
