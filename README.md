@@ -71,7 +71,7 @@ Errors are JSON with an `error` kind: `400` for malformed JSON or query paramete
 
 ### Signing
 
-Each request sends `X-Webhook-Timestamp` (Unix seconds) and `X-Webhook-Signature-V2`, the hex HMAC-SHA256 of `"<timestamp>.<METHOD>.<path with query>.<body>"` keyed by `COURT_ALERT_WEBHOOK_API_SECRET`. The body is empty for `GET` and `DELETE`. Requests more than 300 seconds from the server's clock are rejected. [ADR 0001](docs/adr/0001-hmac-signed-webhook-api.md) explains why the signature covers the method and path. [`hermes/skills/court-alert/scripts/court-alert.sh`](hermes/skills/court-alert/scripts/court-alert.sh) signs and sends a request with `openssl` and `curl`:
+Each request sends `X-Webhook-Timestamp` (Unix seconds) and `X-Webhook-Signature-V2`, the hex HMAC-SHA256 of `"<timestamp>.<METHOD>.<path with query>.<body>"` keyed by `COURT_ALERT_WEBHOOK_API_SECRET`. The body is empty for `GET` and `DELETE`. Requests more than 300 seconds from the server's clock are rejected. The headers match Hermes Generic V2, but the signature also covers the method and path: GET and DELETE bodies are empty, so a body-only signature for `DELETE /subscriptions/5` would also authorise `DELETE /subscriptions/6`. A signature, unlike a bearer token, never reveals the secret on the cleartext LAN, and the timestamp window makes a captured request expire quickly. Keep the helper's signed string in step with the server's. [`hermes/skills/court-alert/scripts/court-alert.sh`](hermes/skills/court-alert/scripts/court-alert.sh) signs and sends a request with `openssl` and `curl`:
 
 ```sh
 export COURT_ALERT_URL=http://pi2:8645 COURT_ALERT_API_SECRET=...

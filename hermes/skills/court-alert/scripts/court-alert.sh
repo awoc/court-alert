@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Signed string must match docs/adr/0001-hmac-signed-webhook-api.md.
+# Signed string must match src/integrations/webhook/auth.rs.
 set -euo pipefail
 
 if [[ $# -lt 2 || $# -gt 3 ]]; then
