@@ -1,3 +1,4 @@
+use super::PROVIDER_NAME;
 use super::text::{DISCORD_CHUNK_BUDGET, chunk_lines, fmt_club_slot_line};
 use crate::model::{CourtFilter, Schedule, TimeRange};
 use crate::subscriptions::contract::{
@@ -178,11 +179,16 @@ fn club_label(s: &SubscriptionSummary) -> String {
 }
 
 fn owned_summary_line(owned: &OwnedSubscriptionSummary) -> String {
+    let user = &owned.user;
+    let owner = if user.provider == PROVIDER_NAME {
+        format!("<@{}>", user.user_id)
+    } else {
+        user.user_id.clone()
+    };
     format!(
-        "{} – <@{}> ({})",
+        "{} – {owner} ({})",
         summary_line(&owned.summary),
-        owned.user.user_id,
-        owned.user.provider
+        user.provider
     )
 }
 
@@ -495,7 +501,6 @@ mod tests {
 
     #[test]
     fn renders_listall_with_owner_and_schedule() {
-        use super::super::PROVIDER_NAME;
         let reply = SubscriptionResult::AllSubscriptions(vec![OwnedSubscriptionSummary {
             user: ProviderUserRef {
                 provider: PROVIDER_NAME.to_string(),
@@ -509,6 +514,20 @@ mod tests {
         assert!(text.contains("#7")); // subscription id
         assert!(text.contains("Tue")); // schedule label
         assert_eq!(buttons(&messages), vec![7]); // admins unsubscribe by button too
+    }
+
+    #[test]
+    fn renders_listall_owners_of_other_integrations_without_a_mention() {
+        let reply = SubscriptionResult::AllSubscriptions(vec![OwnedSubscriptionSummary {
+            user: ProviderUserRef {
+                provider: crate::integrations::webhook::INTEGRATION_NAME.to_string(),
+                user_id: "hermes:alice".to_string(),
+            },
+            summary: summary(),
+        }]);
+        let text = reply_text(&reply);
+        assert!(text.contains("hermes:alice (webhook)"), "{text}");
+        assert!(!text.contains("<@"), "{text}");
     }
 
     #[test]

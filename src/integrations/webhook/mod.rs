@@ -1,6 +1,7 @@
 mod api;
 mod auth;
 mod response;
+mod subscriptions;
 #[cfg(test)]
 mod tests;
 
@@ -17,6 +18,8 @@ use crate::config::WebhookSettings;
 use crate::integrations::{Integration, ReadySignal};
 use crate::model::ProviderUserRef;
 use crate::subscriptions::SubscriptionService;
+
+pub(crate) const INTEGRATION_NAME: &str = "webhook";
 
 pub struct WebhookIntegration {
     listen: SocketAddr,

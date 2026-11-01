@@ -3,12 +3,13 @@ use std::sync::Arc;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{delete, get};
 use axum::{Json, Router, middleware};
 use serde::{Deserialize, Serialize};
 
 use super::auth::require_signature;
 use super::response::invalid_request;
+use super::subscriptions;
 use crate::model::Sport;
 use crate::subscriptions::SubscriptionService;
 use crate::subscriptions::contract::{ClubSummary, CourtSummary};
@@ -16,6 +17,11 @@ use crate::subscriptions::contract::{ClubSummary, CourtSummary};
 pub(super) fn router(service: Arc<SubscriptionService>, api_secret: Arc<str>) -> Router {
     Router::new()
         .route("/clubs", get(clubs))
+        .route(
+            "/subscriptions",
+            get(subscriptions::list).post(subscriptions::subscribe),
+        )
+        .route("/subscriptions/{id}", delete(subscriptions::unsubscribe))
         .with_state(service)
         .layer(middleware::from_fn_with_state(
             api_secret,
