@@ -32,8 +32,9 @@ impl App {
         let config = Config::load(&settings.config_path)?;
         let describe = || format!("validating config file {}", settings.config_path.display());
         sources::validate_configuration(&config).with_context(describe)?;
-        integrations::validate_configuration(&config, settings.discord_bot.as_ref())
-            .with_context(describe)?;
+        if settings.discord_bot.is_some() {
+            integrations::discord::validate_configuration(&config).with_context(describe)?;
+        }
         let registry = Arc::new(RwLock::new(build_registry(&config)));
 
         let store = Arc::new(SqliteStore::open(settings.db_path.clone()).await?);

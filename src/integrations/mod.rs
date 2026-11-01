@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use tokio::sync::watch;
 
 use crate::alerts::AlertMessageLifecycle;
-use crate::config::{Config, DiscordSettings, Settings};
-use crate::model::{Sport, SubscriberRef};
+use crate::config::Settings;
+use crate::model::SubscriberRef;
 use crate::subscriptions::SubscriptionService;
 
 #[async_trait]
@@ -65,25 +65,6 @@ pub fn readiness(n: usize) -> (Vec<ReadySignal>, ReadyBarrier) {
     (signals, ReadyBarrier { expected: n, rx })
 }
 
-pub fn validate_configuration(config: &Config, discord: Option<&DiscordSettings>) -> Result<()> {
-    if discord.is_none() {
-        return Ok(());
-    }
-    let padel_venues = config
-        .venues()
-        .iter()
-        .filter(|venue| venue.sport == Sport::Padel)
-        .count();
-    anyhow::ensure!(
-        padel_venues <= discord::MAX_CLUB_CHOICES,
-        "{padel_venues} padel venues are configured, but Discord allows at most {} \
-         club choices on /padel; monitoring more would leave the rest selectable \
-         only through \"all clubs\"",
-        discord::MAX_CLUB_CHOICES
-    );
-    Ok(())
-}
-
 pub fn build(
     settings: &Settings,
     alert_lifecycle: Arc<AlertMessageLifecycle>,
@@ -119,65 +100,6 @@ pub async fn run_all(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const ZHS: &str = r#"
-poll_interval_secs = 300
-lookahead_days = 7
-
-[[venues]]
-id = "zhs-munich"
-display_name = "ZHS München"
-sport = "tennis"
-provider = "zhs"
-base_url = "https://kurse.zhs-muenchen.de"
-
-  [[venues.courts]]
-  id = "92db7384-2dec-4888-a92a-4c2b6faac5f7"
-  name = "Tennis Court 1"
-"#;
-
-    fn config_with_padel_clubs(count: usize) -> Config {
-        let clubs: String = (0..count)
-            .map(|i| {
-                format!(
-                    "\n[[venues]]\nid = \"club-{i}\"\ndisplay_name = \"Club {i}\"\n\
-                     sport = \"padel\"\nprovider = \"playtomic\"\n\
-                     tenant_id = \"f8483f72-1d14-49eb-a98b-e4b89d969c78\"\n\
-                     slug = \"club-{i}\"\nlookahead_days = 15\n"
-                )
-            })
-            .collect();
-        Config::parse(&format!("{ZHS}{clubs}")).expect("parse")
-    }
-
-    fn discord_bot() -> DiscordSettings {
-        DiscordSettings {
-            token: "t".into(),
-            guild_id: None,
-            admin_ids: HashSet::new(),
-        }
-    }
-
-    #[test]
-    fn more_padel_venues_than_discord_can_offer_are_rejected() {
-        let limit = discord::MAX_CLUB_CHOICES;
-        let discord = discord_bot();
-        let with = |count| validate_configuration(&config_with_padel_clubs(count), Some(&discord));
-
-        assert!(with(limit).is_ok(), "{limit} clubs must still be accepted");
-
-        let error = with(limit + 1).expect_err("more clubs than Discord can offer");
-        assert!(
-            format!("{error:#}").contains(&limit.to_string()),
-            "the limit is not named: {error:#}"
-        );
-    }
-
-    #[test]
-    fn more_padel_venues_than_discord_can_offer_are_accepted_without_the_discord_bot() {
-        let config = config_with_padel_clubs(discord::MAX_CLUB_CHOICES + 1);
-        assert!(validate_configuration(&config, None).is_ok());
-    }
 
     use crate::store::SqliteStore;
     use crate::subscriptions::{BerlinClock, SubscriptionService};

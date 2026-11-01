@@ -8,9 +8,9 @@ use serenity::all::{GatewayIntents, GuildId};
 use serenity::async_trait;
 
 use crate::alerts::AlertMessageLifecycle;
-use crate::config::DiscordSettings;
+use crate::config::{Config, DiscordSettings};
 use crate::integrations::{Integration, ReadySignal};
-use crate::model::{IntegrationId, SubscriberRef};
+use crate::model::{IntegrationId, Sport, SubscriberRef};
 use crate::subscriptions::SubscriptionService;
 
 mod commands;
@@ -35,6 +35,21 @@ const DISCORD_UNKNOWN_MESSAGE: i64 = 10008;
 pub const INTEGRATION: IntegrationId = IntegrationId::from_static("discord");
 
 pub const MAX_CLUB_CHOICES: usize = 25;
+
+pub fn validate_configuration(config: &Config) -> Result<()> {
+    let padel_venues = config
+        .venues()
+        .iter()
+        .filter(|venue| venue.sport == Sport::Padel)
+        .count();
+    anyhow::ensure!(
+        padel_venues <= MAX_CLUB_CHOICES,
+        "{padel_venues} padel venues are configured, but Discord allows at most \
+         {MAX_CLUB_CHOICES} club choices on /padel; monitoring more would leave the rest \
+         selectable only through \"all clubs\""
+    );
+    Ok(())
+}
 
 pub struct DiscordIntegration {
     token: String,
@@ -99,6 +114,52 @@ impl Integration for DiscordIntegration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ZHS: &str = r#"
+poll_interval_secs = 300
+lookahead_days = 7
+
+[[venues]]
+id = "zhs-munich"
+display_name = "ZHS München"
+sport = "tennis"
+provider = "zhs"
+base_url = "https://kurse.zhs-muenchen.de"
+
+  [[venues.courts]]
+  id = "92db7384-2dec-4888-a92a-4c2b6faac5f7"
+  name = "Tennis Court 1"
+"#;
+
+    fn config_with_padel_clubs(count: usize) -> Config {
+        let clubs: String = (0..count)
+            .map(|i| {
+                format!(
+                    "\n[[venues]]\nid = \"club-{i}\"\ndisplay_name = \"Club {i}\"\n\
+                     sport = \"padel\"\nprovider = \"playtomic\"\n\
+                     tenant_id = \"f8483f72-1d14-49eb-a98b-e4b89d969c78\"\n\
+                     slug = \"club-{i}\"\nlookahead_days = 15\n"
+                )
+            })
+            .collect();
+        Config::parse(&format!("{ZHS}{clubs}")).expect("parse")
+    }
+
+    #[test]
+    fn more_padel_venues_than_discord_can_offer_are_rejected() {
+        let with = |count| validate_configuration(&config_with_padel_clubs(count));
+
+        assert!(
+            with(MAX_CLUB_CHOICES).is_ok(),
+            "{MAX_CLUB_CHOICES} clubs must still be accepted"
+        );
+
+        let error = with(MAX_CLUB_CHOICES + 1).expect_err("more clubs than Discord can offer");
+        assert!(
+            format!("{error:#}").contains(&MAX_CLUB_CHOICES.to_string()),
+            "the limit is not named: {error:#}"
+        );
+    }
 
     #[tokio::test]
     async fn admin_ids_become_integration_scoped_subscriber_refs() {
