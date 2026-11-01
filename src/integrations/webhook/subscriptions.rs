@@ -107,7 +107,7 @@ pub(super) async fn subscribe(
     let schedule = match (request.weekday, request.date) {
         (Some(weekday), None) => Schedule::Weekday(weekday),
         (None, Some(date)) => Schedule::Date(date),
-        _ => return invalid_request("exactly one of weekday or date is required".into()),
+        _ => return respond(SubscriptionResult::InvalidSchedule),
     };
     let (Some(start_minute), Some(end_minute)) =
         (minute_of_day(&request.start), minute_of_day(&request.end))

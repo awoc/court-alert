@@ -526,6 +526,14 @@ async fn each_validation_rejection_is_unprocessable_with_its_details() {
             json!({"error": "invalid_schedule"}),
         ),
         (
+            with(tennis.clone(), json!({"weekday": null})),
+            json!({"error": "invalid_schedule"}),
+        ),
+        (
+            with(tennis.clone(), json!({"date": "2030-01-01"})),
+            json!({"error": "invalid_schedule"}),
+        ),
+        (
             with(tennis.clone(), json!({"courts": ["Court 2", "Court 99"]})),
             json!({
                 "error": "unknown_courts",
@@ -591,8 +599,6 @@ async fn malformed_requests_are_bad_requests() {
         "{not json".to_owned(),
         with(tennis.clone(), json!({"user_id": null})).to_string(),
         with(tennis.clone(), json!({"sport": "squash"})).to_string(),
-        with(tennis.clone(), json!({"weekday": null})).to_string(),
-        with(tennis.clone(), json!({"date": "2030-01-01"})).to_string(),
         with(tennis.clone(), json!({"weekday": "Funday"})).to_string(),
         with(tennis.clone(), json!({"start": "8"})).to_string(),
         with(tennis.clone(), json!({"end": "24:30"})).to_string(),
