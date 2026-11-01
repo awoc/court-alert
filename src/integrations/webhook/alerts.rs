@@ -9,7 +9,6 @@ use sha2::Sha256;
 use uuid::Uuid;
 
 use super::slot::Slot;
-use crate::model::BookableSlotId;
 use crate::subscriptions::contract::{AlertSender, AvailabilityAlert};
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -71,10 +70,6 @@ impl AlertSender for WebhookAlertSender {
             .context("sending the webhook alert")?
             .error_for_status()
             .context("the webhook alert was rejected")?;
-        Ok(())
-    }
-
-    async fn strike_taken(&self, _slots: &[BookableSlotId]) -> Result<()> {
         Ok(())
     }
 }

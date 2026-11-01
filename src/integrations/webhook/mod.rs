@@ -7,7 +7,6 @@ mod subscriptions;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -18,7 +17,7 @@ use tracing::info;
 
 use crate::config::WebhookSettings;
 use crate::integrations::{Integration, ReadySignal};
-use crate::model::{IntegrationId, SubscriberRef};
+use crate::model::IntegrationId;
 use crate::subscriptions::SubscriptionService;
 use alerts::WebhookAlertSender;
 
@@ -73,10 +72,6 @@ impl BoundWebhookApi {
 
 #[async_trait]
 impl Integration for WebhookIntegration {
-    fn admins(&self) -> HashSet<SubscriberRef> {
-        HashSet::new()
-    }
-
     async fn run(
         self: Box<Self>,
         service: Arc<SubscriptionService>,

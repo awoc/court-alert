@@ -13,5 +13,7 @@ pub struct AvailabilityAlert {
 pub trait AlertSender: Send + Sync {
     async fn send_alert(&self, user_id: &str, alert: &AvailabilityAlert) -> Result<()>;
 
-    async fn strike_taken(&self, slots: &[BookableSlotId]) -> Result<()>;
+    async fn strike_taken(&self, _slots: &[BookableSlotId]) -> Result<()> {
+        Ok(())
+    }
 }

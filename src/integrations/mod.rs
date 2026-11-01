@@ -16,7 +16,9 @@ use crate::subscriptions::SubscriptionService;
 
 #[async_trait]
 pub trait Integration: Send {
-    fn admins(&self) -> HashSet<SubscriberRef>;
+    fn admins(&self) -> HashSet<SubscriberRef> {
+        HashSet::new()
+    }
 
     async fn run(
         self: Box<Self>,
@@ -224,10 +226,6 @@ base_url = "https://kurse.zhs-muenchen.de"
 
     #[async_trait]
     impl Integration for InstantReady {
-        fn admins(&self) -> HashSet<SubscriberRef> {
-            HashSet::new()
-        }
-
         async fn run(
             self: Box<Self>,
             _service: Arc<SubscriptionService>,
