@@ -7,11 +7,10 @@ use axum::http::StatusCode;
 use axum::http::request::Parts;
 use axum::middleware::Next;
 use axum::response::Response;
-use hmac::{Hmac, KeyInit, Mac};
 use http_body_util::LengthLimitError;
-use sha2::Sha256;
 
 use super::response::{error, invalid_request};
+use super::signing;
 
 const TIMESTAMP_HEADER: &str = "x-webhook-timestamp";
 const SIGNATURE_HEADER: &str = "x-webhook-signature-v2";
@@ -85,18 +84,15 @@ impl<'a> SignatureClaim<'a> {
             .uri
             .path_and_query()
             .map_or(parts.uri.path(), |path| path.as_str());
-
-        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
-            .expect("HMAC accepts keys of any length");
-        for part in [
-            self.timestamp.as_bytes(),
-            parts.method.as_str().as_bytes(),
-            path.as_bytes(),
-        ] {
-            mac.update(part);
-            mac.update(b".");
-        }
-        mac.update(body);
-        mac.verify_slice(&self.signature).is_ok()
+        signing::verify(
+            secret,
+            &[
+                self.timestamp.as_bytes(),
+                parts.method.as_str().as_bytes(),
+                path.as_bytes(),
+                body,
+            ],
+            &self.signature,
+        )
     }
 }

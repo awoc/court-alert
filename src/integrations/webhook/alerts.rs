@@ -3,11 +3,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
-use hmac::{Hmac, KeyInit, Mac};
 use serde::Serialize;
-use sha2::Sha256;
 use uuid::Uuid;
 
+use super::signing;
 use super::slot::Slot;
 use crate::subscriptions::contract::{AlertSender, AvailabilityAlert};
 
@@ -31,15 +30,6 @@ impl WebhookAlertSender {
             secret,
         })
     }
-
-    fn sign(&self, timestamp: &str, body: &[u8]) -> String {
-        let mut mac = Hmac::<Sha256>::new_from_slice(self.secret.as_bytes())
-            .expect("HMAC accepts keys of any length");
-        mac.update(timestamp.as_bytes());
-        mac.update(b".");
-        mac.update(body);
-        hex::encode(mac.finalize().into_bytes())
-    }
 }
 
 #[derive(Serialize)]
@@ -57,7 +47,7 @@ impl AlertSender for WebhookAlertSender {
         })
         .context("encoding the webhook alert")?;
         let timestamp = Utc::now().timestamp().to_string();
-        let signature = self.sign(&timestamp, &body);
+        let signature = signing::sign(&self.secret, &[timestamp.as_bytes(), &body]);
         self.client
             .post(self.url.clone())
             .header(reqwest::header::CONTENT_TYPE, "application/json")
