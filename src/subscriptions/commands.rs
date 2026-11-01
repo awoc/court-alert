@@ -132,6 +132,15 @@ impl SubscriptionService {
             return Err(Box::new(SubscriptionResult::InvalidSchedule));
         }
 
+        if let Some(chosen) = filter
+            && !chosen.applies_to(sport)
+        {
+            return Err(Box::new(SubscriptionResult::FilterNotForSport {
+                sport,
+                filter: chosen,
+            }));
+        }
+
         let courts = self
             .canonicalize_courts(sport, venue.as_ref(), courts)
             .map_err(|unknown| {
@@ -278,7 +287,9 @@ mod tests {
         service_with_clock, service_with_failing_slot_snapshot, service_with_slots,
         service_without_padel, subscribe_cmd, uref,
     };
-    use crate::model::{CourtFilter, CourtSurface, Schedule, Sport, SubscriptionDraft, TimeRange};
+    use crate::model::{
+        CourtFilter, CourtLocation, CourtSurface, Schedule, Sport, SubscriptionDraft, TimeRange,
+    };
     use crate::ports::SubscriptionRepository;
     use crate::subscriptions::contract::{ClubRef, SubscriptionCommand, SubscriptionResult};
     use chrono::Weekday;
@@ -731,6 +742,42 @@ mod tests {
             panic!("expected Subscribed");
         };
         assert_eq!(summary.filter, CourtFilter::CLAY);
+    }
+
+    #[tokio::test]
+    async fn a_filter_from_the_other_sports_vocabulary_is_rejected_and_stores_nothing() {
+        let svc = service().await;
+        let cases = [
+            (Sport::Tennis, CourtFilter::Location(CourtLocation::Indoor)),
+            (Sport::Padel, CourtFilter::CLAY),
+        ];
+        for (sport, filter) in cases {
+            let reply = svc
+                .handle(
+                    &uref("1"),
+                    SubscriptionCommand::Subscribe {
+                        sport,
+                        venue: None,
+                        schedule: Schedule::Weekday(Weekday::Tue),
+                        start_minute: 18 * 60,
+                        end_minute: 20 * 60,
+                        courts: None,
+                        filter: Some(filter),
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                reply,
+                SubscriptionResult::FilterNotForSport { sport, filter }
+            );
+        }
+        assert_eq!(
+            svc.handle(&uref("1"), SubscriptionCommand::List)
+                .await
+                .unwrap(),
+            SubscriptionResult::SubscriptionList(vec![])
+        );
     }
 
     fn padel_cmd(venue: Option<crate::model::VenueId>) -> SubscriptionCommand {

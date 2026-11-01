@@ -71,6 +71,9 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
                 _ => format!("{} are", courts.join(", ")),
             },
         )],
+        SubscriptionResult::FilterNotForSport { sport, filter } => {
+            vec![format!("`{filter}` is not a {sport} filter.")]
+        }
         SubscriptionResult::UnknownClub { unknown, available } => vec![
             format!("Unknown club: {unknown}."),
             format!(

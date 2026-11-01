@@ -148,6 +148,13 @@ impl CourtFilter {
         }
     }
 
+    pub fn applies_to(self, sport: Sport) -> bool {
+        matches!(
+            (self, sport),
+            (Self::Any, _) | (Self::Surface(_), Sport::Tennis) | (Self::Location(_), Sport::Padel)
+        )
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Any => "any",

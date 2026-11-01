@@ -569,6 +569,10 @@ async fn each_validation_rejection_is_unprocessable_with_its_details() {
                 "filter": "clay",
             }),
         ),
+        (
+            with(tennis.clone(), json!({"filter": "indoor"})),
+            json!({"error": "filter_not_for_sport", "sport": "tennis", "filter": "indoor"}),
+        ),
     ];
 
     for (request, expected) in cases {

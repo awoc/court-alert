@@ -50,6 +50,10 @@ pub enum SubscriptionResult {
         courts: Vec<String>,
         filter: CourtFilter,
     },
+    FilterNotForSport {
+        sport: Sport,
+        filter: CourtFilter,
+    },
     AllSubscriptions(Vec<OwnedSubscriptionSummary>),
     NotAuthorized,
 }

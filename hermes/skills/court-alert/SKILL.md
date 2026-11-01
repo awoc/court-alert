@@ -89,6 +89,7 @@ Every error body is JSON with an `error` kind. Recover as follows:
 | 422    | `unknown_courts`         | `unknown, available` | Ask the person to pick from `available`, or drop `courts`.                                             |
 | 422    | `no_clubs_configured`    | `sport`              | court-alert monitors no clubs for that sport; tell the person.                                         |
 | 422    | `filter_excludes_courts` | `courts, filter`     | The chosen courts don't match `filter`; drop one of them or use `"filter": "any"`.                     |
+| 422    | `filter_not_for_sport`   | `sport, filter`      | Tennis takes `clay` or `synthetic`, padel takes `indoor` or `outdoor`; fix `filter` or use `"any"`.    |
 | 500    | `internal`               |                      | court-alert failed; tell the person to try again later.                                                |
 
 ## Alerts

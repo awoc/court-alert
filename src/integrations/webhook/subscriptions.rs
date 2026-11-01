@@ -210,6 +210,11 @@ fn respond(result: SubscriptionResult) -> Response {
             "courts": courts,
             "filter": filter.as_str(),
         })),
+        SubscriptionResult::FilterNotForSport { sport, filter } => rejected(json!({
+            "error": "filter_not_for_sport",
+            "sport": sport.as_str(),
+            "filter": filter.as_str(),
+        })),
         SubscriptionResult::AllSubscriptions(_) | SubscriptionResult::NotAuthorized => {
             error!("webhook API received a result for an admin command it never sends");
             internal_error()
