@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use futures::stream::{self, StreamExt};
 use tokio::sync::mpsc::Receiver;
 use tracing::warn;
 
@@ -8,6 +9,8 @@ use crate::subscriptions::contract::{AlertSender, AvailabilityAlert};
 
 use super::matcher::match_subscriptions;
 use super::{SubscriptionService, slot_summary};
+
+const MAX_CONCURRENT_ALERTS: usize = 16;
 
 impl SubscriptionService {
     pub async fn dispatch_loop(
@@ -58,39 +61,45 @@ impl SubscriptionService {
             let registry = self.registry.read().expect("venue registry poisoned");
             match_subscriptions(changes, &subs, &registry)
         };
-        for (subscriber, slots) in matched {
-            let alert = {
-                let registry = self.registry.read().expect("venue registry poisoned");
-                AvailabilityAlert {
-                    slots: slots
-                        .iter()
-                        .map(|slot| slot_summary(&registry, slot))
-                        .collect(),
-                }
-            };
-            let sender = self
-                .senders
-                .read()
-                .expect("senders lock poisoned")
-                .get(&subscriber.integration)
-                .cloned();
-            let Some(sender) = sender else {
-                warn!(
-                    integration = %subscriber.integration,
-                    subscriber = %subscriber.subscriber_id,
-                    "dispatch: no sender registered for integration"
-                );
-                continue;
-            };
-            if let Err(e) = sender.send_alert(&subscriber.subscriber_id, &alert).await {
-                warn!(
-                    error = %format!("{e:#}"),
-                    integration = %subscriber.integration,
-                    subscriber = %subscriber.subscriber_id,
-                    "dispatch: failed to send alert"
-                );
-            }
-        }
+        let deliveries: Vec<_> = {
+            let registry = self.registry.read().expect("venue registry poisoned");
+            let senders = self.senders.read().expect("senders lock poisoned");
+            matched
+                .into_iter()
+                .filter_map(|(subscriber, slots)| {
+                    let Some(sender) = senders.get(&subscriber.integration).cloned() else {
+                        warn!(
+                            integration = %subscriber.integration,
+                            subscriber = %subscriber.subscriber_id,
+                            "dispatch: no sender registered for integration"
+                        );
+                        return None;
+                    };
+                    let alert = AvailabilityAlert {
+                        slots: slots
+                            .iter()
+                            .map(|slot| slot_summary(&registry, slot))
+                            .collect(),
+                    };
+                    Some((subscriber, sender, alert))
+                })
+                .collect()
+        };
+        stream::iter(deliveries)
+            .for_each_concurrent(
+                MAX_CONCURRENT_ALERTS,
+                |(subscriber, sender, alert)| async move {
+                    if let Err(e) = sender.send_alert(&subscriber.subscriber_id, &alert).await {
+                        warn!(
+                            error = %format!("{e:#}"),
+                            integration = %subscriber.integration,
+                            subscriber = %subscriber.subscriber_id,
+                            "dispatch: failed to send alert"
+                        );
+                    }
+                },
+            )
+            .await;
     }
 
     async fn strike_taken(&self, changes: &[AvailabilityChange]) {
@@ -217,6 +226,37 @@ mod tests {
             ends_at: starts_at + chrono::Duration::hours(1),
             available_places: 1,
         })
+    }
+
+    struct RendezvousSender(tokio::sync::Barrier);
+
+    #[async_trait::async_trait]
+    impl AlertSender for RendezvousSender {
+        async fn send_alert(&self, _: &str, _: &AvailabilityAlert) -> anyhow::Result<()> {
+            self.0.wait().await;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_slow_alert_does_not_hold_back_the_next_subscribers() {
+        let svc = service().await;
+        svc.register_sender(
+            "discord".into(),
+            Arc::new(RendezvousSender(tokio::sync::Barrier::new(2))),
+        );
+        for subscriber in ["1", "2"] {
+            svc.handle(&uref(subscriber), subscribe_cmd(18 * 60, 22 * 60))
+                .await
+                .unwrap();
+        }
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            svc.dispatch(&[bookable("Court 2")]),
+        )
+        .await
+        .expect("each alert waits for the other, so they must be in flight together");
     }
 
     #[tokio::test]
