@@ -11,7 +11,7 @@ use serde_json::json;
 use tracing::error;
 
 use super::INTEGRATION;
-use super::response::{error, invalid_request, rejected};
+use super::response::{InvalidRequest, error, invalid_request, rejected};
 use super::slot::Slot;
 use crate::model::{CourtFilter, MINUTES_PER_DAY, Schedule, Sport, SubscriberRef, VenueId};
 use crate::subscriptions::SubscriptionService;
@@ -84,20 +84,19 @@ impl From<SubscriptionSummary> for Subscription {
 pub(super) async fn subscribe(
     State(service): State<Arc<SubscriptionService>>,
     request: Result<Json<SubscribeRequest>, JsonRejection>,
-) -> Response {
-    let Json(request) = match request {
-        Ok(request) => request,
-        Err(rejection) => return invalid_request(rejection.body_text()),
-    };
+) -> Result<Response, InvalidRequest> {
+    let Json(request) = request?;
     let schedule = match (request.weekday, request.date) {
         (Some(weekday), None) => Schedule::Weekday(weekday),
         (None, Some(date)) => Schedule::Date(date),
-        _ => return respond(SubscriptionResult::InvalidSchedule),
+        _ => return Ok(respond(SubscriptionResult::InvalidSchedule)),
     };
     let (Some(start_minute), Some(end_minute)) =
         (minute_of_day(&request.start), minute_of_day(&request.end))
     else {
-        return invalid_request("start and end must be times of day as HH:MM".into());
+        return Ok(invalid_request(
+            "start and end must be times of day as HH:MM".into(),
+        ));
     };
     let command = SubscriptionCommand::Subscribe {
         sport: request.sport,
@@ -108,39 +107,30 @@ pub(super) async fn subscribe(
         courts: request.courts,
         filter: request.filter,
     };
-    handle(&service, &request.user_id, command).await
+    Ok(handle(&service, &request.user_id, command).await)
 }
 
 pub(super) async fn list(
     State(service): State<Arc<SubscriptionService>>,
     query: Result<Query<UserQuery>, QueryRejection>,
-) -> Response {
-    match query {
-        Ok(Query(query)) => handle(&service, &query.user, SubscriptionCommand::List).await,
-        Err(rejection) => invalid_request(rejection.body_text()),
-    }
+) -> Result<Response, InvalidRequest> {
+    let Query(query) = query?;
+    Ok(handle(&service, &query.user, SubscriptionCommand::List).await)
 }
 
 pub(super) async fn unsubscribe(
     State(service): State<Arc<SubscriptionService>>,
     id: Result<Path<i64>, PathRejection>,
     query: Result<Query<UserQuery>, QueryRejection>,
-) -> Response {
-    let Path(id) = match id {
-        Ok(id) => id,
-        Err(rejection) => return invalid_request(rejection.body_text()),
-    };
-    match query {
-        Ok(Query(query)) => {
-            handle(
-                &service,
-                &query.user,
-                SubscriptionCommand::Unsubscribe { id },
-            )
-            .await
-        }
-        Err(rejection) => invalid_request(rejection.body_text()),
-    }
+) -> Result<Response, InvalidRequest> {
+    let Path(id) = id?;
+    let Query(query) = query?;
+    Ok(handle(
+        &service,
+        &query.user,
+        SubscriptionCommand::Unsubscribe { id },
+    )
+    .await)
 }
 
 fn minute_of_day(raw: &str) -> Option<u32> {

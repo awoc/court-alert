@@ -2,13 +2,12 @@ use std::sync::Arc;
 
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Query, State};
-use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get};
 use axum::{Json, Router, middleware};
 use serde::{Deserialize, Serialize};
 
 use super::auth::require_signature;
-use super::response::invalid_request;
+use super::response::InvalidRequest;
 use super::subscriptions;
 use crate::model::Sport;
 use crate::subscriptions::SubscriptionService;
@@ -78,15 +77,12 @@ impl From<CourtSummary> for Court {
 async fn clubs(
     State(service): State<Arc<SubscriptionService>>,
     query: Result<Query<ClubsQuery>, QueryRejection>,
-) -> Response {
-    let Query(query) = match query {
-        Ok(query) => query,
-        Err(rejection) => return invalid_request(rejection.body_text()),
-    };
+) -> Result<Json<ClubList>, InvalidRequest> {
+    let Query(query) = query?;
     let clubs = service
         .club_directory(query.sport)
         .into_iter()
         .map(Club::from)
         .collect();
-    Json(ClubList { clubs }).into_response()
+    Ok(Json(ClubList { clubs }))
 }
