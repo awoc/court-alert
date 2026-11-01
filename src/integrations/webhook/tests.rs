@@ -204,6 +204,64 @@ async fn a_request_without_signature_headers_is_unauthorized() {
 }
 
 #[tokio::test]
+async fn an_unsigned_request_is_turned_away_before_its_body_is_read() {
+    let api = start().await;
+    let response = api
+        .http
+        .post(format!("{}/subscriptions", api.base))
+        .body("x".repeat(65 * 1024))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 401);
+}
+
+#[tokio::test]
+async fn a_signed_request_with_a_body_over_64_kib_is_too_large() {
+    let api = start().await;
+    let response = api
+        .signed_post("/subscriptions", &"x".repeat(65 * 1024))
+        .await;
+
+    assert_eq!(response.status(), 413);
+    assert_eq!(
+        response.json::<Value>().await.unwrap(),
+        json!({"error": "body_too_large"})
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_body_that_never_arrives_times_out() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let api = start().await;
+    let address = api.base.trim_start_matches("http://");
+    let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    stream
+        .write_all(
+            format!(
+                "POST /subscriptions HTTP/1.1\r\nHost: {address}\r\n\
+                 X-Webhook-Timestamp: {}\r\nX-Webhook-Signature-V2: 00\r\n\
+                 Content-Length: 10\r\n\r\n",
+                now()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+
+    let mut response = vec![0; 1024];
+    let read = stream.read(&mut response).await.unwrap();
+    let response = String::from_utf8_lossy(&response[..read]);
+    assert!(response.starts_with("HTTP/1.1 408"), "{response}");
+    assert!(
+        response.contains(r#"{"error":"request_timeout"}"#),
+        "{response}"
+    );
+}
+
+#[tokio::test]
 async fn a_request_signed_with_the_wrong_secret_is_unauthorized() {
     let api = start().await;
     let path = "/clubs?sport=padel";

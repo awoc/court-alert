@@ -82,6 +82,7 @@ Every error body is JSON with an `error` kind. Recover as follows:
 | ------ | ------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------ |
 | 400    | `invalid_request`        | `message`            | Fix the JSON or query string as `message` describes (unknown field, bad time format, missing `sport`). |
 | 401    | `unauthorized`           |                      | Check `COURT_ALERT_API_SECRET` and that this host's clock is within 5 minutes of court-alert's.        |
+| 408    | `request_timeout`        |                      | Send the whole request body within 10 seconds; retry.                                                  |
 | 413    | `body_too_large`         |                      | Keep request bodies under 64 KiB.                                                                      |
 | 404    | `not_found`              |                      | List the subscriber's subscriptions and use an `id` from there.                                        |
 | 422    | `invalid_subscriber_id`  |                      | Use a non-empty subscriber ID of at most 128 characters.                                               |

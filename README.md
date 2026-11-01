@@ -67,7 +67,7 @@ The API is plain HTTP and JSON, meant for the LAN only. Every request carries a 
 | `GET /subscriptions?subscriber_id=<subscriber>`         | `200` with the subscriber's subscriptions  |
 | `DELETE /subscriptions/<id>?subscriber_id=<subscriber>` | `204`                                      |
 
-Errors are JSON with an `error` kind: `400` for malformed JSON or query parameters, `401` for a missing or invalid signature, `404` for a missing subscription, `413` for a body over 64 KiB, `422` for validation rejections (with the valid alternatives where there are any) and `500` for a server failure. [`hermes/skills/court-alert/SKILL.md`](hermes/skills/court-alert/SKILL.md) documents the request fields and every error kind.
+Errors are JSON with an `error` kind: `400` for malformed JSON or query parameters, `401` for a missing or invalid signature, `404` for a missing subscription, `408` for a body that takes over 10 seconds to arrive, `413` for a body over 64 KiB, `422` for validation rejections (with the valid alternatives where there are any) and `500` for a server failure. [`hermes/skills/court-alert/SKILL.md`](hermes/skills/court-alert/SKILL.md) documents the request fields and every error kind.
 
 ### Signing
 

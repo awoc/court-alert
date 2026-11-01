@@ -344,6 +344,7 @@ dependencies = [
  "futures",
  "hex",
  "hmac",
+ "http-body-util",
  "reqwest 0.13.4",
  "rusqlite",
  "serde",
