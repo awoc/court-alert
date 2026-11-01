@@ -473,6 +473,29 @@ async fn one_subscriber_cannot_see_or_delete_another_subscribers_subscriptions()
 }
 
 #[tokio::test]
+async fn a_percent_encoded_subscriber_id_lists_and_deletes_what_its_raw_form_created() {
+    let api = start().await;
+    let raw = "signal:+49151 #&%";
+    let encoded = "signal%3A%2B49151%20%23%26%25";
+    let created: Value = api
+        .subscribe(tennis_subscription(raw))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let id = created["subscription"]["id"].as_i64().unwrap();
+
+    assert_eq!(
+        api.subscriptions_of(encoded).await["subscriptions"],
+        json!([created["subscription"]])
+    );
+    let deleted = api
+        .signed_delete(&format!("/subscriptions/{id}?subscriber_id={encoded}"))
+        .await;
+    assert_eq!(deleted.status(), 204);
+}
+
+#[tokio::test]
 async fn an_empty_or_overlong_subscriber_id_is_rejected() {
     let api = start().await;
     let overlong = "x".repeat(129);

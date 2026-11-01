@@ -32,6 +32,8 @@ It prints the JSON response on stdout and `HTTP <status>` on stderr, and exits n
 
 Each request names a subscriber. Use `<platform>:<chat id>` for the person you are acting for, for example `telegram:123456789`. Use the same ID on every request for that person: court-alert scopes each subscription to its exact subscriber ID, and alerts carry it back as `subscriber_id` so you know whom to tell. IDs are 1 to 128 characters.
 
+In a query string, percent-encode the subscriber ID: every character other than letters, digits and `-._~` becomes `%XX`. For example, `signal:+4915112345678` is `subscriber_id=signal%3A%2B4915112345678`. Unencoded, a `+` reads as a space and `&`, `#` or `%` break the query, so the request finds no subscriptions or fails its signature. Send the ID unencoded in JSON bodies.
+
 ## Endpoints
 
 ### List clubs: `GET /clubs?sport=<tennis|padel>`
@@ -64,11 +66,11 @@ Without `filter`, a tennis subscription without `courts` takes court-alert's con
 
 `201` with `{"subscription": {...}, "open_slots": [...]}`. `open_slots` are matching slots that are already bookable: tell the person straight away, because no alert will be sent for them. In the returned subscription, `club` is the club `id` and `club_name` its display name; both are null for a subscription to every club.
 
-### List subscriptions: `GET /subscriptions?subscriber_id=<subscriber id>`
+### List subscriptions: `GET /subscriptions?subscriber_id=<percent-encoded subscriber id>`
 
 `200` with `{"subscriptions": [{"id", "sport", "club", "club_name", "weekday" or "date", "start", "end", "courts", "filter"}]}`.
 
-### Delete a subscription: `DELETE /subscriptions/<id>?subscriber_id=<subscriber id>`
+### Delete a subscription: `DELETE /subscriptions/<id>?subscriber_id=<percent-encoded subscriber id>`
 
 `204` with an empty body when deleted. `404` `{"error": "not_found"}` when the subscription does not exist or belongs to another subscriber. List the person's subscriptions first to find the `id`.
 
