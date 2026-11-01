@@ -88,7 +88,7 @@ pub fn build(
 ) -> Vec<Box<dyn Integration>> {
     let mut integrations: Vec<Box<dyn Integration>> = Vec::new();
     if let Some(discord) = &settings.discord_bot {
-        integrations.push(Box::new(discord::DiscordProvider::new(
+        integrations.push(Box::new(discord::DiscordIntegration::new(
             discord.clone(),
             alert_lifecycle,
         )));

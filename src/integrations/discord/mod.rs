@@ -36,14 +36,14 @@ pub const INTEGRATION: IntegrationId = IntegrationId::from_static("discord");
 
 pub const MAX_CLUB_CHOICES: usize = 25;
 
-pub struct DiscordProvider {
+pub struct DiscordIntegration {
     token: String,
     guild_id: Option<GuildId>,
     admin_ids: HashSet<SubscriberRef>,
     alert_lifecycle: Arc<AlertMessageLifecycle>,
 }
 
-impl DiscordProvider {
+impl DiscordIntegration {
     pub fn new(settings: DiscordSettings, alert_lifecycle: Arc<AlertMessageLifecycle>) -> Self {
         Self {
             token: settings.token,
@@ -62,7 +62,7 @@ impl DiscordProvider {
 }
 
 #[async_trait]
-impl Integration for DiscordProvider {
+impl Integration for DiscordIntegration {
     fn admins(&self) -> HashSet<SubscriberRef> {
         self.admin_ids.clone()
     }
@@ -103,7 +103,7 @@ mod tests {
     #[tokio::test]
     async fn admin_ids_become_integration_scoped_subscriber_refs() {
         let store = Arc::new(crate::store::SqliteStore::open_in_memory().await.unwrap());
-        let provider = DiscordProvider::new(
+        let integration = DiscordIntegration::new(
             DiscordSettings {
                 token: "t".into(),
                 guild_id: Some(42),
@@ -112,12 +112,12 @@ mod tests {
             Arc::new(AlertMessageLifecycle::new(store)),
         );
         assert_eq!(
-            provider.admins(),
+            integration.admins(),
             HashSet::from([SubscriberRef {
                 integration: INTEGRATION,
                 user_id: "123".to_string(),
             }])
         );
-        assert_eq!(provider.guild_id, Some(GuildId::new(42)));
+        assert_eq!(integration.guild_id, Some(GuildId::new(42)));
     }
 }

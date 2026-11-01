@@ -34,7 +34,7 @@ pub(super) struct Handler {
 #[async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
-        info!(user = %ready.user.name, "discord provider connected");
+        info!(user = %ready.user.name, "discord integration connected");
         self.ready.ready();
         // Serenity fires this on every resume, and the clubs the commands name
         // come from the config the process started with, so there is nothing
