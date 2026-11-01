@@ -4,7 +4,7 @@ mod commands;
 mod dispatch;
 mod matcher;
 #[cfg(test)]
-mod testing;
+pub(crate) mod testing;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -93,11 +93,34 @@ impl SubscriptionService {
             .venues_of_sport(sport)
             .into_iter()
             .map(|venue_id| {
-                let name = registry
-                    .display_name(&venue_id)
-                    .unwrap_or_else(|| venue_id.as_str())
-                    .to_owned();
+                let name = registry.club_label(&venue_id);
                 (venue_id, name)
+            })
+            .collect()
+    }
+
+    pub fn club_directory(&self, sport: Sport) -> Vec<contract::ClubSummary> {
+        let registry = self.registry.read().expect("venue registry poisoned");
+        registry
+            .venues_of_sport(sport)
+            .into_iter()
+            .map(|venue_id| {
+                let courts = registry
+                    .catalog(&venue_id)
+                    .map(|catalog| {
+                        catalog
+                            .courts()
+                            .iter()
+                            .map(contract::CourtSummary::from)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                contract::ClubSummary {
+                    name: registry.club_label(&venue_id),
+                    venue_id,
+                    sport,
+                    courts,
+                }
             })
             .collect()
     }

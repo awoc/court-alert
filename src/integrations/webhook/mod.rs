@@ -1,0 +1,80 @@
+mod api;
+mod auth;
+mod response;
+#[cfg(test)]
+mod tests;
+
+use std::collections::HashSet;
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use tokio::net::TcpListener;
+use tracing::info;
+
+use crate::config::WebhookSettings;
+use crate::integrations::{Integration, ReadySignal};
+use crate::model::ProviderUserRef;
+use crate::subscriptions::SubscriptionService;
+
+pub struct WebhookIntegration {
+    listen: SocketAddr,
+    api_secret: Arc<str>,
+}
+
+impl WebhookIntegration {
+    pub fn new(settings: WebhookSettings) -> Self {
+        Self {
+            listen: settings.listen,
+            api_secret: settings.api_secret.into(),
+        }
+    }
+
+    pub async fn bind(self) -> Result<BoundWebhookApi> {
+        let listener = TcpListener::bind(self.listen)
+            .await
+            .with_context(|| format!("binding the webhook API to {}", self.listen))?;
+        Ok(BoundWebhookApi {
+            listener,
+            api_secret: self.api_secret,
+        })
+    }
+}
+
+pub struct BoundWebhookApi {
+    listener: TcpListener,
+    api_secret: Arc<str>,
+}
+
+impl BoundWebhookApi {
+    pub fn local_addr(&self) -> Result<SocketAddr> {
+        self.listener
+            .local_addr()
+            .context("reading the webhook API address")
+    }
+
+    pub async fn serve(self, service: Arc<SubscriptionService>) -> Result<()> {
+        axum::serve(self.listener, api::router(service, self.api_secret))
+            .await
+            .context("serving the webhook API")
+    }
+}
+
+#[async_trait]
+impl Integration for WebhookIntegration {
+    fn admins(&self) -> HashSet<ProviderUserRef> {
+        HashSet::new()
+    }
+
+    async fn run(
+        self: Box<Self>,
+        service: Arc<SubscriptionService>,
+        ready: ReadySignal,
+    ) -> Result<()> {
+        let webhook = self.bind().await?;
+        info!(address = %webhook.local_addr()?, "webhook API listening");
+        ready.ready();
+        webhook.serve(service).await
+    }
+}

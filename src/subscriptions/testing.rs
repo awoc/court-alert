@@ -100,7 +100,7 @@ pub(super) fn catalog() -> CourtCatalog {
     ])
 }
 
-pub(super) fn registry() -> Arc<RwLock<VenueRegistry>> {
+pub(crate) fn registry() -> Arc<RwLock<VenueRegistry>> {
     let mut registry = VenueRegistry::new();
     registry.register(&tennis_venue());
     registry.set_catalog(&venue_id(), catalog());

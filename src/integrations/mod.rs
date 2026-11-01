@@ -1,4 +1,5 @@
 pub mod discord;
+pub mod webhook;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -9,7 +10,7 @@ use async_trait::async_trait;
 use tokio::sync::watch;
 
 use crate::alerts::AlertMessageLifecycle;
-use crate::config::{Config, Settings};
+use crate::config::{Config, DiscordSettings, Settings};
 use crate::model::{ProviderUserRef, Sport};
 use crate::subscriptions::SubscriptionService;
 
@@ -62,7 +63,10 @@ pub fn readiness(n: usize) -> (Vec<ReadySignal>, ReadyBarrier) {
     (signals, ReadyBarrier { expected: n, rx })
 }
 
-pub fn validate_configuration(config: &Config) -> Result<()> {
+pub fn validate_configuration(config: &Config, discord: Option<&DiscordSettings>) -> Result<()> {
+    if discord.is_none() {
+        return Ok(());
+    }
     let padel_venues = config
         .venues()
         .iter()
@@ -88,6 +92,9 @@ pub fn build(
             discord.clone(),
             alert_lifecycle,
         )));
+    }
+    if let Some(webhook) = &settings.webhook {
+        integrations.push(Box::new(webhook::WebhookIntegration::new(webhook.clone())));
     }
     integrations
 }
@@ -127,22 +134,33 @@ base_url = "https://kurse.zhs-muenchen.de"
   name = "Tennis Court 1"
 "#;
 
+    fn config_with_padel_clubs(count: usize) -> Config {
+        let clubs: String = (0..count)
+            .map(|i| {
+                format!(
+                    "\n[[venues]]\nid = \"club-{i}\"\ndisplay_name = \"Club {i}\"\n\
+                     sport = \"padel\"\nprovider = \"playtomic\"\n\
+                     tenant_id = \"f8483f72-1d14-49eb-a98b-e4b89d969c78\"\n\
+                     slug = \"club-{i}\"\nlookahead_days = 15\n"
+                )
+            })
+            .collect();
+        Config::parse(&format!("{ZHS}{clubs}")).expect("parse")
+    }
+
+    fn discord_bot() -> DiscordSettings {
+        DiscordSettings {
+            token: "t".into(),
+            guild_id: None,
+            admin_ids: HashSet::new(),
+        }
+    }
+
     #[test]
     fn more_padel_venues_than_discord_can_offer_are_rejected() {
         let limit = discord::MAX_CLUB_CHOICES;
-        let club = |i: usize| {
-            format!(
-                "\n[[venues]]\nid = \"club-{i}\"\ndisplay_name = \"Club {i}\"\n\
-                 sport = \"padel\"\nprovider = \"playtomic\"\n\
-                 tenant_id = \"f8483f72-1d14-49eb-a98b-e4b89d969c78\"\n\
-                 slug = \"club-{i}\"\nlookahead_days = 15\n"
-            )
-        };
-        let with = |count: usize| {
-            let clubs: String = (0..count).map(club).collect();
-            let config = Config::parse(&format!("{ZHS}{clubs}")).expect("parse");
-            validate_configuration(&config)
-        };
+        let discord = discord_bot();
+        let with = |count| validate_configuration(&config_with_padel_clubs(count), Some(&discord));
 
         assert!(with(limit).is_ok(), "{limit} clubs must still be accepted");
 
@@ -152,6 +170,13 @@ base_url = "https://kurse.zhs-muenchen.de"
             "the limit is not named: {error:#}"
         );
     }
+
+    #[test]
+    fn more_padel_venues_than_discord_can_offer_are_accepted_without_the_discord_bot() {
+        let config = config_with_padel_clubs(discord::MAX_CLUB_CHOICES + 1);
+        assert!(validate_configuration(&config, None).is_ok());
+    }
+
     use crate::store::SqliteStore;
     use crate::subscriptions::{BerlinClock, SubscriptionService};
     use std::time::Duration;
