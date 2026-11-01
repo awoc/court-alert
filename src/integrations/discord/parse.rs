@@ -101,7 +101,7 @@ fn parse_courts(input: Option<String>) -> Result<Option<Vec<String>>> {
             .all(|court| court.chars().count() <= MAX_COURT_NAME_CHARS),
         "each court name must be at most {MAX_COURT_NAME_CHARS} characters"
     );
-    Ok((!courts.is_empty()).then_some(courts))
+    Ok(Some(courts))
 }
 
 fn parse_surface(input: Option<String>) -> Result<Option<CourtFilter>> {
@@ -231,7 +231,7 @@ mod tests {
             parse_courts(Some(" Court 1, ,Court 2 ".into())).unwrap(),
             Some(vec!["Court 1".into(), "Court 2".into()])
         );
-        assert_eq!(parse_courts(Some(" , ".into())).unwrap(), None);
+        assert_eq!(parse_courts(Some(" , ".into())).unwrap(), Some(vec![]));
     }
 
     #[test]

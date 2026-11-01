@@ -197,7 +197,7 @@ impl SubscriptionService {
         venue: Option<&VenueId>,
         courts: Option<Vec<String>>,
     ) -> Result<Option<Vec<String>>, Vec<String>> {
-        let Some(courts) = courts else {
+        let Some(courts) = courts.filter(|courts| !courts.is_empty()) else {
             return Ok(None);
         };
         let catalogs = self.catalogs_for(sport, venue);
@@ -588,6 +588,31 @@ mod tests {
             };
             assert_eq!(summary.courts, Some(vec!["Court 2".to_string()]));
         }
+    }
+
+    #[tokio::test]
+    async fn an_empty_court_list_means_every_court() {
+        let svc = service_defaulting_to_clay().await;
+        let SubscriptionResult::Subscribed { summary, .. } = svc
+            .handle(
+                &uref("1"),
+                SubscriptionCommand::Subscribe {
+                    sport: Sport::Tennis,
+                    venue: None,
+                    schedule: Schedule::Weekday(Weekday::Tue),
+                    start_minute: 18 * 60,
+                    end_minute: 20 * 60,
+                    courts: Some(vec![]),
+                    filter: None,
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected Subscribed");
+        };
+        assert_eq!(summary.courts, None);
+        assert_eq!(summary.filter, CourtFilter::CLAY);
     }
 
     #[tokio::test]
