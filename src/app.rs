@@ -5,9 +5,9 @@ use anyhow::{Context as _, Result};
 use tracing::{info, warn};
 
 use crate::alerts::AlertMessageLifecycle;
-use crate::chat;
-use crate::chat::discord::DiscordNotifier;
 use crate::config::{Config, Settings};
+use crate::integrations::discord::DiscordNotifier;
+use crate::integrations::{self, Integration};
 use crate::model::{Sport, VenueRegistry};
 use crate::monitor::Monitor;
 use crate::notify::{ChannelSink, SportScopedSink, SurfaceFilteredSink};
@@ -16,14 +16,14 @@ use crate::sources;
 use crate::store::SqliteStore;
 use crate::subscriptions::{BerlinClock, SubscriptionService};
 
-const PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(60);
+const INTEGRATION_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct App {
     config: Config,
     registry: Arc<RwLock<VenueRegistry>>,
     sources: ProviderSources,
     sinks: Vec<Arc<dyn AvailabilityChangeSink>>,
-    chat_providers: Vec<Box<dyn chat::ChatProvider>>,
+    integrations: Vec<Box<dyn Integration>>,
     store: Arc<SqliteStore>,
 }
 
@@ -32,12 +32,12 @@ impl App {
         let config = Config::load(&settings.config_path)?;
         let describe = || format!("validating config file {}", settings.config_path.display());
         sources::validate_configuration(&config).with_context(describe)?;
-        chat::validate_configuration(&config).with_context(describe)?;
+        integrations::validate_configuration(&config).with_context(describe)?;
         let registry = Arc::new(RwLock::new(build_registry(&config)));
 
         let store = Arc::new(SqliteStore::open(settings.db_path.clone()).await?);
         let alert_lifecycle = Arc::new(AlertMessageLifecycle::new(store.clone()));
-        let chat_providers = chat::build(&settings, alert_lifecycle.clone());
+        let integrations = integrations::build(&settings, alert_lifecycle.clone());
 
         let mut sinks: Vec<Arc<dyn AvailabilityChangeSink>> = Vec::new();
         match &settings.discord_webhook {
@@ -72,10 +72,10 @@ impl App {
             lookahead_days = config.lookahead_days(),
             surface_filter = %config.surface_filter(),
             webhook_notifiers = sinks.len(),
-            chat_providers = chat_providers.len(),
-            admins = chat_providers
+            integrations = integrations.len(),
+            admins = integrations
                 .iter()
-                .map(|p| p.admins().len())
+                .map(|i| i.admins().len())
                 .sum::<usize>(),
             config_path = %settings.config_path.display(),
             db_path = %settings.db_path.display(),
@@ -89,13 +89,13 @@ impl App {
             registry,
             sources,
             sinks,
-            chat_providers,
+            integrations,
             store,
         })
     }
 
     pub async fn run(self) -> Result<()> {
-        if self.chat_providers.is_empty() {
+        if self.integrations.is_empty() {
             Monitor::new(
                 self.config,
                 self.registry,
@@ -107,24 +107,24 @@ impl App {
             .run()
             .await
         } else {
-            self.run_with_providers().await
+            self.run_with_integrations().await
         }
     }
 
-    async fn run_with_providers(self) -> Result<()> {
+    async fn run_with_integrations(self) -> Result<()> {
         let Self {
             config,
             registry,
             sources,
             mut sinks,
-            chat_providers,
+            integrations,
             store,
         } = self;
 
         let (tx, rx) = tokio::sync::mpsc::channel(2);
         sinks.push(Arc::new(ChannelSink::new(tx)));
 
-        let admins = chat_providers.iter().flat_map(|p| p.admins()).collect();
+        let admins = integrations.iter().flat_map(|i| i.admins()).collect();
         let service = Arc::new(SubscriptionService::new(
             store.clone(),
             store.clone(),
@@ -135,22 +135,22 @@ impl App {
         ));
         let dispatch = tokio::spawn(service.clone().dispatch_loop(rx));
 
-        let (ready_signals, ready_barrier) = chat::readiness(chat_providers.len());
+        let (ready_signals, ready_barrier) = integrations::readiness(integrations.len());
 
         tokio::try_join!(
             async {
-                match tokio::time::timeout(PROVIDER_READY_TIMEOUT, ready_barrier.wait()).await {
-                    Ok(()) => info!("chat providers ready; starting monitor"),
+                match tokio::time::timeout(INTEGRATION_READY_TIMEOUT, ready_barrier.wait()).await {
+                    Ok(()) => info!("integrations ready; starting monitor"),
                     Err(_) => warn!(
-                        timeout_secs = PROVIDER_READY_TIMEOUT.as_secs(),
-                        "chat providers not ready; starting monitor anyway"
+                        timeout_secs = INTEGRATION_READY_TIMEOUT.as_secs(),
+                        "integrations not ready; starting monitor anyway"
                     ),
                 }
                 Monitor::new(config, registry, sources, sinks, store.clone(), store)
                     .run()
                     .await
             },
-            chat::run_all(chat_providers, service, ready_signals),
+            integrations::run_all(integrations, service, ready_signals),
             async {
                 dispatch.await.context("dispatch loop task failed")?;
                 Ok(())

@@ -1,7 +1,7 @@
 pub mod alerts;
 pub mod app;
-pub mod chat;
 pub mod config;
+pub mod integrations;
 pub mod model;
 pub mod monitor;
 pub mod notify;

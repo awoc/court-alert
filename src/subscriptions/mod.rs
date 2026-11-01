@@ -13,7 +13,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 
 use crate::model::{CourtCatalog, CourtFilter, ProviderUserRef, Sport, VenueId, VenueRegistry};
 use crate::ports::{BookableSlotSnapshotRepository, SubscriptionRepository};
-use contract::DirectMessageSender;
+use contract::AlertSender;
 
 pub trait Clock: Send + Sync {
     fn now(&self) -> DateTime<Utc>;
@@ -34,7 +34,7 @@ impl Clock for BerlinClock {
 pub struct SubscriptionService {
     store: Arc<dyn SubscriptionRepository>,
     slot_snapshots: Arc<dyn BookableSlotSnapshotRepository>,
-    senders: RwLock<HashMap<String, Arc<dyn DirectMessageSender>>>,
+    senders: RwLock<HashMap<String, Arc<dyn AlertSender>>>,
     admins: HashSet<ProviderUserRef>,
     registry: Arc<RwLock<VenueRegistry>>,
     tennis_default_filter: CourtFilter,
@@ -102,11 +102,11 @@ impl SubscriptionService {
             .collect()
     }
 
-    pub fn register_sender(&self, provider: &str, sender: Arc<dyn DirectMessageSender>) {
+    pub fn register_sender(&self, integration: &str, sender: Arc<dyn AlertSender>) {
         self.senders
             .write()
             .expect("senders lock poisoned")
-            .insert(provider.to_string(), sender);
+            .insert(integration.to_string(), sender);
     }
 }
 

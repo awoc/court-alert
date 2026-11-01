@@ -14,7 +14,7 @@ use crate::model::{ProviderUserRef, Sport};
 use crate::subscriptions::SubscriptionService;
 
 #[async_trait]
-pub trait ChatProvider: Send {
+pub trait Integration: Send {
     fn admins(&self) -> HashSet<ProviderUserRef>;
 
     async fn run(
@@ -81,28 +81,28 @@ pub fn validate_configuration(config: &Config) -> Result<()> {
 pub fn build(
     settings: &Settings,
     alert_lifecycle: Arc<AlertMessageLifecycle>,
-) -> Vec<Box<dyn ChatProvider>> {
-    let mut providers: Vec<Box<dyn ChatProvider>> = Vec::new();
+) -> Vec<Box<dyn Integration>> {
+    let mut integrations: Vec<Box<dyn Integration>> = Vec::new();
     if let Some(discord) = &settings.discord_bot {
-        providers.push(Box::new(discord::DiscordProvider::new(
+        integrations.push(Box::new(discord::DiscordProvider::new(
             discord.clone(),
             alert_lifecycle,
         )));
     }
-    providers
+    integrations
 }
 
 pub async fn run_all(
-    providers: Vec<Box<dyn ChatProvider>>,
+    integrations: Vec<Box<dyn Integration>>,
     service: Arc<SubscriptionService>,
     signals: Vec<ReadySignal>,
 ) -> Result<()> {
     let mut tasks = tokio::task::JoinSet::new();
-    for (provider, ready) in providers.into_iter().zip(signals) {
-        tasks.spawn(provider.run(service.clone(), ready));
+    for (integration, ready) in integrations.into_iter().zip(signals) {
+        tasks.spawn(integration.run(service.clone(), ready));
     }
     while let Some(res) = tasks.join_next().await {
-        res.context("chat provider task panicked")??;
+        res.context("integration task panicked")??;
     }
     Ok(())
 }
@@ -198,7 +198,7 @@ base_url = "https://kurse.zhs-muenchen.de"
     struct InstantReady;
 
     #[async_trait]
-    impl ChatProvider for InstantReady {
+    impl Integration for InstantReady {
         fn admins(&self) -> HashSet<ProviderUserRef> {
             HashSet::new()
         }
@@ -214,7 +214,7 @@ base_url = "https://kurse.zhs-muenchen.de"
     }
 
     #[tokio::test]
-    async fn run_all_hands_each_provider_its_ready_signal() {
+    async fn run_all_hands_each_integration_its_ready_signal() {
         let store = Arc::new(SqliteStore::open_in_memory().await.unwrap());
         let service = Arc::new(SubscriptionService::new(
             store.clone(),

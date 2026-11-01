@@ -13,7 +13,7 @@ use serenity::all::{
 use serenity::async_trait;
 use tracing::{error, info, warn};
 
-use crate::chat::ReadySignal;
+use crate::integrations::ReadySignal;
 use crate::model::ProviderUserRef;
 use crate::model::Sport;
 use crate::subscriptions::SubscriptionService;

@@ -4,7 +4,7 @@ use tokio::sync::mpsc::Receiver;
 use tracing::warn;
 
 use crate::model::AvailabilityChange;
-use crate::subscriptions::contract::{AvailabilityAlert, DirectMessageSender};
+use crate::subscriptions::contract::{AlertSender, AvailabilityAlert};
 
 use super::matcher::match_subscriptions;
 use super::{SubscriptionService, slot_summary};
@@ -78,16 +78,16 @@ impl SubscriptionService {
                 warn!(
                     provider = %user.provider,
                     user = %user.user_id,
-                    "dispatch: no sender registered for provider"
+                    "dispatch: no sender registered for integration"
                 );
                 continue;
             };
-            if let Err(e) = sender.send_dm(&user.user_id, &alert).await {
+            if let Err(e) = sender.send_alert(&user.user_id, &alert).await {
                 warn!(
                     error = %format!("{e:#}"),
                     provider = %user.provider,
                     user = %user.user_id,
-                    "dispatch: failed to send DM"
+                    "dispatch: failed to send alert"
                 );
             }
         }
@@ -98,18 +98,18 @@ impl SubscriptionService {
         if taken.is_empty() {
             return;
         }
-        let senders: Vec<(String, Arc<dyn DirectMessageSender>)> = self
+        let senders: Vec<(String, Arc<dyn AlertSender>)> = self
             .senders
             .read()
             .expect("senders lock poisoned")
             .iter()
-            .map(|(provider, sender)| (provider.clone(), sender.clone()))
+            .map(|(integration, sender)| (integration.clone(), sender.clone()))
             .collect();
-        for (provider, sender) in senders {
+        for (integration, sender) in senders {
             if let Err(e) = sender.strike_taken(&taken).await {
                 warn!(
                     error = %format!("{e:#}"),
-                    provider = %provider,
+                    provider = %integration,
                     slots = taken.len(),
                     "dispatch: failed to strike slots that were taken"
                 );
@@ -129,9 +129,7 @@ mod tests {
         SubscriptionDraft, TimeRange,
     };
     use crate::ports::SubscriptionRepository;
-    use crate::subscriptions::contract::{
-        AvailabilityAlert, DirectMessageSender, SubscriptionCommand,
-    };
+    use crate::subscriptions::contract::{AlertSender, AvailabilityAlert, SubscriptionCommand};
     use crate::time::today_berlin;
     use chrono::{TimeZone, Utc};
     use std::sync::{Arc, Mutex};
@@ -163,15 +161,15 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl DirectMessageSender for RecordingSender {
-        async fn send_dm(&self, user_id: &str, alert: &AvailabilityAlert) -> anyhow::Result<()> {
+    impl AlertSender for RecordingSender {
+        async fn send_alert(&self, user_id: &str, alert: &AvailabilityAlert) -> anyhow::Result<()> {
             self.sent
                 .lock()
                 .unwrap()
                 .push((user_id.to_string(), alert.clone()));
             self.order.lock().unwrap().push("send");
             if self.fail {
-                anyhow::bail!("simulated DM failure");
+                anyhow::bail!("simulated alert failure");
             }
             Ok(())
         }
@@ -218,7 +216,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_sends_dm_to_matching_subscriber() {
+    async fn dispatch_sends_alert_to_matching_subscriber() {
         let svc = service().await;
         let sender = RecordingSender::new(false);
         svc.register_sender("discord", sender.clone());

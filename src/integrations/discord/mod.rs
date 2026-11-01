@@ -8,8 +8,8 @@ use serenity::all::{GatewayIntents, GuildId};
 use serenity::async_trait;
 
 use crate::alerts::AlertMessageLifecycle;
-use crate::chat::{ChatProvider, ReadySignal};
 use crate::config::DiscordSettings;
+use crate::integrations::{Integration, ReadySignal};
 use crate::model::ProviderUserRef;
 use crate::subscriptions::SubscriptionService;
 
@@ -62,7 +62,7 @@ impl DiscordProvider {
 }
 
 #[async_trait]
-impl ChatProvider for DiscordProvider {
+impl Integration for DiscordProvider {
     fn admins(&self) -> HashSet<ProviderUserRef> {
         self.admin_ids.clone()
     }

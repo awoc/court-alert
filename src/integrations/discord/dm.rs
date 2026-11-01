@@ -7,7 +7,7 @@ use serenity::async_trait;
 
 use crate::alerts::{AlertMessageLifecycle, AlertMessageTracker, EditOutcome};
 use crate::model::{AlertSurface, BookableSlotId};
-use crate::subscriptions::contract::{AvailabilityAlert, DirectMessageSender};
+use crate::subscriptions::contract::{AlertSender, AvailabilityAlert};
 
 use super::format::{alert_lines, chunk_lines, render};
 use super::{DISCORD_UNKNOWN_MESSAGE, PROVIDER_NAME};
@@ -47,8 +47,8 @@ impl DiscordSender {
 }
 
 #[async_trait]
-impl DirectMessageSender for DiscordSender {
-    async fn send_dm(&self, user_id: &str, alert: &AvailabilityAlert) -> Result<()> {
+impl AlertSender for DiscordSender {
+    async fn send_alert(&self, user_id: &str, alert: &AvailabilityAlert) -> Result<()> {
         let id: u64 = user_id
             .parse()
             .with_context(|| format!("invalid Discord user id {user_id:?}"))?;
@@ -232,7 +232,7 @@ mod tests {
         let announced = slot("Court 2");
 
         sender
-            .send_dm("12345", &alert(&[&announced]))
+            .send_alert("12345", &alert(&[&announced]))
             .await
             .unwrap();
 
