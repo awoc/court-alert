@@ -34,7 +34,7 @@ pub(super) fn parse_interaction(cmd: &CommandInteraction) -> Result<Subscription
                 start_minute,
                 end_minute,
                 courts: parse_courts(get_string_opt(cmd, "courts"))?,
-                filter: parse_surface(get_string_opt(cmd, "surface"))?,
+                filter: parse_filter(get_string_opt(cmd, "surface"), Sport::Tennis)?,
             })
         }
         "padel" => {
@@ -48,7 +48,7 @@ pub(super) fn parse_interaction(cmd: &CommandInteraction) -> Result<Subscription
                 start_minute,
                 end_minute,
                 courts: None,
-                filter: parse_location(get_string_opt(cmd, "location"))?,
+                filter: parse_filter(get_string_opt(cmd, "location"), Sport::Padel)?,
             })
         }
         "list" => Ok(SubscriptionCommand::List),
@@ -92,28 +92,19 @@ fn parse_courts(input: Option<String>) -> Result<Option<Vec<String>>> {
     Ok(Some(courts))
 }
 
-fn parse_surface(input: Option<String>) -> Result<Option<CourtFilter>> {
-    parse_filter(input, "surface", |filter| {
-        matches!(filter, CourtFilter::Any | CourtFilter::Surface(_))
-    })
-}
-
-fn parse_location(input: Option<String>) -> Result<Option<CourtFilter>> {
-    parse_filter(input, "location", |filter| {
-        matches!(filter, CourtFilter::Any | CourtFilter::Location(_))
-    })
-}
-
-fn parse_filter(
-    input: Option<String>,
-    option: &str,
-    accepted: impl Fn(CourtFilter) -> bool,
-) -> Result<Option<CourtFilter>> {
+fn parse_filter(input: Option<String>, sport: Sport) -> Result<Option<CourtFilter>> {
+    let option = match sport {
+        Sport::Tennis => "surface",
+        Sport::Padel => "location",
+    };
     let Some(raw) = input.filter(|raw| !raw.trim().is_empty()) else {
         return Ok(None);
     };
     let filter: CourtFilter = raw.parse().with_context(|| format!("invalid '{option}'"))?;
-    anyhow::ensure!(accepted(filter), "'{option}' does not accept {filter:?}");
+    anyhow::ensure!(
+        filter.applies_to(sport),
+        "'{option}' does not accept {filter:?}"
+    );
     Ok(Some(filter))
 }
 
@@ -224,30 +215,33 @@ mod tests {
 
     #[test]
     fn surface_is_optional_and_validated() {
-        assert_eq!(parse_surface(None).unwrap(), None);
-        assert_eq!(parse_surface(Some("  ".into())).unwrap(), None);
+        assert_eq!(parse_filter(None, Sport::Tennis).unwrap(), None);
         assert_eq!(
-            parse_surface(Some("clay".into())).unwrap(),
+            parse_filter(Some("  ".into()), Sport::Tennis).unwrap(),
+            None
+        );
+        assert_eq!(
+            parse_filter(Some("clay".into()), Sport::Tennis).unwrap(),
             Some(CourtFilter::CLAY)
         );
         assert_eq!(
-            parse_surface(Some("all".into())).unwrap(),
+            parse_filter(Some("all".into()), Sport::Tennis).unwrap(),
             Some(CourtFilter::Any)
         );
-        assert!(parse_surface(Some("grass".into())).is_err());
+        assert!(parse_filter(Some("grass".into()), Sport::Tennis).is_err());
     }
 
     #[test]
     fn an_option_rejects_the_other_sports_vocabulary() {
         for raw in ["indoor", "outdoor"] {
             assert!(
-                parse_surface(Some(raw.into())).is_err(),
+                parse_filter(Some(raw.into()), Sport::Tennis).is_err(),
                 "surface accepted {raw:?}"
             );
         }
         for raw in ["clay", "synthetic"] {
             assert!(
-                parse_location(Some(raw.into())).is_err(),
+                parse_filter(Some(raw.into()), Sport::Padel).is_err(),
                 "location accepted {raw:?}"
             );
         }
@@ -255,16 +249,16 @@ mod tests {
 
     #[test]
     fn location_is_optional_and_validated() {
-        assert_eq!(parse_location(None).unwrap(), None);
+        assert_eq!(parse_filter(None, Sport::Padel).unwrap(), None);
         assert_eq!(
-            parse_location(Some("indoor".into())).unwrap(),
+            parse_filter(Some("indoor".into()), Sport::Padel).unwrap(),
             Some(CourtFilter::Location(crate::model::CourtLocation::Indoor))
         );
         assert_eq!(
-            parse_location(Some("any".into())).unwrap(),
+            parse_filter(Some("any".into()), Sport::Padel).unwrap(),
             Some(CourtFilter::Any)
         );
-        assert!(parse_location(Some("grass".into())).is_err());
+        assert!(parse_filter(Some("grass".into()), Sport::Padel).is_err());
     }
 
     #[test]
