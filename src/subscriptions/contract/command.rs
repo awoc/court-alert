@@ -1,6 +1,16 @@
+use uuid::Uuid;
+
 use crate::model::{CourtFilter, Schedule, Sport, VenueId};
 
-use super::{AvailableSlotSummary, ClubRef, OwnedSubscriptionSummary, SubscriptionSummary};
+use super::{
+    AvailableSlotSummary, ClubRef, CourtSummary, OwnedSubscriptionSummary, SubscriptionSummary,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CourtChoice {
+    Names(Vec<String>),
+    Ids(Vec<Uuid>),
+}
 
 #[derive(Debug, Clone)]
 pub enum SubscriptionCommand {
@@ -10,7 +20,7 @@ pub enum SubscriptionCommand {
         schedule: Schedule,
         start_minute: u32,
         end_minute: u32,
-        courts: Option<Vec<String>>,
+        courts: Option<CourtChoice>,
         filter: Option<CourtFilter>,
     },
     List,
@@ -43,8 +53,9 @@ pub enum SubscriptionResult {
     },
     UnknownCourts {
         unknown: Vec<String>,
-        available: Vec<String>,
+        available: Vec<CourtSummary>,
     },
+    CourtsNeedClub,
     UnknownClub {
         unknown: String,
         available: Vec<ClubRef>,

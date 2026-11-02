@@ -82,10 +82,14 @@ impl SubscriptionService {
         }
     }
 
-    fn court_names(&self, sport: Sport, venue: Option<&VenueId>) -> Vec<String> {
+    fn court_summaries(
+        &self,
+        sport: Sport,
+        venue: Option<&VenueId>,
+    ) -> Vec<contract::CourtSummary> {
         self.catalogs_for(sport, venue)
             .iter()
-            .flat_map(|(_, catalog)| catalog.names())
+            .flat_map(|(_, catalog)| catalog.courts().iter().map(contract::CourtSummary::from))
             .collect()
     }
 

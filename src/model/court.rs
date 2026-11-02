@@ -263,10 +263,11 @@ impl CourtCatalog {
     }
 
     pub fn attributes_of(&self, court_id: Uuid) -> Option<&CourtAttributes> {
-        self.courts
-            .iter()
-            .find(|court| court.id() == court_id)
-            .map(Court::attributes)
+        self.find_by_id(court_id).map(Court::attributes)
+    }
+
+    pub fn find_by_id(&self, court_id: Uuid) -> Option<&Court> {
+        self.courts.iter().find(|court| court.id() == court_id)
     }
 
     pub fn find_by_name(&self, name: &str) -> Option<&Court> {

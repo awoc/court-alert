@@ -9,6 +9,7 @@ use chrono::{NaiveDate, Weekday};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::error;
+use uuid::Uuid;
 
 use super::INTEGRATION;
 use super::response::{InvalidRequest, error, invalid_request, rejected};
@@ -16,7 +17,7 @@ use super::slot::Slot;
 use crate::model::{CourtFilter, MINUTES_PER_DAY, Schedule, Sport, SubscriberRef, VenueId};
 use crate::subscriptions::SubscriptionService;
 use crate::subscriptions::contract::{
-    SubscriptionCommand, SubscriptionResult, SubscriptionSummary,
+    CourtChoice, SubscriptionCommand, SubscriptionResult, SubscriptionSummary,
 };
 use crate::time::fmt_hhmm;
 
@@ -32,7 +33,7 @@ pub(super) struct SubscribeRequest {
     date: Option<NaiveDate>,
     start: String,
     end: String,
-    courts: Option<Vec<String>>,
+    courts: Option<Vec<Uuid>>,
     filter: Option<CourtFilter>,
 }
 
@@ -104,7 +105,7 @@ pub(super) async fn subscribe(
         schedule,
         start_minute,
         end_minute,
-        courts: request.courts,
+        courts: request.courts.map(CourtChoice::Ids),
         filter: request.filter,
     };
     Ok(handle(&service, &request.subscriber_id, command).await)
@@ -197,8 +198,12 @@ fn respond(result: SubscriptionResult) -> Response {
         SubscriptionResult::UnknownCourts { unknown, available } => rejected(json!({
             "error": "unknown_courts",
             "unknown": unknown,
-            "available": available,
+            "available": available
+                .into_iter()
+                .map(|court| json!({ "id": court.id, "name": court.name }))
+                .collect::<Vec<_>>(),
         })),
+        SubscriptionResult::CourtsNeedClub => rejected(json!({ "error": "courts_need_club" })),
         SubscriptionResult::UnknownClub { unknown, available } => rejected(json!({
             "error": "unknown_club",
             "unknown": unknown,

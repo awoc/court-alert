@@ -48,6 +48,7 @@ pub struct ClubSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CourtSummary {
+    pub id: Uuid,
     pub name: String,
     pub surface: Option<CourtSurface>,
     pub location: Option<CourtLocation>,
@@ -56,6 +57,7 @@ pub struct CourtSummary {
 impl From<&Court> for CourtSummary {
     fn from(court: &Court) -> Self {
         Self {
+            id: court.id(),
             name: court.name().to_owned(),
             surface: court.attributes().surface(),
             location: court.attributes().location(),

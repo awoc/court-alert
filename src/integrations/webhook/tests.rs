@@ -160,12 +160,26 @@ async fn a_signed_request_lists_the_configured_clubs_of_a_sport_with_their_court
                 "name": "Casa Padel",
                 "sport": "padel",
                 "courts": [
-                    {"name": "Court 1 (Indoor)", "surface": null, "location": "indoor"},
-                    {"name": "Court 6 (Outdoor)", "surface": null, "location": "outdoor"},
+                    {
+                        "id": court(101),
+                        "name": "Court 1 (Indoor)",
+                        "surface": null,
+                        "location": "indoor",
+                    },
+                    {
+                        "id": court(106),
+                        "name": "Court 6 (Outdoor)",
+                        "surface": null,
+                        "location": "outdoor",
+                    },
                 ],
             }]
         })
     );
+}
+
+fn court(id: u128) -> String {
+    Uuid::from_u128(id).to_string()
 }
 
 fn signed_headers(
@@ -385,7 +399,12 @@ async fn the_tennis_directory_lists_court_surfaces() {
     assert_eq!(clubs[0]["id"], "zhs-munich");
     assert_eq!(
         clubs[0]["courts"][2],
-        json!({"name": "Court 19 - Synthetic", "surface": "synthetic", "location": null})
+        json!({
+            "id": court(19),
+            "name": "Court 19 - Synthetic",
+            "surface": "synthetic",
+            "location": null,
+        })
     );
 }
 
@@ -613,6 +632,26 @@ async fn an_empty_or_overlong_subscriber_id_is_rejected() {
     assert_eq!(response.status(), 201, "128 characters are allowed");
 }
 
+#[tokio::test]
+async fn courts_are_chosen_by_id_within_the_club() {
+    let api = start().await;
+    let request = json!({
+        "subscriber_id": "alice",
+        "sport": "padel",
+        "club": "casa-padel",
+        "weekday": "Thu",
+        "start": "18:00",
+        "end": "21:30",
+        "courts": [court(106), court(106)],
+    });
+
+    let response = api.subscribe(request).await;
+
+    assert_eq!(response.status(), 201);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["subscription"]["courts"], json!(["Court 6 (Outdoor)"]));
+}
+
 fn with(mut base: Value, changes: Value) -> Value {
     for (key, value) in changes.as_object().unwrap() {
         if value.is_null() {
@@ -649,12 +688,23 @@ async fn each_validation_rejection_is_unprocessable_with_its_details() {
             json!({"error": "invalid_schedule"}),
         ),
         (
-            with(tennis.clone(), json!({"courts": ["Court 2", "Court 99"]})),
+            with(
+                tennis.clone(),
+                json!({"club": "zhs-munich", "courts": [court(2), court(101)]}),
+            ),
             json!({
                 "error": "unknown_courts",
-                "unknown": ["Court 99"],
-                "available": ["Court 2", "Court 5", "Court 19 - Synthetic"],
+                "unknown": [court(101)],
+                "available": [
+                    {"id": court(2), "name": "Court 2"},
+                    {"id": court(5), "name": "Court 5"},
+                    {"id": court(19), "name": "Court 19 - Synthetic"},
+                ],
             }),
+        ),
+        (
+            with(tennis.clone(), json!({"courts": [court(2)]})),
+            json!({"error": "courts_need_club"}),
         ),
         (
             with(tennis.clone(), json!({"club": "nowhere"})),
@@ -667,7 +717,7 @@ async fn each_validation_rejection_is_unprocessable_with_its_details() {
         (
             with(
                 tennis.clone(),
-                json!({"courts": ["Court 19 - Synthetic"], "filter": "clay"}),
+                json!({"club": "zhs-munich", "courts": [court(19)], "filter": "clay"}),
             ),
             json!({
                 "error": "filter_excludes_courts",
@@ -676,12 +726,11 @@ async fn each_validation_rejection_is_unprocessable_with_its_details() {
             }),
         ),
         (
-            with(tennis.clone(), json!({"courts": vec!["Court 2"; 21]})),
+            with(
+                tennis.clone(),
+                json!({"club": "zhs-munich", "courts": vec![court(2); 21]}),
+            ),
             json!({"error": "too_many_courts", "max": 20}),
-        ),
-        (
-            with(tennis.clone(), json!({"courts": ["x".repeat(101)]})),
-            json!({"error": "court_name_too_long", "max": 100}),
         ),
         (
             with(tennis.clone(), json!({"filter": "indoor"})),
@@ -730,6 +779,11 @@ async fn malformed_requests_are_bad_requests() {
         with(tennis.clone(), json!({"start": "8"})).to_string(),
         with(tennis.clone(), json!({"end": "24:30"})).to_string(),
         with(tennis.clone(), json!({"filter": "grass"})).to_string(),
+        with(
+            tennis.clone(),
+            json!({"club": "zhs-munich", "courts": ["Court 2"]}),
+        )
+        .to_string(),
         with(tennis.clone(), json!({"surprise": true})).to_string(),
     ] {
         let response = api.signed_post("/subscriptions", &body).await;

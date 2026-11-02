@@ -4,7 +4,7 @@ use serenity::all::{CommandDataOptionValue, CommandInteraction};
 use tracing::warn;
 
 use crate::model::{CourtFilter, Schedule, Sport, VenueId};
-use crate::subscriptions::contract::SubscriptionCommand;
+use crate::subscriptions::contract::{CourtChoice, SubscriptionCommand};
 use crate::time::today_berlin;
 
 const MAX_COURT_FILTER_CHARS: usize = 500;
@@ -75,7 +75,7 @@ fn parse_when(cmd: &CommandInteraction) -> Result<(Schedule, u32, u32)> {
     ))
 }
 
-fn parse_courts(input: Option<String>) -> Result<Option<Vec<String>>> {
+fn parse_courts(input: Option<String>) -> Result<Option<CourtChoice>> {
     let Some(input) = input else {
         return Ok(None);
     };
@@ -89,7 +89,7 @@ fn parse_courts(input: Option<String>) -> Result<Option<Vec<String>>> {
         .filter(|court| !court.is_empty())
         .map(str::to_string)
         .collect();
-    Ok(Some(courts))
+    Ok(Some(CourtChoice::Names(courts)))
 }
 
 fn parse_filter(input: Option<String>, sport: Sport) -> Result<Option<CourtFilter>> {
@@ -208,9 +208,12 @@ mod tests {
     fn court_filter_is_trimmed_and_empty_names_are_ignored() {
         assert_eq!(
             parse_courts(Some(" Court 1, ,Court 2 ".into())).unwrap(),
-            Some(vec!["Court 1".into(), "Court 2".into()])
+            Some(CourtChoice::Names(vec!["Court 1".into(), "Court 2".into()]))
         );
-        assert_eq!(parse_courts(Some(" , ".into())).unwrap(), Some(vec![]));
+        assert_eq!(
+            parse_courts(Some(" , ".into())).unwrap(),
+            Some(CourtChoice::Names(vec![]))
+        );
     }
 
     #[test]

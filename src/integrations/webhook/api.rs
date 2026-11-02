@@ -5,6 +5,7 @@ use axum::extract::{Query, State};
 use axum::routing::{delete, get};
 use axum::{Json, Router, middleware};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use super::auth::require_signature;
 use super::response::InvalidRequest;
@@ -48,6 +49,7 @@ struct Club {
 
 #[derive(Serialize)]
 struct Court {
+    id: Uuid,
     name: String,
     surface: Option<&'static str>,
     location: Option<&'static str>,
@@ -67,6 +69,7 @@ impl From<ClubSummary> for Club {
 impl From<CourtSummary> for Court {
     fn from(court: CourtSummary) -> Self {
         Self {
+            id: court.id,
             name: court.name,
             surface: court.surface.map(|surface| surface.as_str()),
             location: court.location.map(|location| location.as_str()),

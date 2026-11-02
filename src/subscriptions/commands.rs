@@ -1,12 +1,13 @@
 use anyhow::Result;
 use tracing::warn;
+use uuid::Uuid;
 
 use crate::model::{
     BookableSlot, CourtFilter, Schedule, Sport, SubscriberRef, Subscription, SubscriptionDraft,
     TimeRange, VenueId,
 };
 use crate::subscriptions::contract::{
-    AvailableSlotSummary, ClubRef, OwnedSubscriptionSummary, SubscriptionCommand,
+    AvailableSlotSummary, ClubRef, CourtChoice, OwnedSubscriptionSummary, SubscriptionCommand,
     SubscriptionResult, SubscriptionSummary,
 };
 
@@ -110,7 +111,7 @@ impl SubscriptionService {
         schedule: Schedule,
         start_minute: u32,
         end_minute: u32,
-        courts: Option<Vec<String>>,
+        courts: Option<CourtChoice>,
         filter: Option<CourtFilter>,
     ) -> Result<SubscriptionDraft, Box<SubscriptionResult>> {
         let clubs = self.clubs_of(sport);
@@ -144,30 +145,7 @@ impl SubscriptionService {
             }));
         }
 
-        if let Some(courts) = &courts {
-            if courts.len() > MAX_COURTS {
-                return Err(Box::new(SubscriptionResult::TooManyCourts {
-                    max: MAX_COURTS,
-                }));
-            }
-            if courts
-                .iter()
-                .any(|court| court.chars().count() > MAX_COURT_NAME_CHARS)
-            {
-                return Err(Box::new(SubscriptionResult::CourtNameTooLong {
-                    max: MAX_COURT_NAME_CHARS,
-                }));
-            }
-        }
-
-        let courts = self
-            .canonicalize_courts(sport, venue.as_ref(), courts)
-            .map_err(|unknown| {
-                Box::new(SubscriptionResult::UnknownCourts {
-                    unknown,
-                    available: self.court_names(sport, venue.as_ref()),
-                })
-            })?;
+        let courts = self.select_courts(sport, venue.as_ref(), courts)?;
 
         if let Some(chosen) = filter
             && let Some(excluded) =
@@ -210,15 +188,86 @@ impl SubscriptionService {
         }
     }
 
-    fn canonicalize_courts(
+    fn select_courts(
         &self,
         sport: Sport,
         venue: Option<&VenueId>,
-        courts: Option<Vec<String>>,
-    ) -> Result<Option<Vec<String>>, Vec<String>> {
-        let Some(courts) = courts.filter(|courts| !courts.is_empty()) else {
+        courts: Option<CourtChoice>,
+    ) -> Result<Option<Vec<String>>, Box<SubscriptionResult>> {
+        let Some(courts) = courts else {
             return Ok(None);
         };
+        let count = match &courts {
+            CourtChoice::Names(names) => names.len(),
+            CourtChoice::Ids(ids) => ids.len(),
+        };
+        if count == 0 {
+            return Ok(None);
+        }
+        if count > MAX_COURTS {
+            return Err(Box::new(SubscriptionResult::TooManyCourts {
+                max: MAX_COURTS,
+            }));
+        }
+        let resolved = match courts {
+            CourtChoice::Names(names) => {
+                if names
+                    .iter()
+                    .any(|court| court.chars().count() > MAX_COURT_NAME_CHARS)
+                {
+                    return Err(Box::new(SubscriptionResult::CourtNameTooLong {
+                        max: MAX_COURT_NAME_CHARS,
+                    }));
+                }
+                self.canonicalize_court_names(sport, venue, names)
+            }
+            CourtChoice::Ids(ids) => {
+                let Some(venue) = venue else {
+                    return Err(Box::new(SubscriptionResult::CourtsNeedClub));
+                };
+                self.court_names_by_id(sport, venue, ids)
+            }
+        };
+        resolved.map(Some).map_err(|unknown| {
+            Box::new(SubscriptionResult::UnknownCourts {
+                unknown,
+                available: self.court_summaries(sport, venue),
+            })
+        })
+    }
+
+    fn court_names_by_id(
+        &self,
+        sport: Sport,
+        venue: &VenueId,
+        ids: Vec<Uuid>,
+    ) -> Result<Vec<String>, Vec<String>> {
+        let catalogs = self.catalogs_for(sport, Some(venue));
+        let mut names: Vec<String> = Vec::with_capacity(ids.len());
+        let mut unknown = Vec::new();
+        for id in ids {
+            match catalogs
+                .iter()
+                .find_map(|(_, catalog)| catalog.find_by_id(id))
+            {
+                Some(court) if names.iter().any(|name| name == court.name()) => {}
+                Some(court) => names.push(court.name().to_owned()),
+                None => unknown.push(id.to_string()),
+            }
+        }
+        if unknown.is_empty() {
+            Ok(names)
+        } else {
+            Err(unknown)
+        }
+    }
+
+    fn canonicalize_court_names(
+        &self,
+        sport: Sport,
+        venue: Option<&VenueId>,
+        courts: Vec<String>,
+    ) -> Result<Vec<String>, Vec<String>> {
         let catalogs = self.catalogs_for(sport, venue);
         let mut canonical = Vec::with_capacity(courts.len());
         let mut unknown = Vec::new();
@@ -233,7 +282,7 @@ impl SubscriptionService {
             }
         }
         if unknown.is_empty() {
-            Ok(Some(canonical))
+            Ok(canonical)
         } else {
             Err(unknown)
         }
@@ -311,7 +360,9 @@ mod tests {
         CourtFilter, CourtLocation, CourtSurface, Schedule, Sport, SubscriptionDraft, TimeRange,
     };
     use crate::ports::SubscriptionRepository;
-    use crate::subscriptions::contract::{ClubRef, SubscriptionCommand, SubscriptionResult};
+    use crate::subscriptions::contract::{
+        ClubRef, CourtChoice, SubscriptionCommand, SubscriptionResult,
+    };
     use chrono::Weekday;
 
     #[tokio::test]
@@ -572,7 +623,7 @@ mod tests {
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
-                    courts: Some(vec!["Court 2".into()]),
+                    courts: Some(CourtChoice::Names(vec!["Court 2".into()])),
                     filter: None,
                 },
             )
@@ -597,7 +648,7 @@ mod tests {
                         schedule: Schedule::Weekday(chrono::Weekday::Tue),
                         start_minute: 18 * 60,
                         end_minute: 20 * 60,
-                        courts: Some(vec![input.into()]),
+                        courts: Some(CourtChoice::Names(vec![input.into()])),
                         filter: None,
                     },
                 )
@@ -617,7 +668,7 @@ mod tests {
             schedule: Schedule::Weekday(Weekday::Tue),
             start_minute: 18 * 60,
             end_minute: 20 * 60,
-            courts: Some(courts),
+            courts: Some(CourtChoice::Names(courts)),
             filter: None,
         }
     }
@@ -675,7 +726,7 @@ mod tests {
                     schedule: Schedule::Weekday(Weekday::Tue),
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
-                    courts: Some(vec![]),
+                    courts: Some(CourtChoice::Names(vec![])),
                     filter: None,
                 },
             )
@@ -700,7 +751,10 @@ mod tests {
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
-                    courts: Some(vec!["Court 42".into(), "Court 5".into()]),
+                    courts: Some(CourtChoice::Names(vec![
+                        "Court 42".into(),
+                        "Court 5".into(),
+                    ])),
                     filter: None,
                 },
             )
@@ -710,7 +764,7 @@ mod tests {
             panic!("expected UnknownCourts, got {reply:?}");
         };
         assert_eq!(unknown, vec!["Court 42".to_string()]);
-        assert!(available.contains(&"Court 2".to_string()));
+        assert!(available.iter().any(|court| court.name == "Court 2"));
         assert_eq!(
             svc.handle(&uref("1"), SubscriptionCommand::List)
                 .await
@@ -744,7 +798,7 @@ mod tests {
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
-                    courts: Some(vec!["19".into()]),
+                    courts: Some(CourtChoice::Names(vec!["19".into()])),
                     filter: None,
                 },
             )
@@ -796,7 +850,7 @@ mod tests {
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
-                    courts: Some(vec!["19".into(), "2".into()]),
+                    courts: Some(CourtChoice::Names(vec!["19".into(), "2".into()])),
                     filter: Some(CourtFilter::CLAY),
                 },
             )
@@ -830,7 +884,7 @@ mod tests {
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
-                    courts: Some(vec!["2".into()]),
+                    courts: Some(CourtChoice::Names(vec!["2".into()])),
                     filter: Some(CourtFilter::CLAY),
                 },
             )
@@ -1051,7 +1105,7 @@ mod tests {
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
                     start_minute: 18 * 60,
                     end_minute: 20 * 60,
-                    courts: Some(vec!["Court 5".into()]),
+                    courts: Some(CourtChoice::Names(vec!["Court 5".into()])),
                     filter: None,
                 },
             )

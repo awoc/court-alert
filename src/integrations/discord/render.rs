@@ -67,8 +67,18 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
         }
         SubscriptionResult::UnknownCourts { unknown, available } => vec![
             format!("Unknown court(s): {}.", unknown.join(", ")),
-            format!("Available courts: {}.", available.join(", ")),
+            format!(
+                "Available courts: {}.",
+                available
+                    .iter()
+                    .map(|court| court.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         ],
+        SubscriptionResult::CourtsNeedClub => {
+            vec!["Pick a club to choose courts from.".to_string()]
+        }
         SubscriptionResult::FilterExcludesCourts { courts, filter } => vec![format!(
             "{} not {filter}, so `{filter}` would never match. \
              Drop the filter or pick other courts.",
@@ -235,8 +245,11 @@ fn schedule_label(schedule: Schedule) -> String {
 mod tests {
     use super::*;
     use crate::model::{Sport, SubscriberRef};
-    use crate::subscriptions::contract::{AvailableSlotSummary, ClubRef, OwnedSubscriptionSummary};
+    use crate::subscriptions::contract::{
+        AvailableSlotSummary, ClubRef, CourtSummary, OwnedSubscriptionSummary,
+    };
     use chrono::{TimeZone, Utc, Weekday};
+    use uuid::Uuid;
 
     fn summary() -> SubscriptionSummary {
         SubscriptionSummary {
@@ -500,7 +513,15 @@ mod tests {
     fn renders_unknown_courts_with_available_alternatives() {
         let text = reply_text(&SubscriptionResult::UnknownCourts {
             unknown: vec!["Cort 2".into()],
-            available: vec!["Court 2".into(), "Court 5".into()],
+            available: ["Court 2", "Court 5"]
+                .into_iter()
+                .map(|name| CourtSummary {
+                    id: Uuid::nil(),
+                    name: name.into(),
+                    surface: None,
+                    location: None,
+                })
+                .collect(),
         });
         assert!(text.contains("Unknown court(s): Cort 2."));
         assert!(text.contains("Available courts: Court 2, Court 5."));
