@@ -900,7 +900,7 @@ name = "Tennis Court 1"
         (WEBHOOK_API_SECRET, "api-secret"),
         (
             WEBHOOK_ALERT_URL,
-            "http://hermes.lan:8644/webhooks/court-alert",
+            "http://agent.lan:8644/webhooks/court-alert",
         ),
         (WEBHOOK_ALERT_SECRET, "alert-secret"),
     ];
@@ -925,7 +925,7 @@ name = "Tennis Court 1"
         assert_eq!(settings.api_secret, "api-secret");
         assert_eq!(
             settings.alert_url.as_str(),
-            "http://hermes.lan:8644/webhooks/court-alert"
+            "http://agent.lan:8644/webhooks/court-alert"
         );
         assert_eq!(settings.alert_secret, "alert-secret");
     }

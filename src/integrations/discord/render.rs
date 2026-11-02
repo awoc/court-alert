@@ -543,12 +543,12 @@ mod tests {
         let reply = SubscriptionResult::AllSubscriptions(vec![OwnedSubscriptionSummary {
             subscriber: SubscriberRef {
                 integration: crate::integrations::webhook::INTEGRATION,
-                subscriber_id: "hermes:alice".to_string(),
+                subscriber_id: "agent:alice".to_string(),
             },
             summary: summary(),
         }]);
         let text = reply_text(&reply);
-        assert!(text.contains("hermes:alice (webhook)"), "{text}");
+        assert!(text.contains("agent:alice (webhook)"), "{text}");
         assert!(!text.contains("<@"), "{text}");
     }
 

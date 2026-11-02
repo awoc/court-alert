@@ -749,12 +749,12 @@ async fn a_subscription_may_end_at_midnight() {
 const ALERT_SECRET: &str = "alert-secret";
 const ALERT_PATH: &str = "/webhooks/court-alert";
 
-async fn run_against(hermes: &MockServer) -> Arc<SubscriptionService> {
+async fn run_against(receiver: &MockServer) -> Arc<SubscriptionService> {
     let service = service().await;
     let webhook = WebhookIntegration::new(WebhookSettings {
         listen: "127.0.0.1:0".parse().unwrap(),
         api_secret: API_SECRET.into(),
-        alert_url: format!("{}{ALERT_PATH}", hermes.uri()).parse().unwrap(),
+        alert_url: format!("{}{ALERT_PATH}", receiver.uri()).parse().unwrap(),
         alert_secret: ALERT_SECRET.into(),
     });
     let (mut signals, barrier) = readiness(1);
@@ -820,18 +820,18 @@ async fn opens(service: &SubscriptionService, slot: BookableSlot) {
         .await;
 }
 
-async fn hermes_accepting_alerts() -> MockServer {
-    let hermes = MockServer::start().await;
+async fn receiver_accepting_alerts() -> MockServer {
+    let receiver = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(ALERT_PATH))
         .respond_with(ResponseTemplate::new(202))
-        .mount(&hermes)
+        .mount(&receiver)
         .await;
-    hermes
+    receiver
 }
 
-async fn alerts_received(hermes: &MockServer) -> Vec<Request> {
-    hermes.received_requests().await.unwrap_or_default()
+async fn alerts_received(receiver: &MockServer) -> Vec<Request> {
+    receiver.received_requests().await.unwrap_or_default()
 }
 
 fn alerted_subscriber(alert: &Request) -> String {
@@ -840,9 +840,9 @@ fn alerted_subscriber(alert: &Request) -> String {
 }
 
 #[tokio::test]
-async fn matching_slots_reach_hermes_in_one_alert_per_subscriber() {
-    let hermes = hermes_accepting_alerts().await;
-    let service = run_against(&hermes).await;
+async fn matching_slots_reach_the_alert_url_in_one_alert_per_subscriber() {
+    let receiver = receiver_accepting_alerts().await;
+    let service = run_against(&receiver).await;
     subscribe_to_padel_on_tuesday_evenings(&service, &subscriber("alice")).await;
 
     service
@@ -852,7 +852,7 @@ async fn matching_slots_reach_hermes_in_one_alert_per_subscriber() {
         ])
         .await;
 
-    let received = alerts_received(&hermes).await;
+    let received = alerts_received(&receiver).await;
     assert_eq!(received.len(), 1);
     let body: Value = serde_json::from_slice(&received[0].body).unwrap();
     assert_eq!(
@@ -880,14 +880,14 @@ async fn matching_slots_reach_hermes_in_one_alert_per_subscriber() {
 }
 
 #[tokio::test]
-async fn an_alert_is_signed_for_hermes_with_the_alert_secret() {
-    let hermes = hermes_accepting_alerts().await;
-    let service = run_against(&hermes).await;
+async fn an_alert_is_signed_with_the_alert_secret() {
+    let receiver = receiver_accepting_alerts().await;
+    let service = run_against(&receiver).await;
     subscribe_to_padel_on_tuesday_evenings(&service, &subscriber("alice")).await;
 
     opens(&service, indoor_slot()).await;
 
-    let received = alerts_received(&hermes).await;
+    let received = alerts_received(&receiver).await;
     let alert = &received[0];
     let header = |name: &str| {
         alert
@@ -914,15 +914,15 @@ async fn an_alert_is_signed_for_hermes_with_the_alert_secret() {
 
 #[tokio::test]
 async fn each_delivery_carries_its_own_webhook_id() {
-    let hermes = hermes_accepting_alerts().await;
-    let service = run_against(&hermes).await;
+    let receiver = receiver_accepting_alerts().await;
+    let service = run_against(&receiver).await;
     subscribe_to_padel_on_tuesday_evenings(&service, &subscriber("alice")).await;
     subscribe_to_padel_on_tuesday_evenings(&service, &subscriber("bob")).await;
 
     opens(&service, indoor_slot()).await;
     opens(&service, outdoor_slot()).await;
 
-    let ids: HashSet<Uuid> = alerts_received(&hermes)
+    let ids: HashSet<Uuid> = alerts_received(&receiver)
         .await
         .iter()
         .map(|alert| {
@@ -937,25 +937,25 @@ async fn each_delivery_carries_its_own_webhook_id() {
 }
 
 #[tokio::test]
-async fn hermes_rejecting_one_subscribers_alert_does_not_stop_the_others() {
-    let hermes = MockServer::start().await;
+async fn the_receiver_rejecting_one_subscribers_alert_does_not_stop_the_others() {
+    let receiver = MockServer::start().await;
     Mock::given(body_partial_json(json!({"subscriber_id": "alice"})))
         .respond_with(ResponseTemplate::new(500))
         .with_priority(1)
-        .mount(&hermes)
+        .mount(&receiver)
         .await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(202))
-        .mount(&hermes)
+        .mount(&receiver)
         .await;
-    let service = run_against(&hermes).await;
+    let service = run_against(&receiver).await;
     for id in ["alice", "bob", "carol"] {
         subscribe_to_padel_on_tuesday_evenings(&service, &subscriber(id)).await;
     }
 
     opens(&service, indoor_slot()).await;
 
-    let mut users: Vec<String> = alerts_received(&hermes)
+    let mut users: Vec<String> = alerts_received(&receiver)
         .await
         .iter()
         .map(alerted_subscriber)
@@ -965,16 +965,16 @@ async fn hermes_rejecting_one_subscribers_alert_does_not_stop_the_others() {
 }
 
 #[tokio::test]
-async fn a_slot_that_is_taken_sends_hermes_nothing() {
-    let hermes = hermes_accepting_alerts().await;
-    let service = run_against(&hermes).await;
+async fn a_slot_that_is_taken_sends_no_alert() {
+    let receiver = receiver_accepting_alerts().await;
+    let service = run_against(&receiver).await;
     subscribe_to_padel_on_tuesday_evenings(&service, &subscriber("alice")).await;
 
     service
         .dispatch(&[AvailabilityChange::BecameUnbookable(indoor_slot())])
         .await;
 
-    assert!(alerts_received(&hermes).await.is_empty());
+    assert!(alerts_received(&receiver).await.is_empty());
 }
 
 #[derive(Default)]
@@ -1002,8 +1002,8 @@ impl AlertSender for DiscordDms {
 
 #[tokio::test]
 async fn discord_dms_keep_flowing_alongside_webhook_alerts() {
-    let hermes = hermes_accepting_alerts().await;
-    let service = run_against(&hermes).await;
+    let receiver = receiver_accepting_alerts().await;
+    let service = run_against(&receiver).await;
     let dms = Arc::new(DiscordDms::default());
     service.register_sender("discord".into(), dms.clone());
     let discord_subscriber = SubscriberRef {
@@ -1018,7 +1018,7 @@ async fn discord_dms_keep_flowing_alongside_webhook_alerts() {
         .dispatch(&[AvailabilityChange::BecameUnbookable(indoor_slot())])
         .await;
 
-    let received = alerts_received(&hermes).await;
+    let received = alerts_received(&receiver).await;
     assert_eq!(
         received.iter().map(alerted_subscriber).collect::<Vec<_>>(),
         ["alice"]
@@ -1028,71 +1028,4 @@ async fn discord_dms_keep_flowing_alongside_webhook_alerts() {
         *dms.struck.lock().unwrap(),
         [BookableSlotId::from(&indoor_slot())]
     );
-}
-
-const HELPER_SUBSCRIBER: &str = "telegram:42";
-
-struct HelperResponse {
-    status: std::process::ExitStatus,
-    body: Value,
-}
-
-async fn run_helper(api: &Api, args: &[&str]) -> HelperResponse {
-    let output = tokio::process::Command::new("bash")
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/hermes/skills/court-alert/scripts/court-alert.sh"
-        ))
-        .args(args)
-        .env("COURT_ALERT_URL", &api.base)
-        .env("COURT_ALERT_API_SECRET", API_SECRET)
-        .output()
-        .await
-        .expect("run the Hermes helper");
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    HelperResponse {
-        status: output.status,
-        body: if stdout.trim().is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout:?}"))
-        },
-    }
-}
-
-#[tokio::test]
-async fn the_hermes_helper_signs_requests_the_api_accepts() {
-    let api = start().await;
-
-    let clubs = run_helper(&api, &["GET", "/clubs?sport=padel"]).await;
-    assert!(clubs.status.success());
-    assert_eq!(clubs.body["clubs"][0]["id"], "casa-padel");
-
-    let subscription = json!({
-        "subscriber_id": HELPER_SUBSCRIBER,
-        "sport": "padel",
-        "club": "casa-padel",
-        "weekday": "Thu",
-        "start": "18:00",
-        "end": "21:30",
-    });
-    let created = run_helper(&api, &["POST", "/subscriptions", &subscription.to_string()]).await;
-    assert!(created.status.success());
-    let id = created.body["subscription"]["id"].as_i64().expect("an id");
-
-    let listing = format!("/subscriptions?subscriber_id={HELPER_SUBSCRIBER}");
-    let listed = run_helper(&api, &["GET", &listing]).await;
-    assert_eq!(
-        listed.body,
-        json!({ "subscriptions": [created.body["subscription"]] })
-    );
-
-    let path = format!("/subscriptions/{id}?subscriber_id={HELPER_SUBSCRIBER}");
-    let deleted = run_helper(&api, &["DELETE", &path]).await;
-    assert!(deleted.status.success());
-    assert_eq!(deleted.body, Value::Null);
-
-    let missing = run_helper(&api, &["DELETE", &path]).await;
-    assert!(!missing.status.success());
-    assert_eq!(missing.body, json!({ "error": "not_found" }));
 }
