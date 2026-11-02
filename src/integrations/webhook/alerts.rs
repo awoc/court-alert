@@ -47,7 +47,7 @@ impl AlertSender for WebhookAlertSender {
         })
         .context("encoding the webhook alert")?;
         let timestamp = Utc::now().timestamp().to_string();
-        let signature = signing::sign(&self.secret, &[timestamp.as_bytes(), &body]);
+        let signature = signing::sign_alert(&self.secret, &timestamp, &body);
         self.client
             .post(self.url.clone())
             .header(reqwest::header::CONTENT_TYPE, "application/json")

@@ -84,14 +84,12 @@ impl<'a> SignatureClaim<'a> {
             .uri
             .path_and_query()
             .map_or(parts.uri.path(), |path| path.as_str());
-        signing::verify(
+        signing::verify_request(
             secret,
-            &[
-                self.timestamp.as_bytes(),
-                parts.method.as_str().as_bytes(),
-                path.as_bytes(),
-                body,
-            ],
+            self.timestamp,
+            parts.method.as_str(),
+            path,
+            body,
             &self.signature,
         )
     }

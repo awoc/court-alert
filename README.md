@@ -71,7 +71,7 @@ Errors are JSON with an `error` kind: `400` for malformed JSON or query paramete
 
 ### Signing
 
-Each request sends `X-Webhook-Timestamp` (Unix seconds) and `X-Webhook-Signature-V2`, the hex HMAC-SHA256 of `"<timestamp>.<METHOD>.<path with query>.<body>"` keyed by `COURT_ALERT_WEBHOOK_API_SECRET`. The body is empty for `GET` and `DELETE`. Requests more than 300 seconds from the server's clock are rejected.
+Each request sends `X-Webhook-Timestamp` (Unix seconds) and `X-Webhook-Signature-V2`, the hex HMAC-SHA256 of `"<timestamp>\n<METHOD>\n<path with query>\n<body>"` (newline-separated) keyed by `COURT_ALERT_WEBHOOK_API_SECRET`. The body is empty for `GET` and `DELETE`. Requests more than 300 seconds from the server's clock are rejected.
 
 ### Alerts
 

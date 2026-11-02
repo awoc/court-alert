@@ -79,7 +79,7 @@ fn now() -> i64 {
 
 fn signature(secret: &str, timestamp: i64, method: &str, path: &str, body: &str) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
-    mac.update(format!("{timestamp}.{method}.{path}.{body}").as_bytes());
+    mac.update(format!("{timestamp}\n{method}\n{path}\n{body}").as_bytes());
     hex::encode(mac.finalize().into_bytes())
 }
 
@@ -330,6 +330,31 @@ async fn a_valid_signature_reused_for_another_path_or_method_is_unauthorized() {
         .send(reqwest::Method::DELETE, "/clubs?sport=padel", &headers)
         .await;
     assert_eq!(other_method.status(), 401);
+}
+
+#[tokio::test]
+async fn a_signature_cannot_be_reused_by_moving_the_end_of_the_path_into_the_body() {
+    let api = start().await;
+    let timestamp = now();
+    let signed = signature(
+        API_SECRET,
+        timestamp,
+        "DELETE",
+        "/subscriptions/1?subscriber_id=alice.smith",
+        "",
+    );
+
+    let response = api
+        .http
+        .delete(format!("{}/subscriptions/1?subscriber_id=alice", api.base))
+        .header("X-Webhook-Timestamp", timestamp.to_string())
+        .header("X-Webhook-Signature-V2", signed)
+        .body("smith.")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 401);
 }
 
 #[tokio::test]
