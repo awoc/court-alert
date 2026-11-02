@@ -11,10 +11,10 @@ use crate::subscriptions::contract::{
 };
 
 use super::matcher::slot_matches;
+use super::{SubscriptionService, slot_summary};
 
 const MAX_COURTS: usize = 20;
 const MAX_COURT_NAME_CHARS: usize = 100;
-use super::{SubscriptionService, slot_summary};
 
 impl SubscriptionService {
     pub async fn handle(
