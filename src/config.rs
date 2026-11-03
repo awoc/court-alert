@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::env::VarError;
+use std::fmt;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
@@ -17,6 +18,7 @@ const DEFAULT_CONFIG_PATH: &str = "config.toml";
 const DEFAULT_DB_PATH: &str = "data/court-alert.db";
 const DEFAULT_WINDOW_START_HOUR: u32 = 8;
 const DEFAULT_WINDOW_END_HOUR: u32 = 24;
+const REDACTED: &str = "<redacted>";
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -376,19 +378,40 @@ pub struct Settings {
     pub webhook: Option<WebhookSettings>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DiscordSettings {
     pub token: String,
     pub guild_id: Option<u64>,
     pub admin_ids: HashSet<String>,
 }
 
-#[derive(Debug, Clone)]
+impl fmt::Debug for DiscordSettings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DiscordSettings")
+            .field("token", &REDACTED)
+            .field("guild_id", &self.guild_id)
+            .field("admin_ids", &self.admin_ids)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub struct WebhookSettings {
     pub listen: SocketAddr,
     pub api_secret: String,
     pub alert_url: reqwest::Url,
     pub alert_secret: String,
+}
+
+impl fmt::Debug for WebhookSettings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WebhookSettings")
+            .field("listen", &self.listen)
+            .field("api_secret", &REDACTED)
+            .field("alert_url", &self.alert_url)
+            .field("alert_secret", &REDACTED)
+            .finish()
+    }
 }
 
 impl Settings {
@@ -959,6 +982,33 @@ name = "Tennis Court 1"
         let vars = webhook_vars_with(WEBHOOK_API_SECRET, "  ");
         let error = webhook_from_vars(lookup(&vars)).unwrap_err();
         assert!(format!("{error:#}").contains(WEBHOOK_API_SECRET));
+    }
+
+    #[test]
+    fn formatting_webhook_settings_never_shows_their_secrets() {
+        let settings = webhook_from_vars(lookup(&WEBHOOK_VARS))
+            .unwrap()
+            .expect("webhook integration enabled");
+
+        for formatted in [format!("{settings:?}"), format!("{settings:#?}")] {
+            assert!(!formatted.contains("api-secret"), "{formatted}");
+            assert!(!formatted.contains("alert-secret"), "{formatted}");
+            assert!(formatted.contains("127.0.0.1:8645"), "{formatted}");
+        }
+    }
+
+    #[test]
+    fn formatting_discord_settings_never_shows_the_token() {
+        let settings = DiscordSettings {
+            token: "bot-token".into(),
+            guild_id: Some(42),
+            admin_ids: HashSet::from(["7".to_string()]),
+        };
+
+        for formatted in [format!("{settings:?}"), format!("{settings:#?}")] {
+            assert!(!formatted.contains("bot-token"), "{formatted}");
+            assert!(formatted.contains("42"), "{formatted}");
+        }
     }
 
     #[test]
