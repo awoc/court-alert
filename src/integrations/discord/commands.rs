@@ -59,7 +59,7 @@ fn with_day_from_to(command: CreateCommand) -> CreateCommand {
             CreateCommandOption::new(
                 CommandOptionType::String,
                 "to",
-                "To (HH:MM or whole hour, Berlin time)",
+                "To (HH:MM or whole hour, up to 24:00, Berlin time)",
             )
             .max_length(5)
             .required(true),

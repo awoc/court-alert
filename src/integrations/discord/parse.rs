@@ -78,7 +78,7 @@ fn parse_when(cmd: &CommandInteraction) -> Result<(Schedule, u32, u32)> {
     Ok((
         parse_schedule(&day, today_berlin()).context("invalid 'day'")?,
         parse_hhmm(&from).context("invalid 'from' (expected HH:MM or whole hour)")?,
-        parse_hhmm(&to).context("invalid 'to' (expected HH:MM or whole hour)")?,
+        parse_hhmm(&to).context("invalid 'to' (expected HH:MM or whole hour, up to 24:00)")?,
     ))
 }
 
@@ -155,8 +155,8 @@ pub(super) fn parse_hhmm(s: &str) -> Result<u32> {
     let (hour, minute) = s.split_once(':').unwrap_or((s, "0"));
     let hour: u32 = hour.parse().context("hour is not a number")?;
     let minute: u32 = minute.parse().context("minute is not a number")?;
-    if hour > 23 || minute > 59 {
-        return Err(anyhow!("expected hour 0-23 and minute 0-59"));
+    if !matches!((hour, minute), (0..=23, 0..=59) | (24, 0)) {
+        return Err(anyhow!("expected hour 0-23 and minute 0-59, or 24:00"));
     }
     Ok(hour * 60 + minute)
 }
@@ -191,6 +191,7 @@ pub(super) fn parse_date(s: &str, today: NaiveDate) -> Result<NaiveDate> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{MINUTES_PER_DAY, TimeRange};
 
     #[test]
     fn an_unsubscribe_button_click_round_trips_its_reminder_id() {
@@ -285,12 +286,32 @@ mod tests {
 
     #[test]
     fn rejects_invalid_hhmm() {
-        assert!(parse_hhmm("24:00").is_err());
-        assert!(parse_hhmm("24").is_err());
+        assert!(parse_hhmm("24:01").is_err());
+        assert!(parse_hhmm("24:30").is_err());
+        assert!(parse_hhmm("25").is_err());
+        assert!(parse_hhmm("25:00").is_err());
+        assert!(parse_hhmm("4294967295").is_err());
         assert!(parse_hhmm("12:60").is_err());
         assert!(parse_hhmm("1800").is_err());
         assert!(parse_hhmm("ab:cd").is_err());
         assert!(parse_hhmm("").is_err());
+    }
+
+    #[test]
+    fn midnight_parses_with_or_without_minutes() {
+        assert_eq!(parse_hhmm("24:00").unwrap(), MINUTES_PER_DAY);
+        assert_eq!(parse_hhmm("24").unwrap(), MINUTES_PER_DAY);
+    }
+
+    #[test]
+    fn midnight_is_valid_only_as_the_end_of_a_time_range() {
+        let range = |from, to| TimeRange::new(parse_hhmm(from).unwrap(), parse_hhmm(to).unwrap());
+
+        assert!(range("22:00", "24:00").is_some());
+        assert!(range("22", "24").is_some());
+        assert!(range("24:00", "24:00").is_none());
+        assert!(range("24", "24").is_none());
+        assert!(range("24:00", "08:00").is_none());
     }
 
     fn d(y: i32, m: u32, day: u32) -> NaiveDate {
