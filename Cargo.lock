@@ -352,6 +352,7 @@ dependencies = [
  "serenity",
  "sha2",
  "tokio",
+ "tokio-tungstenite",
  "toml",
  "tracing",
  "tracing-subscriber",
