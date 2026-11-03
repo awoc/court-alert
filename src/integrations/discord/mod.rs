@@ -37,7 +37,7 @@ use handler::Handler;
 const DISCORD_UNKNOWN_MESSAGE: i64 = 10008;
 const DEFAULT_GATEWAY_URL: &str = "wss://gateway.discord.gg";
 
-pub const INTEGRATION: IntegrationId = IntegrationId::from_static("discord");
+pub(super) const INTEGRATION: IntegrationId = IntegrationId::from_static("discord");
 
 pub const MAX_CLUB_CHOICES: usize = 25;
 

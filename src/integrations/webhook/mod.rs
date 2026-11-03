@@ -23,7 +23,7 @@ use crate::model::IntegrationId;
 use crate::subscriptions::{AlertRoute, ClubDirectory, SubscriptionService};
 use alerts::WebhookAlertSender;
 
-pub(crate) const INTEGRATION: IntegrationId = IntegrationId::from_static("webhook");
+pub(super) const INTEGRATION: IntegrationId = IntegrationId::from_static("webhook");
 
 pub struct WebhookIntegration {
     listen: SocketAddr,
