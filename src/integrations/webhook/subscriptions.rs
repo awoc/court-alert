@@ -24,6 +24,26 @@ use crate::time::fmt_hhmm;
 
 const MAX_SUBSCRIBER_ID_CHARS: usize = 128;
 
+struct WebhookSubscriberId(String);
+
+impl WebhookSubscriberId {
+    fn parse(raw: String) -> Result<Self, ApiError> {
+        if raw.is_empty() || raw.chars().count() > MAX_SUBSCRIBER_ID_CHARS {
+            return Err(ApiError::InvalidSubscriberId);
+        }
+        Ok(Self(raw))
+    }
+}
+
+impl From<WebhookSubscriberId> for SubscriberRef {
+    fn from(id: WebhookSubscriberId) -> Self {
+        Self {
+            integration: INTEGRATION,
+            subscriber_id: id.0,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SubscribeRequest {
@@ -120,7 +140,7 @@ pub(super) async fn subscribe(
             "start and end must be times of day as HH:MM",
         ));
     };
-    let subscriber = subscriber_ref(&request.subscriber_id).ok_or(ApiError::InvalidSubscriberId)?;
+    let subscriber = SubscriberRef::from(WebhookSubscriberId::parse(request.subscriber_id)?);
     let request = SubscriptionRequest {
         sport: request.sport,
         venue: request.club,
@@ -142,7 +162,7 @@ pub(super) async fn list(
     query: Result<Query<SubscriberQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
     let Query(query) = query?;
-    let subscriber = subscriber_ref(&query.subscriber_id).ok_or(ApiError::InvalidSubscriberId)?;
+    let subscriber = SubscriberRef::from(WebhookSubscriberId::parse(query.subscriber_id)?);
     let subscriptions = service.list(&subscriber).await.map_err(internal_error)?;
     Ok(list_response(subscriptions))
 }
@@ -154,7 +174,7 @@ pub(super) async fn unsubscribe(
 ) -> Result<Response, ApiError> {
     let Path(id) = id?;
     let Query(query) = query?;
-    let subscriber = subscriber_ref(&query.subscriber_id).ok_or(ApiError::InvalidSubscriberId)?;
+    let subscriber = SubscriberRef::from(WebhookSubscriberId::parse(query.subscriber_id)?);
     match service
         .unsubscribe(&subscriber, id)
         .await
@@ -173,16 +193,6 @@ fn minute_of_day(raw: &str) -> Option<u32> {
     let (hours, minutes): (u32, u32) = (hours.parse().ok()?, minutes.parse().ok()?);
     let minute = hours * 60 + minutes;
     (minutes < 60 && minute <= MINUTES_PER_DAY).then_some(minute)
-}
-
-fn subscriber_ref(subscriber_id: &str) -> Option<SubscriberRef> {
-    if subscriber_id.is_empty() || subscriber_id.chars().count() > MAX_SUBSCRIBER_ID_CHARS {
-        return None;
-    }
-    Some(SubscriberRef {
-        integration: INTEGRATION,
-        subscriber_id: subscriber_id.to_owned(),
-    })
 }
 
 fn internal_error(e: anyhow::Error) -> ApiError {
