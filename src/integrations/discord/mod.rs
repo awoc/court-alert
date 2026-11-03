@@ -94,7 +94,7 @@ impl Integration for DiscordIntegration {
             .await
             .context("building serenity client")?;
 
-        services.dispatcher.register_sender(
+        services.dispatcher.register_chat_provider(
             INTEGRATION,
             Arc::new(DiscordSender::new(
                 client.http.clone(),

@@ -7,17 +7,22 @@ use tracing::warn;
 
 use crate::model::{AvailabilityChange, IntegrationId, VenueRegistry};
 use crate::ports::SubscriptionRepository;
-use crate::subscriptions::contract::{AlertSender, AvailabilityAlert};
+use crate::subscriptions::contract::{AlertMessageUpdater, AlertSender, AvailabilityAlert};
 
 use super::matcher::match_subscriptions;
 use super::{Clock, slot_summary};
 
 const MAX_CONCURRENT_ALERTS: usize = 16;
 
+struct AlertRoute {
+    sender: Arc<dyn AlertSender>,
+    updater: Option<Arc<dyn AlertMessageUpdater>>,
+}
+
 pub struct AlertDispatcher {
     store: Arc<dyn SubscriptionRepository>,
     registry: Arc<RwLock<VenueRegistry>>,
-    senders: RwLock<HashMap<IntegrationId, Arc<dyn AlertSender>>>,
+    routes: RwLock<HashMap<IntegrationId, AlertRoute>>,
     clock: Arc<dyn Clock>,
 }
 
@@ -30,16 +35,39 @@ impl AlertDispatcher {
         Self {
             store,
             registry,
-            senders: RwLock::new(HashMap::new()),
+            routes: RwLock::new(HashMap::new()),
             clock,
         }
     }
 
     pub fn register_sender(&self, integration: IntegrationId, sender: Arc<dyn AlertSender>) {
-        self.senders
+        self.add_route(
+            integration,
+            AlertRoute {
+                sender,
+                updater: None,
+            },
+        );
+    }
+
+    pub fn register_chat_provider<P>(&self, integration: IntegrationId, provider: Arc<P>)
+    where
+        P: AlertSender + AlertMessageUpdater + 'static,
+    {
+        self.add_route(
+            integration,
+            AlertRoute {
+                sender: provider.clone(),
+                updater: Some(provider),
+            },
+        );
+    }
+
+    fn add_route(&self, integration: IntegrationId, route: AlertRoute) {
+        self.routes
             .write()
-            .expect("senders lock poisoned")
-            .insert(integration, sender);
+            .expect("routes lock poisoned")
+            .insert(integration, route);
     }
 
     pub async fn dispatch_loop(self: Arc<Self>, mut rx: Receiver<Vec<AvailabilityChange>>) {
@@ -69,7 +97,7 @@ impl AlertDispatcher {
             return;
         }
         self.alert_subscribers(changes).await;
-        self.strike_taken(changes).await;
+        self.mark_unbookable(changes).await;
     }
 
     async fn alert_subscribers(&self, changes: &[AvailabilityChange]) {
@@ -89,11 +117,11 @@ impl AlertDispatcher {
         };
         let deliveries: Vec<_> = {
             let registry = self.registry.read().expect("venue registry poisoned");
-            let senders = self.senders.read().expect("senders lock poisoned");
+            let routes = self.routes.read().expect("routes lock poisoned");
             matched
                 .into_iter()
                 .filter_map(|(subscriber, slots)| {
-                    let Some(sender) = senders.get(&subscriber.integration).cloned() else {
+                    let Some(route) = routes.get(&subscriber.integration) else {
                         warn!(
                             integration = %subscriber.integration,
                             subscriber = %subscriber.subscriber_id,
@@ -107,7 +135,7 @@ impl AlertDispatcher {
                             .map(|slot| slot_summary(&registry, slot))
                             .collect(),
                     };
-                    Some((subscriber, sender, alert))
+                    Some((subscriber, route.sender.clone(), alert))
                 })
                 .collect()
         };
@@ -128,25 +156,28 @@ impl AlertDispatcher {
             .await;
     }
 
-    async fn strike_taken(&self, changes: &[AvailabilityChange]) {
+    async fn mark_unbookable(&self, changes: &[AvailabilityChange]) {
         let taken = AvailabilityChange::taken_ids(changes);
         if taken.is_empty() {
             return;
         }
-        let senders: Vec<(IntegrationId, Arc<dyn AlertSender>)> = self
-            .senders
+        let updaters: Vec<(IntegrationId, Arc<dyn AlertMessageUpdater>)> = self
+            .routes
             .read()
-            .expect("senders lock poisoned")
+            .expect("routes lock poisoned")
             .iter()
-            .map(|(integration, sender)| (integration.clone(), sender.clone()))
+            .filter_map(|(integration, route)| {
+                let updater = route.updater.clone()?;
+                Some((integration.clone(), updater))
+            })
             .collect();
-        for (integration, sender) in senders {
-            if let Err(e) = sender.strike_taken(&taken).await {
+        for (integration, updater) in updaters {
+            if let Err(e) = updater.mark_unbookable(&taken).await {
                 warn!(
                     error = %format!("{e:#}"),
                     integration = %integration,
                     slots = taken.len(),
-                    "dispatch: failed to strike slots that were taken"
+                    "dispatch: failed to mark slots that stopped being bookable"
                 );
             }
         }
@@ -353,7 +384,7 @@ mod tests {
     async fn a_slot_that_stops_being_bookable_is_struck_where_it_was_announced() {
         let (_, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(false);
-        dispatcher.register_sender("discord".into(), sender.clone());
+        dispatcher.register_chat_provider("discord".into(), sender.clone());
         let taken = unbookable("Court 2");
 
         dispatcher.dispatch(std::slice::from_ref(&taken)).await;
@@ -369,7 +400,7 @@ mod tests {
     async fn slots_are_struck_even_when_no_subscription_matches_them() {
         let (_, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(false);
-        dispatcher.register_sender("discord".into(), sender.clone());
+        dispatcher.register_chat_provider("discord".into(), sender.clone());
         let taken = unbookable("Court 2");
 
         dispatcher.dispatch(std::slice::from_ref(&taken)).await;
@@ -381,7 +412,7 @@ mod tests {
     async fn alerts_go_out_before_anything_is_struck() {
         let (svc, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(false);
-        dispatcher.register_sender("discord".into(), sender.clone());
+        dispatcher.register_chat_provider("discord".into(), sender.clone());
         svc.subscribe(&uref("1"), &subscribe_request(18 * 60, 22 * 60))
             .await
             .unwrap()
@@ -398,7 +429,7 @@ mod tests {
     async fn a_batch_of_new_slots_strikes_nothing() {
         let (svc, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(false);
-        dispatcher.register_sender("discord".into(), sender.clone());
+        dispatcher.register_chat_provider("discord".into(), sender.clone());
         svc.subscribe(&uref("1"), &subscribe_request(18 * 60, 22 * 60))
             .await
             .unwrap()
@@ -414,7 +445,7 @@ mod tests {
     async fn a_failing_strike_does_not_stop_the_alerts_in_the_same_batch() {
         let (svc, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(true);
-        dispatcher.register_sender("discord".into(), sender.clone());
+        dispatcher.register_chat_provider("discord".into(), sender.clone());
         svc.subscribe(&uref("1"), &subscribe_request(18 * 60, 22 * 60))
             .await
             .unwrap()
@@ -426,6 +457,53 @@ mod tests {
 
         assert_eq!(sender.struck().len(), 1);
         assert_eq!(sender.sent.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failing_update_does_not_stop_other_integrations() {
+        let (_, dispatcher) = service_and_dispatcher().await;
+        let first = RecordingSender::new(true);
+        let second = RecordingSender::new(true);
+        dispatcher.register_chat_provider("discord".into(), first.clone());
+        dispatcher.register_chat_provider("slack".into(), second.clone());
+
+        dispatcher.dispatch(&[unbookable("Court 2")]).await;
+
+        assert_eq!(first.struck().len(), 1);
+        assert_eq!(second.struck().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_delivery_only_route_is_alerted_but_never_asked_to_update() {
+        let (svc, dispatcher) = service_and_dispatcher().await;
+        let sender = RecordingSender::new(false);
+        dispatcher.register_sender("discord".into(), sender.clone());
+        svc.subscribe(&uref("1"), &subscribe_request(18 * 60, 22 * 60))
+            .await
+            .unwrap()
+            .unwrap();
+
+        dispatcher
+            .dispatch(&[unbookable("Court 5"), bookable("Court 2")])
+            .await;
+
+        assert_eq!(sender.order(), vec!["send"]);
+        assert!(sender.struck().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_update_capable_route_is_updated_alongside_a_delivery_only_route() {
+        let (_, dispatcher) = service_and_dispatcher().await;
+        let chat = RecordingSender::new(false);
+        let delivery_only = RecordingSender::new(false);
+        dispatcher.register_chat_provider("discord".into(), chat.clone());
+        dispatcher.register_sender("webhook".into(), delivery_only.clone());
+        let taken = unbookable("Court 2");
+
+        dispatcher.dispatch(std::slice::from_ref(&taken)).await;
+
+        assert_eq!(chat.struck(), vec![BookableSlotId::from(taken.slot())]);
+        assert!(delivery_only.struck().is_empty());
     }
 
     const COURT_A: u128 = 1;

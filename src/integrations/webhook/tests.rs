@@ -16,7 +16,9 @@ use crate::model::{
 };
 use crate::ports::{BookableSlotSnapshotRepository, SubscriptionRepository};
 use crate::store::SqliteStore;
-use crate::subscriptions::contract::{AlertSender, AvailabilityAlert, SubscriptionRequest};
+use crate::subscriptions::contract::{
+    AlertMessageUpdater, AlertSender, AvailabilityAlert, SubscriptionRequest,
+};
 use crate::subscriptions::testing::registry;
 use crate::subscriptions::{AlertDispatcher, BerlinClock, ClubDirectory, SubscriptionService};
 use uuid::Uuid;
@@ -1298,8 +1300,11 @@ impl AlertSender for DiscordDms {
         self.sent.lock().unwrap().push(subscriber_id.to_owned());
         Ok(())
     }
+}
 
-    async fn strike_taken(&self, slots: &[BookableSlotId]) -> anyhow::Result<()> {
+#[async_trait::async_trait]
+impl AlertMessageUpdater for DiscordDms {
+    async fn mark_unbookable(&self, slots: &[BookableSlotId]) -> anyhow::Result<()> {
         self.struck.lock().unwrap().extend_from_slice(slots);
         Ok(())
     }
@@ -1312,7 +1317,7 @@ async fn discord_dms_keep_flowing_alongside_webhook_alerts() {
     let dms = Arc::new(DiscordDms::default());
     services
         .dispatcher
-        .register_sender("discord".into(), dms.clone());
+        .register_chat_provider("discord".into(), dms.clone());
     let discord_subscriber = SubscriberRef {
         integration: "discord".into(),
         subscriber_id: "42".into(),

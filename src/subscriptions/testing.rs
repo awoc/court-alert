@@ -11,7 +11,7 @@ use crate::model::{
 use crate::ports::BookableSlotSnapshotRepository;
 use crate::store::SqliteStore;
 use crate::subscriptions::contract::{
-    AlertSender, AvailabilityAlert, CourtChoice, SubscriptionRequest,
+    AlertMessageUpdater, AlertSender, AvailabilityAlert, CourtChoice, SubscriptionRequest,
 };
 use uuid::Uuid;
 
@@ -360,8 +360,11 @@ impl AlertSender for RecordingSender {
         }
         Ok(())
     }
+}
 
-    async fn strike_taken(&self, slots: &[BookableSlotId]) -> anyhow::Result<()> {
+#[async_trait::async_trait]
+impl AlertMessageUpdater for RecordingSender {
+    async fn mark_unbookable(&self, slots: &[BookableSlotId]) -> anyhow::Result<()> {
         self.struck.lock().unwrap().push(slots.to_vec());
         self.order.lock().unwrap().push("strike");
         if self.fail {

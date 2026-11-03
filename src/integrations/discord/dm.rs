@@ -7,7 +7,7 @@ use serenity::async_trait;
 
 use crate::alerts::{AlertMessageLifecycle, AlertMessageTracker, EditOutcome};
 use crate::model::{AlertSurface, BookableSlotId};
-use crate::subscriptions::contract::{AlertSender, AvailabilityAlert};
+use crate::subscriptions::contract::{AlertMessageUpdater, AlertSender, AvailabilityAlert};
 
 use super::format::{alert_lines, chunk_lines, render};
 use super::{DISCORD_UNKNOWN_MESSAGE, INTEGRATION};
@@ -67,8 +67,11 @@ impl AlertSender for DiscordSender {
         }
         Ok(())
     }
+}
 
-    async fn strike_taken(&self, slots: &[BookableSlotId]) -> Result<()> {
+#[async_trait]
+impl AlertMessageUpdater for DiscordSender {
+    async fn mark_unbookable(&self, slots: &[BookableSlotId]) -> Result<()> {
         self.alert_tracker
             .mark_taken(slots, |message| async move {
                 let channel = message.key.destination.as_deref().context(
@@ -270,7 +273,7 @@ mod tests {
         seed(&store, "1408", &taken).await;
 
         sender
-            .strike_taken(&[crate::model::BookableSlotId::from(&taken)])
+            .mark_unbookable(&[crate::model::BookableSlotId::from(&taken)])
             .await
             .unwrap();
 
@@ -293,7 +296,7 @@ mod tests {
         seed(&store, "1408", &taken).await;
 
         sender
-            .strike_taken(&[crate::model::BookableSlotId::from(&taken)])
+            .mark_unbookable(&[crate::model::BookableSlotId::from(&taken)])
             .await
             .unwrap();
 
@@ -316,7 +319,7 @@ mod tests {
         seed(&store, "1408", &taken).await;
 
         sender
-            .strike_taken(&[crate::model::BookableSlotId::from(&taken)])
+            .mark_unbookable(&[crate::model::BookableSlotId::from(&taken)])
             .await
             .unwrap();
 
@@ -342,7 +345,7 @@ mod tests {
         seed(&store, "1408", &taken).await;
 
         sender
-            .strike_taken(&[crate::model::BookableSlotId::from(&taken)])
+            .mark_unbookable(&[crate::model::BookableSlotId::from(&taken)])
             .await
             .unwrap();
 
@@ -361,7 +364,7 @@ mod tests {
         seed(&store, "1408", &ended).await;
 
         sender
-            .strike_taken(&[crate::model::BookableSlotId::from(&ended)])
+            .mark_unbookable(&[crate::model::BookableSlotId::from(&ended)])
             .await
             .unwrap();
 
