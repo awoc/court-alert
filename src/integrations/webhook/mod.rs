@@ -1,6 +1,7 @@
 mod alerts;
 mod api;
 mod auth;
+mod clubs;
 mod response;
 mod signing;
 mod slot;
