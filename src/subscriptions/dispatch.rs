@@ -1,22 +1,48 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 use futures::stream::{self, StreamExt};
 use tokio::sync::mpsc::Receiver;
 use tracing::warn;
 
-use crate::model::{AvailabilityChange, IntegrationId};
+use crate::model::{AvailabilityChange, IntegrationId, VenueRegistry};
+use crate::ports::SubscriptionRepository;
 use crate::subscriptions::contract::{AlertSender, AvailabilityAlert};
 
 use super::matcher::match_subscriptions;
-use super::{SubscriptionService, slot_summary};
+use super::{Clock, slot_summary};
 
 const MAX_CONCURRENT_ALERTS: usize = 16;
 
-impl SubscriptionService {
-    pub async fn dispatch_loop(
-        self: std::sync::Arc<Self>,
-        mut rx: Receiver<Vec<AvailabilityChange>>,
-    ) {
+pub struct AlertDispatcher {
+    store: Arc<dyn SubscriptionRepository>,
+    registry: Arc<RwLock<VenueRegistry>>,
+    senders: RwLock<HashMap<IntegrationId, Arc<dyn AlertSender>>>,
+    clock: Arc<dyn Clock>,
+}
+
+impl AlertDispatcher {
+    pub fn new(
+        store: Arc<dyn SubscriptionRepository>,
+        registry: Arc<RwLock<VenueRegistry>>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        Self {
+            store,
+            registry,
+            senders: RwLock::new(HashMap::new()),
+            clock,
+        }
+    }
+
+    pub fn register_sender(&self, integration: IntegrationId, sender: Arc<dyn AlertSender>) {
+        self.senders
+            .write()
+            .expect("senders lock poisoned")
+            .insert(integration, sender);
+    }
+
+    pub async fn dispatch_loop(self: Arc<Self>, mut rx: Receiver<Vec<AvailabilityChange>>) {
         let mut last_expiry_cleanup = None;
         while let Some(changes) = rx.recv().await {
             self.cleanup_expired_if_needed(&mut last_expiry_cleanup)
@@ -130,16 +156,17 @@ impl SubscriptionService {
 #[cfg(test)]
 mod tests {
     use super::super::testing::{
-        INDOOR_COURT, PADEL_CLUB_NAME, RecordingSender, court_id, padel_club, padel_court,
-        padel_court_id, padel_venue_id, registry_of, service, service_over, service_with_store,
-        subscribe_cmd, subscribe_to_courts, tuesday_slot, uref, venue_id,
+        INDOOR_COURT, PADEL_CLUB_NAME, RecordingSender, court_id, dispatcher_on, padel_club,
+        padel_court, padel_court_id, padel_venue_id, registry, registry_of, service_and_dispatcher,
+        service_and_dispatcher_over, store, subscribe_cmd, subscribe_to_courts, tuesday_slot, uref,
+        venue_id,
     };
     use crate::model::{
         AvailabilityChange, BookableSlot, BookableSlotId, CourtCatalog, CourtFilter,
         CourtSelection, Schedule, Sport, TimeRange, UncheckedDraft, VenueId, VenueRegistry,
     };
     use crate::ports::SubscriptionRepository;
-    use crate::subscriptions::SubscriptionService;
+    use crate::subscriptions::AlertDispatcher;
     use crate::subscriptions::contract::{
         AlertSender, AvailabilityAlert, CourtChoice, SubscriptionCommand,
     };
@@ -191,8 +218,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_slow_alert_does_not_hold_back_the_next_subscribers() {
-        let svc = service().await;
-        svc.register_sender(
+        let (svc, dispatcher) = service_and_dispatcher().await;
+        dispatcher.register_sender(
             "discord".into(),
             Arc::new(RendezvousSender(tokio::sync::Barrier::new(2))),
         );
@@ -204,7 +231,7 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            svc.dispatch(&[bookable("Court 2")]),
+            dispatcher.dispatch(&[bookable("Court 2")]),
         )
         .await
         .expect("each alert waits for the other, so they must be in flight together");
@@ -212,14 +239,14 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_sends_alert_to_matching_subscriber() {
-        let svc = service().await;
+        let (svc, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(false);
-        svc.register_sender("discord".into(), sender.clone());
+        dispatcher.register_sender("discord".into(), sender.clone());
         svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
             .await
             .unwrap();
 
-        svc.dispatch(&[bookable("Court 2")]).await;
+        dispatcher.dispatch(&[bookable("Court 2")]).await;
 
         let sent = sender.sent.lock().unwrap();
         assert_eq!(sent.len(), 1);
@@ -230,14 +257,14 @@ mod tests {
 
     #[tokio::test]
     async fn an_alert_names_the_club_each_court_belongs_to() {
-        let svc = service().await;
+        let (svc, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(false);
-        svc.register_sender("discord".into(), sender.clone());
+        dispatcher.register_sender("discord".into(), sender.clone());
         svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
             .await
             .unwrap();
 
-        svc.dispatch(&[bookable("Court 2")]).await;
+        dispatcher.dispatch(&[bookable("Court 2")]).await;
 
         let sent = sender.sent.lock().unwrap();
         assert_eq!(sent[0].1.slots[0].club, "ZHS München");
@@ -245,9 +272,9 @@ mod tests {
 
     #[tokio::test]
     async fn courts_of_the_same_name_at_different_clubs_are_distinguishable() {
-        let svc = service().await;
+        let (svc, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(false);
-        svc.register_sender("discord".into(), sender.clone());
+        dispatcher.register_sender("discord".into(), sender.clone());
         svc.handle(
             &uref("1"),
             SubscriptionCommand::Subscribe {
@@ -263,7 +290,7 @@ mod tests {
         .await
         .unwrap();
 
-        svc.dispatch(&[padel_bookable()]).await;
+        dispatcher.dispatch(&[padel_bookable()]).await;
 
         let sent = sender.sent.lock().unwrap();
         assert_eq!(sent[0].1.slots.len(), 1);
@@ -276,23 +303,23 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_skips_non_matching_subscriber() {
-        let svc = service().await;
+        let (svc, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(false);
-        svc.register_sender("discord".into(), sender.clone());
+        dispatcher.register_sender("discord".into(), sender.clone());
         svc.handle(&uref("1"), subscribe_cmd(8 * 60, 10 * 60))
             .await
             .unwrap();
 
-        svc.dispatch(&[bookable("Court 2")]).await;
+        dispatcher.dispatch(&[bookable("Court 2")]).await;
 
         assert!(sender.sent.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn dispatch_failing_send_does_not_abort_batch() {
-        let svc = service().await;
+        let (svc, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(true); // every send errors
-        svc.register_sender("discord".into(), sender.clone());
+        dispatcher.register_sender("discord".into(), sender.clone());
         svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
             .await
             .unwrap();
@@ -300,28 +327,28 @@ mod tests {
             .await
             .unwrap();
 
-        svc.dispatch(&[bookable("Court 2")]).await;
+        dispatcher.dispatch(&[bookable("Court 2")]).await;
 
         assert_eq!(sender.sent.lock().unwrap().len(), 2);
     }
 
     #[tokio::test]
     async fn dispatch_without_registered_sender_does_not_panic() {
-        let svc = service().await;
+        let (svc, dispatcher) = service_and_dispatcher().await;
         svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
             .await
             .unwrap();
-        svc.dispatch(&[bookable("Court 2")]).await;
+        dispatcher.dispatch(&[bookable("Court 2")]).await;
     }
 
     #[tokio::test]
     async fn a_slot_that_stops_being_bookable_is_struck_where_it_was_announced() {
-        let svc = service().await;
+        let (_, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(false);
-        svc.register_sender("discord".into(), sender.clone());
+        dispatcher.register_sender("discord".into(), sender.clone());
         let taken = unbookable("Court 2");
 
-        svc.dispatch(std::slice::from_ref(&taken)).await;
+        dispatcher.dispatch(std::slice::from_ref(&taken)).await;
 
         assert_eq!(sender.struck(), vec![BookableSlotId::from(taken.slot())]);
         assert!(
@@ -332,26 +359,27 @@ mod tests {
 
     #[tokio::test]
     async fn slots_are_struck_even_when_no_subscription_matches_them() {
-        let svc = service().await;
+        let (_, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(false);
-        svc.register_sender("discord".into(), sender.clone());
+        dispatcher.register_sender("discord".into(), sender.clone());
         let taken = unbookable("Court 2");
 
-        svc.dispatch(std::slice::from_ref(&taken)).await;
+        dispatcher.dispatch(std::slice::from_ref(&taken)).await;
 
         assert_eq!(sender.struck(), vec![BookableSlotId::from(taken.slot())]);
     }
 
     #[tokio::test]
     async fn alerts_go_out_before_anything_is_struck() {
-        let svc = service().await;
+        let (svc, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(false);
-        svc.register_sender("discord".into(), sender.clone());
+        dispatcher.register_sender("discord".into(), sender.clone());
         svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
             .await
             .unwrap();
 
-        svc.dispatch(&[unbookable("Court 5"), bookable("Court 2")])
+        dispatcher
+            .dispatch(&[unbookable("Court 5"), bookable("Court 2")])
             .await;
 
         assert_eq!(sender.order(), vec!["send", "strike"]);
@@ -359,14 +387,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_batch_of_new_slots_strikes_nothing() {
-        let svc = service().await;
+        let (svc, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(false);
-        svc.register_sender("discord".into(), sender.clone());
+        dispatcher.register_sender("discord".into(), sender.clone());
         svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
             .await
             .unwrap();
 
-        svc.dispatch(&[bookable("Court 2")]).await;
+        dispatcher.dispatch(&[bookable("Court 2")]).await;
 
         assert!(sender.struck().is_empty());
         assert_eq!(sender.sent.lock().unwrap().len(), 1);
@@ -374,14 +402,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_failing_strike_does_not_stop_the_alerts_in_the_same_batch() {
-        let svc = service().await;
+        let (svc, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(true);
-        svc.register_sender("discord".into(), sender.clone());
+        dispatcher.register_sender("discord".into(), sender.clone());
         svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
             .await
             .unwrap();
 
-        svc.dispatch(&[unbookable("Court 5"), bookable("Court 2")])
+        dispatcher
+            .dispatch(&[unbookable("Court 5"), bookable("Court 2")])
             .await;
 
         assert_eq!(sender.struck().len(), 1);
@@ -393,7 +422,7 @@ mod tests {
 
     /// One club, two courts with the same name, a subscriber who chose only A.
     async fn subscribed_to_court_a() -> (
-        Arc<SubscriptionService>,
+        Arc<AlertDispatcher>,
         Arc<RecordingSender>,
         Arc<RwLock<VenueRegistry>>,
     ) {
@@ -405,9 +434,9 @@ mod tests {
                 padel_court(COURT_B, "Centre Court"),
             ]),
         )]);
-        let svc = service_over(registry.clone()).await;
+        let (svc, dispatcher) = service_and_dispatcher_over(registry.clone()).await;
         let sender = RecordingSender::new(false);
-        svc.register_sender("discord".into(), sender.clone());
+        dispatcher.register_sender("discord".into(), sender.clone());
         svc.handle(
             &uref("1"),
             subscribe_to_courts(
@@ -418,19 +447,20 @@ mod tests {
         )
         .await
         .unwrap();
-        (svc, sender, registry)
+        (dispatcher, sender, registry)
     }
 
     #[tokio::test]
     async fn a_selected_court_keeps_alerting_after_it_is_renamed() {
-        let (svc, sender, registry) = subscribed_to_court_a().await;
+        let (dispatcher, sender, registry) = subscribed_to_court_a().await;
         let club = VenueId::new("club");
         registry.write().unwrap().set_catalog(
             &club,
             CourtCatalog::new(vec![padel_court(COURT_A, "Show Court")]),
         );
 
-        svc.dispatch(&[tuesday_slot(&club, COURT_A, "Show Court")])
+        dispatcher
+            .dispatch(&[tuesday_slot(&club, COURT_A, "Show Court")])
             .await;
 
         let sent = sender.sent.lock().unwrap();
@@ -440,9 +470,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_selected_court_does_not_alert_for_another_court_of_the_same_name() {
-        let (svc, sender, _) = subscribed_to_court_a().await;
+        let (dispatcher, sender, _) = subscribed_to_court_a().await;
 
-        svc.dispatch(&[tuesday_slot(&VenueId::new("club"), COURT_B, "Centre Court")])
+        dispatcher
+            .dispatch(&[tuesday_slot(&VenueId::new("club"), COURT_B, "Centre Court")])
             .await;
 
         assert!(
@@ -458,9 +489,9 @@ mod tests {
             padel_club("club"),
             Some(vec![padel_court(COURT_A, "Centre Court")]),
         )]);
-        let svc = service_over(registry.clone()).await;
+        let (svc, dispatcher) = service_and_dispatcher_over(registry.clone()).await;
         let sender = RecordingSender::new(false);
-        svc.register_sender("discord".into(), sender.clone());
+        dispatcher.register_sender("discord".into(), sender.clone());
         svc.handle(
             &uref("1"),
             subscribe_to_courts(
@@ -479,18 +510,21 @@ mod tests {
             ]),
         );
 
-        svc.dispatch(&[tuesday_slot(&club, COURT_B, "Centre Court")])
+        dispatcher
+            .dispatch(&[tuesday_slot(&club, COURT_B, "Centre Court")])
             .await;
         assert!(sender.sent.lock().unwrap().is_empty());
 
-        svc.dispatch(&[tuesday_slot(&club, COURT_A, "Centre Court")])
+        dispatcher
+            .dispatch(&[tuesday_slot(&club, COURT_A, "Centre Court")])
             .await;
         assert_eq!(sender.sent.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
     async fn daily_cleanup_removes_expired_date_subscriptions() {
-        let (svc, store) = service_with_store().await;
+        let store = store().await;
+        let dispatcher = dispatcher_on(store.clone(), registry());
         store
             .add(
                 UncheckedDraft {
@@ -510,7 +544,9 @@ mod tests {
         assert_eq!(store.list_all(before_expiry).await.unwrap().len(), 1);
 
         let mut last_cleanup = None;
-        svc.cleanup_expired_if_needed(&mut last_cleanup).await;
+        dispatcher
+            .cleanup_expired_if_needed(&mut last_cleanup)
+            .await;
 
         assert_eq!(store.list_all(before_expiry).await.unwrap().len(), 0);
         assert_eq!(last_cleanup, Some(today_berlin()));
@@ -530,7 +566,9 @@ mod tests {
             )
             .await
             .unwrap();
-        svc.cleanup_expired_if_needed(&mut last_cleanup).await;
+        dispatcher
+            .cleanup_expired_if_needed(&mut last_cleanup)
+            .await;
         assert_eq!(store.list_all(before_expiry).await.unwrap().len(), 1);
     }
 }

@@ -12,12 +12,13 @@ use tokio::sync::watch;
 use crate::alerts::AlertMessageLifecycle;
 use crate::config::Settings;
 use crate::model::SubscriberRef;
-use crate::subscriptions::{ClubDirectory, SubscriptionService};
+use crate::subscriptions::{AlertDispatcher, ClubDirectory, SubscriptionService};
 
 #[derive(Clone)]
 pub struct IntegrationServices {
     pub subscriptions: Arc<SubscriptionService>,
     pub clubs: ClubDirectory,
+    pub dispatcher: Arc<AlertDispatcher>,
 }
 
 #[async_trait]
@@ -167,13 +168,14 @@ mod tests {
         let services = IntegrationServices {
             subscriptions: Arc::new(SubscriptionService::new(
                 store.clone(),
-                store,
+                store.clone(),
                 HashSet::new(),
                 registry.clone(),
                 crate::model::CourtFilter::Any,
                 Arc::new(BerlinClock),
             )),
-            clubs: ClubDirectory::new(registry),
+            clubs: ClubDirectory::new(registry.clone()),
+            dispatcher: Arc::new(AlertDispatcher::new(store, registry, Arc::new(BerlinClock))),
         };
         let (signals, barrier) = readiness(2);
 

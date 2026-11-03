@@ -18,7 +18,7 @@ use crate::ports::{BookableSlotSnapshotRepository, SubscriptionRepository};
 use crate::store::SqliteStore;
 use crate::subscriptions::contract::{AlertSender, AvailabilityAlert, SubscriptionCommand};
 use crate::subscriptions::testing::registry;
-use crate::subscriptions::{BerlinClock, ClubDirectory, SubscriptionService};
+use crate::subscriptions::{AlertDispatcher, BerlinClock, ClubDirectory, SubscriptionService};
 use uuid::Uuid;
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -45,13 +45,14 @@ fn services_with(
     IntegrationServices {
         subscriptions: Arc::new(SubscriptionService::new(
             store.clone(),
-            store,
+            store.clone(),
             HashSet::new(),
             registry.clone(),
             CourtFilter::Any,
             Arc::new(BerlinClock),
         )),
-        clubs: ClubDirectory::new(registry),
+        clubs: ClubDirectory::new(registry.clone()),
+        dispatcher: Arc::new(AlertDispatcher::new(store, registry, Arc::new(BerlinClock))),
     }
 }
 
@@ -727,7 +728,7 @@ async fn a_court_chosen_through_the_api_alerts_by_identity() {
         Arc::new(SqliteStore::open_in_memory().await.unwrap()),
         registry.clone(),
     );
-    services.subscriptions.register_sender(
+    services.dispatcher.register_sender(
         INTEGRATION,
         Arc::new(
             WebhookAlertSender::new(
@@ -1116,7 +1117,7 @@ fn outdoor_slot() -> BookableSlot {
 
 async fn opens(services: &IntegrationServices, slot: BookableSlot) {
     services
-        .subscriptions
+        .dispatcher
         .dispatch(&[AvailabilityChange::BecameBookable(slot)])
         .await;
 }
@@ -1147,7 +1148,7 @@ async fn matching_slots_reach_the_alert_url_in_one_alert_per_subscriber() {
     subscribe_to_padel_on_tuesday_evenings(&services, &subscriber("alice")).await;
 
     services
-        .subscriptions
+        .dispatcher
         .dispatch(&[
             AvailabilityChange::BecameBookable(indoor_slot()),
             AvailabilityChange::BecameBookable(outdoor_slot()),
@@ -1273,7 +1274,7 @@ async fn a_slot_that_is_taken_sends_no_alert() {
     subscribe_to_padel_on_tuesday_evenings(&services, &subscriber("alice")).await;
 
     services
-        .subscriptions
+        .dispatcher
         .dispatch(&[AvailabilityChange::BecameUnbookable(indoor_slot())])
         .await;
 
@@ -1309,7 +1310,7 @@ async fn discord_dms_keep_flowing_alongside_webhook_alerts() {
     let services = run_against(&receiver).await;
     let dms = Arc::new(DiscordDms::default());
     services
-        .subscriptions
+        .dispatcher
         .register_sender("discord".into(), dms.clone());
     let discord_subscriber = SubscriberRef {
         integration: "discord".into(),
@@ -1320,7 +1321,7 @@ async fn discord_dms_keep_flowing_alongside_webhook_alerts() {
 
     opens(&services, indoor_slot()).await;
     services
-        .subscriptions
+        .dispatcher
         .dispatch(&[AvailabilityChange::BecameUnbookable(indoor_slot())])
         .await;
 

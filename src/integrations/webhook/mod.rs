@@ -80,7 +80,7 @@ impl Integration for WebhookIntegration {
     async fn run(self: Box<Self>, services: IntegrationServices, ready: ReadySignal) -> Result<()> {
         let alerts = WebhookAlertSender::new(self.alert_url.clone(), self.alert_secret.clone())?;
         services
-            .subscriptions
+            .dispatcher
             .register_sender(INTEGRATION, Arc::new(alerts));
         let webhook = self.bind().await?;
         info!(address = %webhook.local_addr()?, "webhook API listening");

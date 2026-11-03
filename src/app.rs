@@ -14,7 +14,9 @@ use crate::notify::{ChannelSink, SportScopedSink, SurfaceFilteredSink};
 use crate::ports::{AvailabilityChangeSink, ProviderSources};
 use crate::sources;
 use crate::store::SqliteStore;
-use crate::subscriptions::{BerlinClock, ClubDirectory, CourtNameConversion, SubscriptionService};
+use crate::subscriptions::{
+    AlertDispatcher, BerlinClock, ClubDirectory, CourtNameConversion, SubscriptionService,
+};
 
 const INTEGRATION_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -127,24 +129,28 @@ impl App {
         sinks.push(Arc::new(ChannelSink::new(tx)));
 
         let admins = integrations.iter().flat_map(|i| i.admins()).collect();
-        let service = Arc::new(SubscriptionService::new(
-            store.clone(),
-            store.clone(),
-            admins,
-            registry.clone(),
-            config.surface_filter(),
-            Arc::new(BerlinClock),
-        ));
-        let dispatch = tokio::spawn(service.clone().dispatch_loop(rx));
+        let services = IntegrationServices {
+            subscriptions: Arc::new(SubscriptionService::new(
+                store.clone(),
+                store.clone(),
+                admins,
+                registry.clone(),
+                config.surface_filter(),
+                Arc::new(BerlinClock),
+            )),
+            clubs: ClubDirectory::new(registry.clone()),
+            dispatcher: Arc::new(AlertDispatcher::new(
+                store.clone(),
+                registry.clone(),
+                Arc::new(BerlinClock),
+            )),
+        };
+        let dispatch = tokio::spawn(services.dispatcher.clone().dispatch_loop(rx));
         tokio::spawn(
             CourtNameConversion::new(store.clone(), registry.clone(), Arc::new(BerlinClock))
                 .run_until_done(),
         );
 
-        let services = IntegrationServices {
-            subscriptions: service,
-            clubs: ClubDirectory::new(registry.clone()),
-        };
         let (ready_signals, ready_barrier) = integrations::readiness(integrations.len());
 
         tokio::try_join!(

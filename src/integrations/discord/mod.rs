@@ -83,7 +83,7 @@ impl Integration for DiscordIntegration {
 
     async fn run(self: Box<Self>, services: IntegrationServices, ready: ReadySignal) -> Result<()> {
         let handler = Handler {
-            service: services.subscriptions.clone(),
+            service: services.subscriptions,
             clubs: services.clubs,
             guild_id: self.guild_id,
             ready,
@@ -94,7 +94,7 @@ impl Integration for DiscordIntegration {
             .await
             .context("building serenity client")?;
 
-        services.subscriptions.register_sender(
+        services.dispatcher.register_sender(
             INTEGRATION,
             Arc::new(DiscordSender::new(
                 client.http.clone(),

@@ -137,15 +137,15 @@ mod tests {
         Court, CourtCatalog, CourtFilter, Schedule, TimeRange, UncheckedDraft, Venue,
     };
     use crate::store::SqliteStore;
-    use crate::subscriptions::BerlinClock;
     use crate::subscriptions::SubscriptionService;
     use crate::subscriptions::contract::{
         SelectedCourtSummary, SubscriptionCommand, SubscriptionResult,
     };
     use crate::subscriptions::testing::{
-        RecordingSender, clay_court, padel_club, padel_court, registry_of, service_on, store,
-        tennis_club, tuesday_slot, uref,
+        RecordingSender, clay_court, dispatcher_on, padel_club, padel_court, registry_of,
+        service_on, store, tennis_club, tuesday_slot, uref,
     };
+    use crate::subscriptions::{AlertDispatcher, BerlinClock};
 
     fn north() -> VenueId {
         VenueId::new("north")
@@ -160,6 +160,7 @@ mod tests {
         registry: Arc<RwLock<VenueRegistry>>,
         conversion: CourtNameConversion,
         service: Arc<SubscriptionService>,
+        dispatcher: Arc<AlertDispatcher>,
         sender: Arc<RecordingSender>,
     }
 
@@ -172,8 +173,9 @@ mod tests {
         fn over(store: Arc<SqliteStore>, clubs: Vec<(Venue, Option<Vec<Court>>)>) -> Self {
             let registry = registry_of(clubs);
             let service = service_on(store.clone(), registry.clone());
+            let dispatcher = dispatcher_on(store.clone(), registry.clone());
             let sender = RecordingSender::new(false);
-            service.register_sender("discord".into(), sender.clone());
+            dispatcher.register_sender("discord".into(), sender.clone());
             Self {
                 conversion: CourtNameConversion::new(
                     store.clone(),
@@ -183,6 +185,7 @@ mod tests {
                 store,
                 registry,
                 service,
+                dispatcher,
                 sender,
             }
         }
@@ -239,7 +242,7 @@ mod tests {
         /// Dispatches a matching slot and returns how many alerts that added.
         async fn alerts_for(&self, venue: &VenueId, court: u128, name: &str) -> usize {
             let before = self.sender.sent.lock().unwrap().len();
-            self.service
+            self.dispatcher
                 .dispatch(&[tuesday_slot(venue, court, name)])
                 .await;
             self.sender.sent.lock().unwrap().len() - before

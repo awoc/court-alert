@@ -8,19 +8,17 @@ mod matcher;
 #[cfg(test)]
 pub(crate) mod testing;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, NaiveDate, Utc};
 
-use crate::model::{
-    CourtCatalog, CourtFilter, IntegrationId, Sport, SubscriberRef, VenueId, VenueRegistry,
-};
+use crate::model::{CourtCatalog, CourtFilter, Sport, SubscriberRef, VenueId, VenueRegistry};
 use crate::ports::{BookableSlotSnapshotRepository, SubscriptionRepository};
-use contract::AlertSender;
 
 pub use club_directory::ClubDirectory;
 pub use court_conversion::{ConversionPass, CourtNameConversion};
+pub use dispatch::AlertDispatcher;
 
 pub trait Clock: Send + Sync {
     fn now(&self) -> DateTime<Utc>;
@@ -41,7 +39,6 @@ impl Clock for BerlinClock {
 pub struct SubscriptionService {
     store: Arc<dyn SubscriptionRepository>,
     slot_snapshots: Arc<dyn BookableSlotSnapshotRepository>,
-    senders: RwLock<HashMap<IntegrationId, Arc<dyn AlertSender>>>,
     admins: HashSet<SubscriberRef>,
     registry: Arc<RwLock<VenueRegistry>>,
     clubs: ClubDirectory,
@@ -61,7 +58,6 @@ impl SubscriptionService {
         Self {
             store,
             slot_snapshots,
-            senders: RwLock::new(HashMap::new()),
             admins,
             clubs: ClubDirectory::new(registry.clone()),
             registry,
@@ -98,13 +94,6 @@ impl SubscriptionService {
             .iter()
             .flat_map(|(_, catalog)| catalog.courts().iter().map(contract::CourtSummary::from))
             .collect()
-    }
-
-    pub fn register_sender(&self, integration: IntegrationId, sender: Arc<dyn AlertSender>) {
-        self.senders
-            .write()
-            .expect("senders lock poisoned")
-            .insert(integration, sender);
     }
 }
 

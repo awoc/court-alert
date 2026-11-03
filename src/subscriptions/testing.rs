@@ -15,7 +15,7 @@ use crate::subscriptions::contract::{
 };
 use uuid::Uuid;
 
-use super::{BerlinClock, Clock, SubscriptionService};
+use super::{AlertDispatcher, BerlinClock, Clock, SubscriptionService};
 
 pub(super) fn uref(id: &str) -> SubscriberRef {
     SubscriberRef {
@@ -225,6 +225,28 @@ pub(super) fn service_on(
 
 pub(super) async fn service_over(registry: Arc<RwLock<VenueRegistry>>) -> Arc<SubscriptionService> {
     service_on(store().await, registry)
+}
+
+pub(super) fn dispatcher_on(
+    store: Arc<SqliteStore>,
+    registry: Arc<RwLock<VenueRegistry>>,
+) -> Arc<AlertDispatcher> {
+    Arc::new(AlertDispatcher::new(store, registry, Arc::new(BerlinClock)))
+}
+
+/// A service and a dispatcher sharing one store and registry, as in production.
+pub(super) async fn service_and_dispatcher_over(
+    registry: Arc<RwLock<VenueRegistry>>,
+) -> (Arc<SubscriptionService>, Arc<AlertDispatcher>) {
+    let store = store().await;
+    (
+        service_on(store.clone(), registry.clone()),
+        dispatcher_on(store, registry),
+    )
+}
+
+pub(super) async fn service_and_dispatcher() -> (Arc<SubscriptionService>, Arc<AlertDispatcher>) {
+    service_and_dispatcher_over(registry()).await
 }
 
 pub(super) async fn service_defaulting_to_clay() -> Arc<SubscriptionService> {
