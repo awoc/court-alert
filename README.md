@@ -60,7 +60,13 @@ The app never changes the schema of an existing database. It refuses to start ag
 sqlite3 -bail data/court-alert.db < sql/migrations/0007_subscription_court_ids.sql
 ```
 
-`0007` adds the `selected_courts` column. Subscriptions created before it keep their court names and keep matching by name.
+`0007` adds the `selected_courts` column but cannot fill it, because Playtomic catalogs are only discovered at runtime. The app does the rest once it runs with an integration enabled: it tries at startup, retries every minute, and stops when no row is left.
+
+- A subscription with a club converts once that club's catalog has loaded. One with no club waits for every club of its sport, which for a Playtomic club can take until its first poll inside the operating window.
+- Names compare case-insensitively, and a name that matches several courts keeps all of them.
+- Until a subscription converts it keeps matching by name, so no alerts are lost along the way.
+- A subscription with a name that matches no court stays unconverted as a whole, logs a warning once per run, and is tried again as catalogs refresh.
+- Once converted, a subscription is never derived from names again.
 
 `0007` comes with a change to the webhook API: a subscription's `courts` used to be a list of names and is now a list of `{"id", "name"}` objects, so callers need updating when you deploy it.
 

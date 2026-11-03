@@ -1,6 +1,7 @@
 pub mod contract;
 
 mod commands;
+mod court_conversion;
 mod dispatch;
 mod matcher;
 #[cfg(test)]
@@ -16,6 +17,8 @@ use crate::model::{
 };
 use crate::ports::{BookableSlotSnapshotRepository, SubscriptionRepository};
 use contract::AlertSender;
+
+pub use court_conversion::{ConversionPass, CourtNameConversion};
 
 pub trait Clock: Send + Sync {
     fn now(&self) -> DateTime<Utc>;

@@ -385,7 +385,7 @@ fn courts_by_name(
     }
 }
 
-fn select_from<'a, I>(
+pub(super) fn select_from<'a, I>(
     catalogs: &'a [(VenueId, Arc<CourtCatalog>)],
     courts_of: impl Fn(&'a CourtCatalog) -> I,
 ) -> Vec<SelectedCourt>
@@ -403,7 +403,7 @@ where
         .collect()
 }
 
-fn distinct_courts(mut courts: Vec<SelectedCourt>) -> Vec<SelectedCourt> {
+pub(super) fn distinct_courts(mut courts: Vec<SelectedCourt>) -> Vec<SelectedCourt> {
     let mut seen = HashSet::new();
     courts.retain(|court| seen.insert(court.clone()));
     courts

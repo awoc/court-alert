@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use chrono::NaiveDate;
 use rusqlite::{Row, params};
 
-use crate::model::{SubscriberRef, Subscription, SubscriptionDraft};
+use crate::model::{CourtSelection, SelectedCourt, SubscriberRef, Subscription, SubscriptionDraft};
 use crate::ports::SubscriptionRepository;
 
 use super::{DbRepr, SqliteStore, SubscriptionRow};
@@ -143,14 +143,28 @@ impl SubscriptionRepository for SqliteStore {
         })
         .await
     }
+
+    async fn convert_pending_courts(&self, id: i64, courts: Vec<SelectedCourt>) -> Result<bool> {
+        self.with_writer("convert_pending_courts", move |conn| {
+            let (_, selected_courts) = CourtSelection::Selected(courts).into_db()?;
+            let affected = conn
+                .execute(
+                    "UPDATE subscriptions SET courts = NULL, selected_courts = ?2
+                     WHERE id = ?1 AND courts IS NOT NULL",
+                    params![id, selected_courts],
+                )
+                .context("converting pending courts")?;
+            Ok(affected > 0)
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::{
-        CourtFilter, CourtLocation, CourtSelection, CourtSurface, Schedule, SelectedCourt, Sport,
-        TimeRange, VenueId,
+        CourtFilter, CourtLocation, CourtSurface, Schedule, Sport, TimeRange, VenueId,
     };
     use chrono::{NaiveDate, Weekday};
     use uuid::Uuid;
@@ -309,6 +323,80 @@ mod tests {
     async fn pending_court_names_roundtrip() {
         let selection = CourtSelection::PendingNames(vec!["Court 2".into(), "Court 5".into()]);
         assert_eq!(round_trip(selection.clone()).await, selection);
+    }
+
+    fn court(venue: &str, id: u128) -> SelectedCourt {
+        SelectedCourt {
+            venue_id: VenueId::new(venue),
+            court_id: Uuid::from_u128(id),
+        }
+    }
+
+    async fn stored_courts(store: &SqliteStore) -> CourtSelection {
+        store.list_all(query_date()).await.unwrap().remove(0).courts
+    }
+
+    #[tokio::test]
+    async fn converting_replaces_pending_names_with_courts() {
+        let store = SqliteStore::open_in_memory().await.unwrap();
+        let mut sub = sample(Weekday::Tue);
+        sub.courts = CourtSelection::PendingNames(vec!["Court 2".into()]);
+        let id = store.add(sub).await.unwrap();
+
+        let courts = vec![court("zhs-munich", 2)];
+        assert!(
+            store
+                .convert_pending_courts(id, courts.clone())
+                .await
+                .unwrap()
+        );
+
+        assert_eq!(
+            stored_courts(&store).await,
+            CourtSelection::Selected(courts)
+        );
+    }
+
+    #[tokio::test]
+    async fn converting_twice_keeps_the_first_result() {
+        let store = SqliteStore::open_in_memory().await.unwrap();
+        let mut sub = sample(Weekday::Tue);
+        sub.courts = CourtSelection::PendingNames(vec!["Court 2".into()]);
+        let id = store.add(sub).await.unwrap();
+        let first = vec![court("zhs-munich", 2)];
+        store
+            .convert_pending_courts(id, first.clone())
+            .await
+            .unwrap();
+
+        let again = store
+            .convert_pending_courts(id, vec![court("zhs-munich", 5)])
+            .await
+            .unwrap();
+
+        assert!(!again);
+        assert_eq!(stored_courts(&store).await, CourtSelection::Selected(first));
+    }
+
+    #[tokio::test]
+    async fn converting_leaves_rows_that_are_not_pending_alone() {
+        let store = SqliteStore::open_in_memory().await.unwrap();
+        let id = store.add(sample(Weekday::Tue)).await.unwrap();
+
+        let converted = store
+            .convert_pending_courts(id, vec![court("zhs-munich", 2)])
+            .await
+            .unwrap();
+
+        assert!(!converted);
+        assert_eq!(stored_courts(&store).await, CourtSelection::Every);
+        assert!(
+            !store
+                .convert_pending_courts(id + 1, vec![court("zhs-munich", 2)])
+                .await
+                .unwrap(),
+            "a missing row converts nothing"
+        );
     }
 
     #[tokio::test]

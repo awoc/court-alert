@@ -14,7 +14,7 @@ use crate::notify::{ChannelSink, SportScopedSink, SurfaceFilteredSink};
 use crate::ports::{AvailabilityChangeSink, ProviderSources};
 use crate::sources;
 use crate::store::SqliteStore;
-use crate::subscriptions::{BerlinClock, SubscriptionService};
+use crate::subscriptions::{BerlinClock, CourtNameConversion, SubscriptionService};
 
 const INTEGRATION_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -136,6 +136,10 @@ impl App {
             Arc::new(BerlinClock),
         ));
         let dispatch = tokio::spawn(service.clone().dispatch_loop(rx));
+        tokio::spawn(
+            CourtNameConversion::new(store.clone(), registry.clone(), Arc::new(BerlinClock))
+                .run_until_done(),
+        );
 
         let (ready_signals, ready_barrier) = integrations::readiness(integrations.len());
 
