@@ -131,6 +131,21 @@ pub struct SubscriptionDraft {
     pub filter: CourtFilter,
 }
 
+impl SubscriptionDraft {
+    pub fn into_subscription(self, id: i64) -> Subscription {
+        Subscription {
+            id,
+            subscriber: self.subscriber,
+            sport: self.sport,
+            venue: self.venue,
+            schedule: self.schedule,
+            time_range: self.time_range,
+            courts: self.courts,
+            filter: self.filter,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

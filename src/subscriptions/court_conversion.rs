@@ -5,11 +5,12 @@ use std::time::Duration;
 use anyhow::Result;
 use tracing::{info, warn};
 
-use crate::model::{CourtSelection, SelectedCourt, Sport, VenueId, VenueRegistry};
+use crate::model::{
+    CourtSelection, SelectedCourt, Sport, VenueId, VenueRegistry, courts_with_stored_names,
+};
 use crate::ports::SubscriptionRepository;
 
 use super::Clock;
-use super::commands::{distinct_courts, select_from};
 
 const RETRY_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -115,20 +116,9 @@ fn plan(registry: &VenueRegistry, sport: Sport, venue: Option<&VenueId>, names: 
     let Some(catalogs) = registry.ready_catalogs(sport, venue) else {
         return Plan::AwaitCatalogs;
     };
-    let mut selected = Vec::new();
-    let mut unresolved = Vec::new();
-    for name in names {
-        let found = select_from(&catalogs, |catalog| catalog.courts_named(name));
-        if found.is_empty() {
-            unresolved.push(name.clone());
-        } else {
-            selected.extend(found);
-        }
-    }
-    if unresolved.is_empty() {
-        Plan::Convert(distinct_courts(selected))
-    } else {
-        Plan::Unresolvable(unresolved)
+    match courts_with_stored_names(&catalogs, names) {
+        Ok(courts) => Plan::Convert(courts),
+        Err(unresolved) => Plan::Unresolvable(unresolved),
     }
 }
 

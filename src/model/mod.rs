@@ -3,6 +3,7 @@ mod court;
 mod registry;
 mod slot;
 mod subscription;
+mod subscription_policy;
 mod venue;
 
 pub use alert_message::{AlertLine, AlertMessage, AlertMessageKey, AlertSurface, StrikePlan};
@@ -15,5 +16,9 @@ pub use slot::{
 pub use subscription::{
     CourtSelection, IntegrationId, MINUTES_PER_DAY, Schedule, SelectedCourt, SubscriberRef,
     Subscription, SubscriptionDraft, TimeRange,
+};
+pub use subscription_policy::{
+    CourtChoice, SubscriptionPolicy, SubscriptionRejection, SubscriptionRequest,
+    courts_with_stored_names,
 };
 pub use venue::{OperatingWindow, Provider, Sport, Venue, VenueId, VenueIdentity};

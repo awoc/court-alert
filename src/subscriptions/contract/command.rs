@@ -1,16 +1,9 @@
-use uuid::Uuid;
-
+pub use crate::model::CourtChoice;
 use crate::model::{CourtFilter, Schedule, Sport, VenueId};
 
 use super::{
     AvailableSlotSummary, ClubRef, CourtSummary, OwnedSubscriptionSummary, SubscriptionSummary,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CourtChoice {
-    Names(Vec<String>),
-    Ids(Vec<Uuid>),
-}
 
 #[derive(Debug, Clone)]
 pub enum SubscriptionCommand {

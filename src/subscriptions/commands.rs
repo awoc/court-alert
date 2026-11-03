@@ -1,24 +1,17 @@
-use std::collections::HashSet;
-use std::sync::Arc;
-
 use anyhow::Result;
 use tracing::warn;
-use uuid::Uuid;
 
 use crate::model::{
-    BookableSlot, Court, CourtCatalog, CourtFilter, CourtSelection, Schedule, SelectedCourt, Sport,
-    SubscriberRef, Subscription, SubscriptionDraft, TimeRange, VenueId, VenueRegistry,
+    BookableSlot, CourtSelection, SubscriberRef, Subscription, SubscriptionDraft,
+    SubscriptionPolicy, SubscriptionRejection, SubscriptionRequest, VenueRegistry,
 };
 use crate::subscriptions::contract::{
-    AvailableSlotSummary, ClubRef, CourtChoice, OwnedSubscriptionSummary, SelectedCourtSummary,
+    AvailableSlotSummary, ClubRef, OwnedSubscriptionSummary, SelectedCourtSummary,
     SubscriptionCommand, SubscriptionResult, SubscriptionSummary,
 };
 
 use super::matcher::slot_matches;
 use super::{SubscriptionService, slot_summary};
-
-const MAX_COURTS: usize = 20;
-const MAX_COURT_NAME_CHARS: usize = 100;
 
 impl SubscriptionService {
     pub async fn handle(
@@ -36,8 +29,7 @@ impl SubscriptionService {
                 courts,
                 filter,
             } => {
-                let draft = match self.validate_subscribe(
-                    subscriber,
+                let request = SubscriptionRequest {
                     sport,
                     venue,
                     schedule,
@@ -45,22 +37,14 @@ impl SubscriptionService {
                     end_minute,
                     courts,
                     filter,
-                ) {
+                };
+                let draft = match self.validate_subscribe(subscriber, &request) {
                     Ok(draft) => draft,
-                    Err(rejection) => return Ok(*rejection),
+                    Err(rejection) => return Ok(self.rejected(&request, rejection)),
                 };
 
                 let id = self.store.add(draft.clone()).await?;
-                let sub = Subscription {
-                    id,
-                    subscriber: draft.subscriber,
-                    sport: draft.sport,
-                    venue: draft.venue,
-                    schedule: draft.schedule,
-                    time_range: draft.time_range,
-                    courts: draft.courts,
-                    filter: draft.filter,
-                };
+                let sub = draft.into_subscription(id);
                 let open_slots = self.open_slots_for(&sub).await;
                 Ok(SubscriptionResult::Subscribed {
                     summary: self.summarize(sub),
@@ -105,69 +89,56 @@ impl SubscriptionService {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn validate_subscribe(
         &self,
         subscriber: &SubscriberRef,
-        sport: Sport,
-        venue: Option<VenueId>,
-        schedule: Schedule,
-        start_minute: u32,
-        end_minute: u32,
-        courts: Option<CourtChoice>,
-        filter: Option<CourtFilter>,
-    ) -> Result<SubscriptionDraft, Box<SubscriptionResult>> {
-        let clubs = self.clubs_of(sport);
-        if clubs.is_empty() {
-            return Err(Box::new(SubscriptionResult::NoClubsConfigured { sport }));
+        request: &SubscriptionRequest,
+    ) -> Result<SubscriptionDraft, SubscriptionRejection> {
+        let registry = self.registry.read().expect("venue registry poisoned");
+        SubscriptionPolicy {
+            registry: &registry,
+            tennis_default_filter: self.tennis_default_filter,
+            today: self.clock.today(),
         }
-        if let Some(chosen) = &venue
-            && !clubs.iter().any(|club| &club.venue_id == chosen)
-        {
-            return Err(Box::new(SubscriptionResult::UnknownClub {
-                unknown: chosen.to_string(),
-                available: clubs,
-            }));
+        .draft(subscriber, request)
+    }
+
+    fn rejected(
+        &self,
+        request: &SubscriptionRequest,
+        rejection: SubscriptionRejection,
+    ) -> SubscriptionResult {
+        match rejection {
+            SubscriptionRejection::NoClubsConfigured { sport } => {
+                SubscriptionResult::NoClubsConfigured { sport }
+            }
+            SubscriptionRejection::UnknownClub { unknown } => SubscriptionResult::UnknownClub {
+                unknown: unknown.to_string(),
+                available: self.clubs_of(request.sport),
+            },
+            SubscriptionRejection::InvalidTimeRange => SubscriptionResult::InvalidTimeRange,
+            SubscriptionRejection::InvalidSchedule => SubscriptionResult::InvalidSchedule,
+            SubscriptionRejection::FilterNotForSport { sport, filter } => {
+                SubscriptionResult::FilterNotForSport { sport, filter }
+            }
+            SubscriptionRejection::TooManyCourts { max } => {
+                SubscriptionResult::TooManyCourts { max }
+            }
+            SubscriptionRejection::CourtNameTooLong { max } => {
+                SubscriptionResult::CourtNameTooLong { max }
+            }
+            SubscriptionRejection::CourtCatalogsNotReady => {
+                SubscriptionResult::CourtCatalogsNotReady
+            }
+            SubscriptionRejection::CourtsNeedClub => SubscriptionResult::CourtsNeedClub,
+            SubscriptionRejection::UnknownCourts { unknown } => SubscriptionResult::UnknownCourts {
+                unknown,
+                available: self.court_summaries(request.sport, request.venue.as_ref()),
+            },
+            SubscriptionRejection::FilterExcludesCourts { courts, filter } => {
+                SubscriptionResult::FilterExcludesCourts { courts, filter }
+            }
         }
-
-        let Some(time_range) = TimeRange::new(start_minute, end_minute) else {
-            return Err(Box::new(SubscriptionResult::InvalidTimeRange));
-        };
-        if let Schedule::Date(date) = schedule
-            && date < self.clock.today()
-        {
-            return Err(Box::new(SubscriptionResult::InvalidSchedule));
-        }
-
-        if let Some(chosen) = filter
-            && !chosen.applies_to(sport)
-        {
-            return Err(Box::new(SubscriptionResult::FilterNotForSport {
-                sport,
-                filter: chosen,
-            }));
-        }
-
-        let courts = self.select_courts(sport, venue.as_ref(), courts)?;
-
-        if let Some(chosen) = filter
-            && let Some(excluded) = self.courts_excluded_by(chosen, &courts)
-        {
-            return Err(Box::new(SubscriptionResult::FilterExcludesCourts {
-                courts: excluded,
-                filter: chosen,
-            }));
-        }
-
-        Ok(SubscriptionDraft {
-            subscriber: subscriber.clone(),
-            sport,
-            venue,
-            schedule,
-            time_range,
-            filter: self.resolve_filter(sport, filter, &courts),
-            courts,
-        })
     }
 
     fn summarize(&self, sub: Subscription) -> SubscriptionSummary {
@@ -185,127 +156,6 @@ impl SubscriptionService {
             courts: selected_court_summaries(&registry, sub.courts),
             filter: sub.filter,
         }
-    }
-
-    fn select_courts(
-        &self,
-        sport: Sport,
-        venue: Option<&VenueId>,
-        courts: Option<CourtChoice>,
-    ) -> Result<CourtSelection, Box<SubscriptionResult>> {
-        let Some(courts) = courts else {
-            return Ok(CourtSelection::Every);
-        };
-        let count = match &courts {
-            CourtChoice::Names(names) => names.len(),
-            CourtChoice::Ids(ids) => ids.len(),
-        };
-        if count == 0 {
-            return Ok(CourtSelection::Every);
-        }
-        if count > MAX_COURTS {
-            return Err(Box::new(SubscriptionResult::TooManyCourts {
-                max: MAX_COURTS,
-            }));
-        }
-        let resolved = match courts {
-            CourtChoice::Names(names) => {
-                if names
-                    .iter()
-                    .any(|court| court.chars().count() > MAX_COURT_NAME_CHARS)
-                {
-                    return Err(Box::new(SubscriptionResult::CourtNameTooLong {
-                        max: MAX_COURT_NAME_CHARS,
-                    }));
-                }
-                let catalogs = self
-                    .registry
-                    .read()
-                    .expect("venue registry poisoned")
-                    .ready_catalogs(sport, venue);
-                let Some(catalogs) = catalogs else {
-                    return Err(Box::new(SubscriptionResult::CourtCatalogsNotReady));
-                };
-                courts_by_name(&catalogs, names).map_err(CourtChoice::Names)
-            }
-            CourtChoice::Ids(ids) => {
-                let Some(venue) = venue else {
-                    return Err(Box::new(SubscriptionResult::CourtsNeedClub));
-                };
-                self.courts_by_id(sport, venue, ids)
-                    .map_err(CourtChoice::Ids)
-            }
-        };
-        resolved.map(CourtSelection::Selected).map_err(|unknown| {
-            Box::new(SubscriptionResult::UnknownCourts {
-                unknown,
-                available: self.court_summaries(sport, venue),
-            })
-        })
-    }
-
-    fn courts_by_id(
-        &self,
-        sport: Sport,
-        venue: &VenueId,
-        ids: Vec<Uuid>,
-    ) -> Result<Vec<SelectedCourt>, Vec<Uuid>> {
-        let catalogs = self.catalogs_for(sport, Some(venue));
-        let mut selected = Vec::with_capacity(ids.len());
-        let mut unknown = Vec::new();
-        for id in ids {
-            match catalogs
-                .iter()
-                .find_map(|(_, catalog)| catalog.find_by_id(id))
-            {
-                Some(court) => selected.push(SelectedCourt {
-                    venue_id: venue.clone(),
-                    court_id: court.id(),
-                }),
-                None => unknown.push(id),
-            }
-        }
-        if unknown.is_empty() {
-            Ok(distinct_courts(selected))
-        } else {
-            Err(unknown)
-        }
-    }
-
-    fn resolve_filter(
-        &self,
-        sport: Sport,
-        chosen: Option<CourtFilter>,
-        courts: &CourtSelection,
-    ) -> CourtFilter {
-        chosen.unwrap_or(match (sport, courts) {
-            (Sport::Tennis, CourtSelection::Every) => self.tennis_default_filter,
-            _ => CourtFilter::Any,
-        })
-    }
-
-    fn courts_excluded_by(
-        &self,
-        filter: CourtFilter,
-        courts: &CourtSelection,
-    ) -> Option<Vec<String>> {
-        let CourtSelection::Selected(courts) = courts else {
-            return None;
-        };
-        let registry = self.registry.read().expect("venue registry poisoned");
-        let excluded: Vec<String> = courts
-            .iter()
-            .filter(|court| {
-                let attributes = registry.attributes_of(&court.venue_id, court.court_id);
-                !filter.allows(attributes.as_ref())
-            })
-            .map(|court| {
-                registry
-                    .court_name(&court.venue_id, court.court_id)
-                    .unwrap_or_else(|| court.court_id.to_string())
-            })
-            .collect();
-        (!excluded.is_empty()).then_some(excluded)
     }
 
     async fn open_slots_for(&self, sub: &Subscription) -> Vec<AvailableSlotSummary> {
@@ -355,58 +205,6 @@ fn selected_court_summaries(
                 .collect(),
         ),
     }
-}
-
-/// A name found anywhere in scope selects every court of that name. Only an
-/// input no court is called falls back to the number it contains, so "Court 2"
-/// never picks up another club's "Pista 2" but "2" picks up both.
-fn courts_by_name(
-    catalogs: &[(VenueId, Arc<CourtCatalog>)],
-    names: Vec<String>,
-) -> Result<Vec<SelectedCourt>, Vec<String>> {
-    let mut selected = Vec::with_capacity(names.len());
-    let mut unknown = Vec::new();
-    for name in names {
-        let input = name.trim();
-        let mut found = select_from(catalogs, |catalog| catalog.courts_named(input));
-        if found.is_empty() {
-            found = select_from(catalogs, |catalog| catalog.courts_numbered_in(input));
-        }
-        if found.is_empty() {
-            unknown.push(name);
-        } else {
-            selected.append(&mut found);
-        }
-    }
-    if unknown.is_empty() {
-        Ok(distinct_courts(selected))
-    } else {
-        Err(unknown)
-    }
-}
-
-pub(super) fn select_from<'a, I>(
-    catalogs: &'a [(VenueId, Arc<CourtCatalog>)],
-    courts_of: impl Fn(&'a CourtCatalog) -> I,
-) -> Vec<SelectedCourt>
-where
-    I: Iterator<Item = &'a Court>,
-{
-    catalogs
-        .iter()
-        .flat_map(|(venue_id, catalog)| {
-            courts_of(catalog).map(|court| SelectedCourt {
-                venue_id: venue_id.clone(),
-                court_id: court.id(),
-            })
-        })
-        .collect()
-}
-
-pub(super) fn distinct_courts(mut courts: Vec<SelectedCourt>) -> Vec<SelectedCourt> {
-    let mut seen = HashSet::new();
-    courts.retain(|court| seen.insert(court.clone()));
-    courts
 }
 
 #[cfg(test)]
@@ -1082,6 +880,25 @@ mod tests {
                 .await
                 .unwrap(),
             SubscriptionResult::SubscriptionList(vec![])
+        );
+    }
+
+    #[tokio::test]
+    async fn one_name_can_store_more_courts_than_a_command_may_name() {
+        let courts = (1..=25).map(|id| clay_court(id, "Centre Court")).collect();
+        let svc = service_over(registry_of(vec![(tennis_club("club"), Some(courts))])).await;
+
+        let chosen = subscribed_courts(&svc, Sport::Tennis, None, names(&["Centre Court"])).await;
+        assert_eq!(chosen.len(), 25);
+
+        assert_eq!(
+            listed_courts(
+                svc.handle(&uref("1"), SubscriptionCommand::List)
+                    .await
+                    .unwrap()
+            )
+            .len(),
+            25
         );
     }
 
