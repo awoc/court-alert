@@ -4,30 +4,37 @@ use serenity::all::{CommandDataOptionValue, CommandInteraction};
 use tracing::warn;
 
 use crate::model::{CourtFilter, Schedule, Sport, VenueId};
-use crate::subscriptions::contract::{CourtChoice, SubscriptionCommand};
+use crate::subscriptions::contract::{CourtChoice, SubscriptionRequest};
 use crate::time::today_berlin;
 
 const MAX_COURT_FILTER_CHARS: usize = 500;
 
 const UNSUBSCRIBE_PREFIX: &str = "unsubscribe:";
 
+#[derive(Debug)]
+pub(super) enum SlashCommand {
+    Subscribe(SubscriptionRequest),
+    List,
+    Unsubscribe { id: i64 },
+    ListAll,
+}
+
 pub(super) fn unsubscribe_custom_id(id: i64) -> String {
     format!("{UNSUBSCRIBE_PREFIX}{id}")
 }
 
-pub(super) fn parse_component(custom_id: &str) -> Result<SubscriptionCommand> {
-    let id = custom_id
+pub(super) fn parse_component(custom_id: &str) -> Result<i64> {
+    custom_id
         .strip_prefix(UNSUBSCRIBE_PREFIX)
         .and_then(|id| id.parse().ok())
-        .with_context(|| format!("unknown component id: {custom_id:?}"))?;
-    Ok(SubscriptionCommand::Unsubscribe { id })
+        .with_context(|| format!("unknown component id: {custom_id:?}"))
 }
 
-pub(super) fn parse_interaction(cmd: &CommandInteraction) -> Result<SubscriptionCommand> {
+pub(super) fn parse_interaction(cmd: &CommandInteraction) -> Result<SlashCommand> {
     match cmd.data.name.as_str() {
         "tennis" => {
             let (schedule, start_minute, end_minute) = parse_when(cmd)?;
-            Ok(SubscriptionCommand::Subscribe {
+            Ok(SlashCommand::Subscribe(SubscriptionRequest {
                 sport: Sport::Tennis,
                 venue: None,
                 schedule,
@@ -35,11 +42,11 @@ pub(super) fn parse_interaction(cmd: &CommandInteraction) -> Result<Subscription
                 end_minute,
                 courts: parse_courts(get_string_opt(cmd, "courts"))?,
                 filter: parse_filter(get_string_opt(cmd, "surface"), Sport::Tennis)?,
-            })
+            }))
         }
         "padel" => {
             let (schedule, start_minute, end_minute) = parse_when(cmd)?;
-            Ok(SubscriptionCommand::Subscribe {
+            Ok(SlashCommand::Subscribe(SubscriptionRequest {
                 sport: Sport::Padel,
                 venue: get_string_opt(cmd, "club")
                     .filter(|raw| !raw.trim().is_empty())
@@ -49,13 +56,13 @@ pub(super) fn parse_interaction(cmd: &CommandInteraction) -> Result<Subscription
                 end_minute,
                 courts: None,
                 filter: parse_filter(get_string_opt(cmd, "location"), Sport::Padel)?,
-            })
+            }))
         }
-        "list" => Ok(SubscriptionCommand::List),
-        "listall" => Ok(SubscriptionCommand::ListAll),
+        "list" => Ok(SlashCommand::List),
+        "listall" => Ok(SlashCommand::ListAll),
         "unsubscribe" => {
             let id = get_integer_opt(cmd, "id").context("missing 'id'")?;
-            Ok(SubscriptionCommand::Unsubscribe { id })
+            Ok(SlashCommand::Unsubscribe { id })
         }
         other => {
             warn!(name = %other, "unknown slash command");
@@ -187,11 +194,7 @@ mod tests {
 
     #[test]
     fn an_unsubscribe_button_click_round_trips_its_reminder_id() {
-        let command = parse_component(&unsubscribe_custom_id(7)).unwrap();
-        assert!(matches!(
-            command,
-            SubscriptionCommand::Unsubscribe { id: 7 }
-        ));
+        assert_eq!(parse_component(&unsubscribe_custom_id(7)).unwrap(), 7);
     }
 
     #[test]

@@ -158,8 +158,8 @@ mod tests {
     use super::super::testing::{
         INDOOR_COURT, PADEL_CLUB_NAME, RecordingSender, court_id, dispatcher_on, padel_club,
         padel_court, padel_court_id, padel_venue_id, registry, registry_of, service_and_dispatcher,
-        service_and_dispatcher_over, store, subscribe_cmd, subscribe_to_courts, tuesday_slot, uref,
-        venue_id,
+        service_and_dispatcher_over, store, subscribe_request, subscribe_to_courts, tuesday_slot,
+        uref, venue_id,
     };
     use crate::model::{
         AvailabilityChange, BookableSlot, BookableSlotId, CourtCatalog, CourtFilter,
@@ -168,7 +168,7 @@ mod tests {
     use crate::ports::SubscriptionRepository;
     use crate::subscriptions::AlertDispatcher;
     use crate::subscriptions::contract::{
-        AlertSender, AvailabilityAlert, CourtChoice, SubscriptionCommand,
+        AlertSender, AvailabilityAlert, CourtChoice, SubscriptionRequest,
     };
     use crate::time::today_berlin;
     use chrono::{TimeZone, Utc};
@@ -224,8 +224,9 @@ mod tests {
             Arc::new(RendezvousSender(tokio::sync::Barrier::new(2))),
         );
         for subscriber in ["1", "2"] {
-            svc.handle(&uref(subscriber), subscribe_cmd(18 * 60, 22 * 60))
+            svc.subscribe(&uref(subscriber), &subscribe_request(18 * 60, 22 * 60))
                 .await
+                .unwrap()
                 .unwrap();
         }
 
@@ -242,8 +243,9 @@ mod tests {
         let (svc, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(false);
         dispatcher.register_sender("discord".into(), sender.clone());
-        svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
+        svc.subscribe(&uref("1"), &subscribe_request(18 * 60, 22 * 60))
             .await
+            .unwrap()
             .unwrap();
 
         dispatcher.dispatch(&[bookable("Court 2")]).await;
@@ -260,8 +262,9 @@ mod tests {
         let (svc, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(false);
         dispatcher.register_sender("discord".into(), sender.clone());
-        svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
+        svc.subscribe(&uref("1"), &subscribe_request(18 * 60, 22 * 60))
             .await
+            .unwrap()
             .unwrap();
 
         dispatcher.dispatch(&[bookable("Court 2")]).await;
@@ -275,9 +278,9 @@ mod tests {
         let (svc, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(false);
         dispatcher.register_sender("discord".into(), sender.clone());
-        svc.handle(
+        svc.subscribe(
             &uref("1"),
-            SubscriptionCommand::Subscribe {
+            &SubscriptionRequest {
                 sport: Sport::Padel,
                 venue: None,
                 schedule: Schedule::Weekday(chrono::Weekday::Tue),
@@ -288,6 +291,7 @@ mod tests {
             },
         )
         .await
+        .unwrap()
         .unwrap();
 
         dispatcher.dispatch(&[padel_bookable()]).await;
@@ -306,8 +310,9 @@ mod tests {
         let (svc, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(false);
         dispatcher.register_sender("discord".into(), sender.clone());
-        svc.handle(&uref("1"), subscribe_cmd(8 * 60, 10 * 60))
+        svc.subscribe(&uref("1"), &subscribe_request(8 * 60, 10 * 60))
             .await
+            .unwrap()
             .unwrap();
 
         dispatcher.dispatch(&[bookable("Court 2")]).await;
@@ -320,11 +325,13 @@ mod tests {
         let (svc, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(true); // every send errors
         dispatcher.register_sender("discord".into(), sender.clone());
-        svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
+        svc.subscribe(&uref("1"), &subscribe_request(18 * 60, 22 * 60))
             .await
+            .unwrap()
             .unwrap();
-        svc.handle(&uref("2"), subscribe_cmd(18 * 60, 22 * 60))
+        svc.subscribe(&uref("2"), &subscribe_request(18 * 60, 22 * 60))
             .await
+            .unwrap()
             .unwrap();
 
         dispatcher.dispatch(&[bookable("Court 2")]).await;
@@ -335,8 +342,9 @@ mod tests {
     #[tokio::test]
     async fn dispatch_without_registered_sender_does_not_panic() {
         let (svc, dispatcher) = service_and_dispatcher().await;
-        svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
+        svc.subscribe(&uref("1"), &subscribe_request(18 * 60, 22 * 60))
             .await
+            .unwrap()
             .unwrap();
         dispatcher.dispatch(&[bookable("Court 2")]).await;
     }
@@ -374,8 +382,9 @@ mod tests {
         let (svc, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(false);
         dispatcher.register_sender("discord".into(), sender.clone());
-        svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
+        svc.subscribe(&uref("1"), &subscribe_request(18 * 60, 22 * 60))
             .await
+            .unwrap()
             .unwrap();
 
         dispatcher
@@ -390,8 +399,9 @@ mod tests {
         let (svc, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(false);
         dispatcher.register_sender("discord".into(), sender.clone());
-        svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
+        svc.subscribe(&uref("1"), &subscribe_request(18 * 60, 22 * 60))
             .await
+            .unwrap()
             .unwrap();
 
         dispatcher.dispatch(&[bookable("Court 2")]).await;
@@ -405,8 +415,9 @@ mod tests {
         let (svc, dispatcher) = service_and_dispatcher().await;
         let sender = RecordingSender::new(true);
         dispatcher.register_sender("discord".into(), sender.clone());
-        svc.handle(&uref("1"), subscribe_cmd(18 * 60, 22 * 60))
+        svc.subscribe(&uref("1"), &subscribe_request(18 * 60, 22 * 60))
             .await
+            .unwrap()
             .unwrap();
 
         dispatcher
@@ -437,15 +448,16 @@ mod tests {
         let (svc, dispatcher) = service_and_dispatcher_over(registry.clone()).await;
         let sender = RecordingSender::new(false);
         dispatcher.register_sender("discord".into(), sender.clone());
-        svc.handle(
+        svc.subscribe(
             &uref("1"),
-            subscribe_to_courts(
+            &subscribe_to_courts(
                 Sport::Padel,
                 Some(&club),
                 CourtChoice::Ids(vec![Uuid::from_u128(COURT_A)]),
             ),
         )
         .await
+        .unwrap()
         .unwrap();
         (dispatcher, sender, registry)
     }
@@ -492,15 +504,16 @@ mod tests {
         let (svc, dispatcher) = service_and_dispatcher_over(registry.clone()).await;
         let sender = RecordingSender::new(false);
         dispatcher.register_sender("discord".into(), sender.clone());
-        svc.handle(
+        svc.subscribe(
             &uref("1"),
-            subscribe_to_courts(
+            &subscribe_to_courts(
                 Sport::Padel,
                 None,
                 CourtChoice::Names(vec!["Centre Court".into()]),
             ),
         )
         .await
+        .unwrap()
         .unwrap();
         registry.write().unwrap().set_catalog(
             &club,

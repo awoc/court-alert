@@ -6,87 +6,73 @@ use crate::model::{
     SubscriptionPolicy, SubscriptionRejection, SubscriptionRequest, VenueRegistry,
 };
 use crate::subscriptions::contract::{
-    AvailableSlotSummary, ClubRef, CourtSummary, OwnedSubscriptionSummary, SelectedCourtSummary,
-    SubscriptionCommand, SubscriptionResult, SubscriptionSummary,
+    AvailableSlotSummary, ClubRef, NotAuthorized, OwnedSubscriptionSummary, SelectedCourtSummary,
+    Subscribed, SubscriptionSummary, UnsubscribeOutcome,
 };
 
 use super::matcher::slot_matches;
 use super::{SubscriptionService, slot_summary};
 
 impl SubscriptionService {
-    pub async fn handle(
+    pub async fn subscribe(
         &self,
         subscriber: &SubscriberRef,
-        command: SubscriptionCommand,
-    ) -> Result<SubscriptionResult> {
-        match command {
-            SubscriptionCommand::Subscribe {
-                sport,
-                venue,
-                schedule,
-                start_minute,
-                end_minute,
-                courts,
-                filter,
-            } => {
-                let request = SubscriptionRequest {
-                    sport,
-                    venue,
-                    schedule,
-                    start_minute,
-                    end_minute,
-                    courts,
-                    filter,
-                };
-                let draft = match self.validate_subscribe(subscriber, &request) {
-                    Ok(draft) => draft,
-                    Err(rejection) => return Ok(rejected(rejection)),
-                };
+        request: &SubscriptionRequest,
+    ) -> Result<Result<Subscribed, SubscriptionRejection>> {
+        let draft = match self.validate_subscribe(subscriber, request) {
+            Ok(draft) => draft,
+            Err(rejection) => return Ok(Err(rejection)),
+        };
 
-                let id = self.store.add(draft.clone()).await?;
-                let sub = draft.into_subscription(id);
-                let open_slots = self.open_slots_for(&sub).await;
-                Ok(SubscriptionResult::Subscribed {
-                    summary: self.summarize(sub),
-                    open_slots,
-                })
-            }
-            SubscriptionCommand::List => {
-                let subs = self
-                    .store
-                    .list_for_subscriber(subscriber, self.clock.today())
-                    .await?;
-                Ok(SubscriptionResult::SubscriptionList(
-                    subs.into_iter().map(|sub| self.summarize(sub)).collect(),
-                ))
-            }
-            SubscriptionCommand::ListAll => {
-                if !self.is_admin(subscriber) {
-                    return Ok(SubscriptionResult::NotAuthorized);
-                }
-                let subs = self.store.list_all(self.clock.today()).await?;
-                Ok(SubscriptionResult::AllSubscriptions(
-                    subs.into_iter()
-                        .map(|sub| OwnedSubscriptionSummary {
-                            subscriber: sub.subscriber.clone(),
-                            summary: self.summarize(sub),
-                        })
-                        .collect(),
-                ))
-            }
-            SubscriptionCommand::Unsubscribe { id } => {
-                let removed = if self.is_admin(subscriber) {
-                    self.store.remove_any(id).await?
-                } else {
-                    self.store.remove(id, subscriber).await?
-                };
-                if removed {
-                    Ok(SubscriptionResult::Unsubscribed { id })
-                } else {
-                    Ok(SubscriptionResult::NotFound { id })
-                }
-            }
+        let id = self.store.add(draft.clone()).await?;
+        let sub = draft.into_subscription(id);
+        let open_slots = self.open_slots_for(&sub).await;
+        Ok(Ok(Subscribed {
+            summary: self.summarize(sub),
+            open_slots,
+        }))
+    }
+
+    pub async fn list(&self, subscriber: &SubscriberRef) -> Result<Vec<SubscriptionSummary>> {
+        let subs = self
+            .store
+            .list_for_subscriber(subscriber, self.clock.today())
+            .await?;
+        Ok(subs.into_iter().map(|sub| self.summarize(sub)).collect())
+    }
+
+    pub async fn unsubscribe(
+        &self,
+        subscriber: &SubscriberRef,
+        id: i64,
+    ) -> Result<UnsubscribeOutcome> {
+        let removed = if self.is_admin(subscriber) {
+            self.store.remove_any(id).await?
+        } else {
+            self.store.remove(id, subscriber).await?
+        };
+        Ok(if removed {
+            UnsubscribeOutcome::Removed { id }
+        } else {
+            UnsubscribeOutcome::NotFound { id }
+        })
+    }
+
+    pub async fn list_all(
+        &self,
+        subscriber: &SubscriberRef,
+    ) -> Result<Result<Vec<OwnedSubscriptionSummary>, NotAuthorized>> {
+        if !self.is_admin(subscriber) {
+            return Ok(Err(NotAuthorized));
         }
+        let subs = self.store.list_all(self.clock.today()).await?;
+        Ok(Ok(subs
+            .into_iter()
+            .map(|sub| OwnedSubscriptionSummary {
+                subscriber: sub.subscriber.clone(),
+                summary: self.summarize(sub),
+            })
+            .collect()))
     }
 
     fn validate_subscribe(
@@ -145,40 +131,6 @@ impl SubscriptionService {
     }
 }
 
-fn rejected(rejection: SubscriptionRejection) -> SubscriptionResult {
-    match rejection {
-        SubscriptionRejection::NoClubsConfigured { sport } => {
-            SubscriptionResult::NoClubsConfigured { sport }
-        }
-        SubscriptionRejection::UnknownClub { unknown, available } => {
-            SubscriptionResult::UnknownClub {
-                unknown: unknown.to_string(),
-                available,
-            }
-        }
-        SubscriptionRejection::InvalidTimeRange => SubscriptionResult::InvalidTimeRange,
-        SubscriptionRejection::InvalidSchedule => SubscriptionResult::InvalidSchedule,
-        SubscriptionRejection::FilterNotForSport { sport, filter } => {
-            SubscriptionResult::FilterNotForSport { sport, filter }
-        }
-        SubscriptionRejection::TooManyCourts { max } => SubscriptionResult::TooManyCourts { max },
-        SubscriptionRejection::CourtNameTooLong { max } => {
-            SubscriptionResult::CourtNameTooLong { max }
-        }
-        SubscriptionRejection::CourtCatalogsNotReady => SubscriptionResult::CourtCatalogsNotReady,
-        SubscriptionRejection::CourtsNeedClub => SubscriptionResult::CourtsNeedClub,
-        SubscriptionRejection::UnknownCourts { unknown, available } => {
-            SubscriptionResult::UnknownCourts {
-                unknown,
-                available: available.iter().map(CourtSummary::from).collect(),
-            }
-        }
-        SubscriptionRejection::FilterExcludesCourts { courts, filter } => {
-            SubscriptionResult::FilterExcludesCourts { courts, filter }
-        }
-    }
-}
-
 fn selected_court_summaries(
     registry: &VenueRegistry,
     courts: CourtSelection,
@@ -207,11 +159,11 @@ fn selected_court_summaries(
 mod tests {
     use super::super::SubscriptionService;
     use super::super::testing::{
-        PADEL_CLUB_NAME, SYNTHETIC_COURT, admin_uref, clay_court, court_id, date_subscribe_cmd,
+        PADEL_CLUB_NAME, SYNTHETIC_COURT, admin_uref, clay_court, court_id, date_subscribe_request,
         open_slot, padel_club, padel_court, padel_venue_id, registry_of, service,
         service_defaulting_to_clay, service_on, service_over, service_with_admin,
         service_with_clock, service_with_failing_slot_snapshot, service_with_slots,
-        service_with_store, service_without_padel, store, subscribe_cmd, subscribe_to_courts,
+        service_with_store, service_without_padel, store, subscribe_request, subscribe_to_courts,
         tennis_club, uref, venue_id,
     };
     use crate::model::{
@@ -220,7 +172,8 @@ mod tests {
     };
     use crate::ports::SubscriptionRepository;
     use crate::subscriptions::contract::{
-        ClubRef, CourtChoice, SelectedCourtSummary, SubscriptionCommand, SubscriptionResult,
+        ClubRef, CourtChoice, NotAuthorized, SelectedCourtSummary, Subscribed,
+        SubscriptionRejection, SubscriptionRequest, SubscriptionSummary, UnsubscribeOutcome,
     };
     use chrono::Weekday;
     use std::sync::Arc;
@@ -251,12 +204,10 @@ mod tests {
         courts: CourtChoice,
     ) -> Vec<u128> {
         let reply = svc
-            .handle(&uref("1"), subscribe_to_courts(sport, venue, courts))
+            .subscribe(&uref("1"), &subscribe_to_courts(sport, venue, courts))
             .await
             .unwrap();
-        let SubscriptionResult::Subscribed { summary, .. } = reply else {
-            panic!("expected Subscribed, got {reply:?}");
-        };
+        let Subscribed { summary, .. } = reply.unwrap();
         court_ids(summary.courts)
     }
 
@@ -325,19 +276,14 @@ mod tests {
         .await;
 
         let reply = svc
-            .handle(
+            .subscribe(
                 &uref("1"),
-                subscribe_to_courts(Sport::Tennis, None, names(&["Court 2"])),
+                &subscribe_to_courts(Sport::Tennis, None, names(&["Court 2"])),
             )
             .await
             .unwrap();
-        assert_eq!(reply, SubscriptionResult::CourtCatalogsNotReady);
-        assert_eq!(
-            svc.handle(&uref("1"), SubscriptionCommand::List)
-                .await
-                .unwrap(),
-            SubscriptionResult::SubscriptionList(vec![])
-        );
+        assert_eq!(reply, Err(SubscriptionRejection::CourtCatalogsNotReady));
+        assert!(svc.list(&uref("1")).await.unwrap().is_empty());
 
         let north = VenueId::new("north");
         let chosen = subscribed_courts(&svc, Sport::Tennis, Some(&north), names(&["Court 2"]));
@@ -376,7 +322,7 @@ mod tests {
             ]),
         )]))
         .await;
-        let choosing = |court: u128| SubscriptionCommand::Subscribe {
+        let choosing = |court: u128| SubscriptionRequest {
             sport: Sport::Tennis,
             venue: Some(club.clone()),
             schedule: Schedule::Weekday(Weekday::Tue),
@@ -386,16 +332,16 @@ mod tests {
             filter: Some(CourtFilter::CLAY),
         };
 
-        let clay = svc.handle(&uref("1"), choosing(1)).await.unwrap();
-        assert!(matches!(clay, SubscriptionResult::Subscribed { .. }));
+        let clay = svc.subscribe(&uref("1"), &choosing(1)).await.unwrap();
+        assert!(clay.is_ok());
 
-        let synthetic = svc.handle(&uref("1"), choosing(2)).await.unwrap();
+        let synthetic = svc.subscribe(&uref("1"), &choosing(2)).await.unwrap();
         assert_eq!(
             synthetic,
-            SubscriptionResult::FilterExcludesCourts {
+            Err(SubscriptionRejection::FilterExcludesCourts {
                 courts: vec!["Centre Court".to_string()],
                 filter: CourtFilter::CLAY,
-            }
+            })
         );
     }
 
@@ -415,9 +361,9 @@ mod tests {
         .await;
 
         let reply = svc
-            .handle(
+            .subscribe(
                 &uref("1"),
-                SubscriptionCommand::Subscribe {
+                &SubscriptionRequest {
                     sport: Sport::Tennis,
                     venue: None,
                     schedule: Schedule::Weekday(Weekday::Tue),
@@ -432,17 +378,14 @@ mod tests {
 
         assert_eq!(
             reply,
-            SubscriptionResult::FilterExcludesCourts {
+            Err(SubscriptionRejection::FilterExcludesCourts {
                 courts: vec!["Court 2".to_string()],
                 filter: CourtFilter::CLAY,
-            }
+            })
         );
     }
 
-    fn listed_courts(reply: SubscriptionResult) -> Vec<SelectedCourtSummary> {
-        let SubscriptionResult::SubscriptionList(mut subs) = reply else {
-            panic!("expected SubscriptionList, got {reply:?}");
-        };
+    fn listed_courts(mut subs: Vec<SubscriptionSummary>) -> Vec<SelectedCourtSummary> {
         subs.remove(0).courts.unwrap()
     }
 
@@ -461,11 +404,7 @@ mod tests {
             .unwrap()
             .set_catalog(&club, CourtCatalog::new(vec![padel_court(1, "Show Court")]));
         assert_eq!(
-            listed_courts(
-                svc.handle(&uref("1"), SubscriptionCommand::List)
-                    .await
-                    .unwrap()
-            ),
+            listed_courts(svc.list(&uref("1")).await.unwrap()),
             [SelectedCourtSummary::Identified {
                 id: Uuid::from_u128(1),
                 name: Some("Show Court".into()),
@@ -477,11 +416,7 @@ mod tests {
             .unwrap()
             .set_catalog(&club, CourtCatalog::default());
         assert_eq!(
-            listed_courts(
-                svc.handle(&uref("1"), SubscriptionCommand::List)
-                    .await
-                    .unwrap()
-            ),
+            listed_courts(svc.list(&uref("1")).await.unwrap()),
             [SelectedCourtSummary::Identified {
                 id: Uuid::from_u128(1),
                 name: None,
@@ -514,11 +449,7 @@ mod tests {
         let svc = service_on(store, registry_of(vec![(padel_club("club"), None)]));
 
         assert_eq!(
-            listed_courts(
-                svc.handle(&uref("1"), SubscriptionCommand::List)
-                    .await
-                    .unwrap()
-            ),
+            listed_courts(svc.list(&uref("1")).await.unwrap()),
             [SelectedCourtSummary::Identified {
                 id: Uuid::from_u128(1),
                 name: None,
@@ -546,11 +477,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            listed_courts(
-                svc.handle(&uref("1"), SubscriptionCommand::List)
-                    .await
-                    .unwrap()
-            ),
+            listed_courts(svc.list(&uref("1")).await.unwrap()),
             [SelectedCourtSummary::PendingName("Court 2".into())]
         );
     }
@@ -576,13 +503,7 @@ mod tests {
             .await
             .unwrap();
 
-        let SubscriptionResult::SubscriptionList(subs) = svc
-            .handle(&uref("1"), SubscriptionCommand::List)
-            .await
-            .unwrap()
-        else {
-            panic!("expected SubscriptionList");
-        };
+        let subs = svc.list(&uref("1")).await.unwrap();
 
         assert_eq!(subs.len(), 1);
         assert_eq!(subs[0].filter, CourtFilter::CLAY);
@@ -596,27 +517,18 @@ mod tests {
     async fn subscribe_persists_and_returns_summary() {
         let svc = service().await;
         let reply = svc
-            .handle(&uref("1"), subscribe_cmd(18 * 60, 20 * 60))
+            .subscribe(&uref("1"), &subscribe_request(18 * 60, 20 * 60))
             .await
             .unwrap();
-        let SubscriptionResult::Subscribed {
+        let Subscribed {
             summary,
             open_slots,
-        } = reply
-        else {
-            panic!("expected Subscribed, got {reply:?}");
-        };
+        } = reply.unwrap();
         assert_eq!(summary.schedule, Schedule::Weekday(Weekday::Tue));
         assert_eq!(summary.time_range, TimeRange::new(1080, 1200).unwrap());
         assert!(open_slots.is_empty()); // empty snapshot → empty preview
 
-        let list = svc
-            .handle(&uref("1"), SubscriptionCommand::List)
-            .await
-            .unwrap();
-        let SubscriptionResult::SubscriptionList(subs) = list else {
-            panic!("expected SubscriptionList");
-        };
+        let subs = svc.list(&uref("1")).await.unwrap();
         assert_eq!(subs.len(), 1);
         assert_eq!(subs[0].id, summary.id);
     }
@@ -625,35 +537,28 @@ mod tests {
     async fn subscribe_rejects_inverted_time_range_and_stores_nothing() {
         let svc = service().await;
         let reply = svc
-            .handle(&uref("1"), subscribe_cmd(20 * 60, 18 * 60))
+            .subscribe(&uref("1"), &subscribe_request(20 * 60, 18 * 60))
             .await
             .unwrap();
-        assert_eq!(reply, SubscriptionResult::InvalidTimeRange);
+        assert_eq!(reply, Err(SubscriptionRejection::InvalidTimeRange));
 
-        let list = svc
-            .handle(&uref("1"), SubscriptionCommand::List)
-            .await
-            .unwrap();
-        assert_eq!(list, SubscriptionResult::SubscriptionList(vec![]));
+        let list = svc.list(&uref("1")).await.unwrap();
+        assert!(list.is_empty());
     }
 
     #[tokio::test]
     async fn list_returns_only_own_subscriptions() {
         let svc = service().await;
-        svc.handle(&uref("1"), subscribe_cmd(18 * 60, 20 * 60))
-            .await
-            .unwrap();
-        svc.handle(&uref("2"), subscribe_cmd(8 * 60, 10 * 60))
-            .await
-            .unwrap();
-
-        let SubscriptionResult::SubscriptionList(subs) = svc
-            .handle(&uref("1"), SubscriptionCommand::List)
+        svc.subscribe(&uref("1"), &subscribe_request(18 * 60, 20 * 60))
             .await
             .unwrap()
-        else {
-            panic!("expected SubscriptionList");
-        };
+            .unwrap();
+        svc.subscribe(&uref("2"), &subscribe_request(8 * 60, 10 * 60))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let subs = svc.list(&uref("1")).await.unwrap();
         assert_eq!(subs.len(), 1);
         assert_eq!(subs[0].time_range.start_minute(), 18 * 60);
     }
@@ -677,12 +582,9 @@ mod tests {
             .await
             .unwrap();
 
-        let reply = svc
-            .handle(&uref("1"), SubscriptionCommand::List)
-            .await
-            .unwrap();
+        let reply = svc.list(&uref("1")).await.unwrap();
 
-        assert_eq!(reply, SubscriptionResult::SubscriptionList(vec![]));
+        assert!(reply.is_empty());
         let before_expiry = chrono::NaiveDate::from_ymd_opt(1900, 1, 1).unwrap();
         assert_eq!(store.list_all(before_expiry).await.unwrap().len(), 1);
     }
@@ -690,51 +592,37 @@ mod tests {
     #[tokio::test]
     async fn unsubscribe_removes_own_and_rejects_foreign() {
         let svc = service().await;
-        let SubscriptionResult::Subscribed { summary, .. } = svc
-            .handle(&uref("1"), subscribe_cmd(18 * 60, 20 * 60))
+        let Subscribed { summary, .. } = svc
+            .subscribe(&uref("1"), &subscribe_request(18 * 60, 20 * 60))
             .await
             .unwrap()
-        else {
-            panic!("expected Subscribed");
-        };
-
-        let foreign = svc
-            .handle(
-                &uref("2"),
-                SubscriptionCommand::Unsubscribe { id: summary.id },
-            )
-            .await
             .unwrap();
-        assert_eq!(foreign, SubscriptionResult::NotFound { id: summary.id });
 
-        let own = svc
-            .handle(
-                &uref("1"),
-                SubscriptionCommand::Unsubscribe { id: summary.id },
-            )
-            .await
-            .unwrap();
-        assert_eq!(own, SubscriptionResult::Unsubscribed { id: summary.id });
+        let foreign = svc.unsubscribe(&uref("2"), summary.id).await.unwrap();
+        assert_eq!(foreign, UnsubscribeOutcome::NotFound { id: summary.id });
+
+        let own = svc.unsubscribe(&uref("1"), summary.id).await.unwrap();
+        assert_eq!(own, UnsubscribeOutcome::Removed { id: summary.id });
     }
 
     #[tokio::test]
     async fn subscribe_rejects_equal_start_and_end() {
         let svc = service().await;
         let reply = svc
-            .handle(&uref("1"), subscribe_cmd(18 * 60, 18 * 60))
+            .subscribe(&uref("1"), &subscribe_request(18 * 60, 18 * 60))
             .await
             .unwrap();
-        assert_eq!(reply, SubscriptionResult::InvalidTimeRange);
+        assert_eq!(reply, Err(SubscriptionRejection::InvalidTimeRange));
     }
 
     #[tokio::test]
     async fn subscribe_rejects_time_range_outside_one_day() {
         let svc = service().await;
         let reply = svc
-            .handle(&uref("1"), subscribe_cmd(23 * 60, 25 * 60))
+            .subscribe(&uref("1"), &subscribe_request(23 * 60, 25 * 60))
             .await
             .unwrap();
-        assert_eq!(reply, SubscriptionResult::InvalidTimeRange);
+        assert_eq!(reply, Err(SubscriptionRejection::InvalidTimeRange));
     }
 
     #[tokio::test]
@@ -743,16 +631,14 @@ mod tests {
         let svc = service_with_clock(today).await;
         let yesterday = today.pred_opt().unwrap();
         let reply = svc
-            .handle(&uref("1"), date_subscribe_cmd(yesterday, 18 * 60, 20 * 60))
+            .subscribe(
+                &uref("1"),
+                &date_subscribe_request(yesterday, 18 * 60, 20 * 60),
+            )
             .await
             .unwrap();
-        assert_eq!(reply, SubscriptionResult::InvalidSchedule);
-        assert_eq!(
-            svc.handle(&uref("1"), SubscriptionCommand::List)
-                .await
-                .unwrap(),
-            SubscriptionResult::SubscriptionList(vec![])
-        );
+        assert_eq!(reply, Err(SubscriptionRejection::InvalidSchedule));
+        assert!(svc.list(&uref("1")).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -760,10 +646,10 @@ mod tests {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
         let svc = service_with_clock(today).await;
         let reply = svc
-            .handle(&uref("1"), date_subscribe_cmd(today, 18 * 60, 20 * 60))
+            .subscribe(&uref("1"), &date_subscribe_request(today, 18 * 60, 20 * 60))
             .await
             .unwrap();
-        assert!(matches!(reply, SubscriptionResult::Subscribed { .. }));
+        assert!(reply.is_ok());
     }
 
     #[tokio::test]
@@ -771,83 +657,66 @@ mod tests {
         let svc = service().await;
         let far = chrono::NaiveDate::from_ymd_opt(2099, 12, 31).unwrap();
         let reply = svc
-            .handle(&uref("1"), date_subscribe_cmd(far, 18 * 60, 20 * 60))
+            .subscribe(&uref("1"), &date_subscribe_request(far, 18 * 60, 20 * 60))
             .await
             .unwrap();
-        assert!(matches!(reply, SubscriptionResult::Subscribed { .. }));
+        assert!(reply.is_ok());
     }
 
     #[tokio::test]
     async fn listall_returns_everything_for_admin() {
         let svc = service_with_admin().await;
-        svc.handle(&uref("1"), subscribe_cmd(18 * 60, 20 * 60))
-            .await
-            .unwrap();
-        svc.handle(&uref("2"), subscribe_cmd(8 * 60, 10 * 60))
-            .await
-            .unwrap();
-
-        let SubscriptionResult::AllSubscriptions(all) = svc
-            .handle(&admin_uref(), SubscriptionCommand::ListAll)
+        svc.subscribe(&uref("1"), &subscribe_request(18 * 60, 20 * 60))
             .await
             .unwrap()
-        else {
-            panic!("expected AllSubscriptions");
-        };
+            .unwrap();
+        svc.subscribe(&uref("2"), &subscribe_request(8 * 60, 10 * 60))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let all = svc.list_all(&admin_uref()).await.unwrap().unwrap();
         assert_eq!(all.len(), 2);
     }
 
     #[tokio::test]
     async fn listall_denied_for_non_admin() {
         let svc = service_with_admin().await;
-        let reply = svc
-            .handle(&uref("1"), SubscriptionCommand::ListAll)
-            .await
-            .unwrap();
-        assert_eq!(reply, SubscriptionResult::NotAuthorized);
+        let reply = svc.list_all(&uref("1")).await.unwrap();
+        assert_eq!(reply, Err(NotAuthorized));
     }
 
     #[tokio::test]
     async fn admin_can_unsubscribe_foreign_subscription() {
         let svc = service_with_admin().await;
-        let SubscriptionResult::Subscribed { summary: s, .. } = svc
-            .handle(&uref("1"), subscribe_cmd(18 * 60, 20 * 60))
+        let Subscribed { summary: s, .. } = svc
+            .subscribe(&uref("1"), &subscribe_request(18 * 60, 20 * 60))
             .await
             .unwrap()
-        else {
-            panic!("expected Subscribed");
-        };
-        let reply = svc
-            .handle(&admin_uref(), SubscriptionCommand::Unsubscribe { id: s.id })
-            .await
             .unwrap();
-        assert_eq!(reply, SubscriptionResult::Unsubscribed { id: s.id });
+        let reply = svc.unsubscribe(&admin_uref(), s.id).await.unwrap();
+        assert_eq!(reply, UnsubscribeOutcome::Removed { id: s.id });
     }
 
     #[tokio::test]
     async fn non_admin_cannot_unsubscribe_foreign_subscription() {
         let svc = service_with_admin().await;
-        let SubscriptionResult::Subscribed { summary: s, .. } = svc
-            .handle(&uref("1"), subscribe_cmd(18 * 60, 20 * 60))
+        let Subscribed { summary: s, .. } = svc
+            .subscribe(&uref("1"), &subscribe_request(18 * 60, 20 * 60))
             .await
             .unwrap()
-        else {
-            panic!("expected Subscribed");
-        };
-        let reply = svc
-            .handle(&uref("2"), SubscriptionCommand::Unsubscribe { id: s.id })
-            .await
             .unwrap();
-        assert_eq!(reply, SubscriptionResult::NotFound { id: s.id });
+        let reply = svc.unsubscribe(&uref("2"), s.id).await.unwrap();
+        assert_eq!(reply, UnsubscribeOutcome::NotFound { id: s.id });
     }
 
     #[tokio::test]
     async fn subscribe_passes_courts_through_to_summary() {
         let svc = service().await;
         let reply = svc
-            .handle(
+            .subscribe(
                 &uref("1"),
-                SubscriptionCommand::Subscribe {
+                &SubscriptionRequest {
                     sport: Sport::Tennis,
                     venue: None,
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
@@ -859,9 +728,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let SubscriptionResult::Subscribed { summary, .. } = reply else {
-            panic!("expected Subscribed");
-        };
+        let Subscribed { summary, .. } = reply.unwrap();
         assert_eq!(summary.courts, Some(vec![tennis_court("Court 2")]));
     }
 
@@ -870,9 +737,9 @@ mod tests {
         let svc = service().await;
         for input in ["court 2", "2", "Cort 2"] {
             let reply = svc
-                .handle(
+                .subscribe(
                     &uref("1"),
-                    SubscriptionCommand::Subscribe {
+                    &SubscriptionRequest {
                         sport: Sport::Tennis,
                         venue: None,
                         schedule: Schedule::Weekday(chrono::Weekday::Tue),
@@ -884,15 +751,13 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let SubscriptionResult::Subscribed { summary, .. } = reply else {
-                panic!("expected Subscribed for {input:?}");
-            };
+            let Subscribed { summary, .. } = reply.unwrap();
             assert_eq!(summary.courts, Some(vec![tennis_court("Court 2")]));
         }
     }
 
-    fn courts_cmd(courts: Vec<String>) -> SubscriptionCommand {
-        SubscriptionCommand::Subscribe {
+    fn courts_request(courts: Vec<String>) -> SubscriptionRequest {
+        SubscriptionRequest {
             sport: Sport::Tennis,
             venue: None,
             schedule: Schedule::Weekday(Weekday::Tue),
@@ -908,21 +773,18 @@ mod tests {
         let svc = service().await;
         let too_many = vec!["Court 2".to_string(); 21];
         assert_eq!(
-            svc.handle(&uref("1"), courts_cmd(too_many)).await.unwrap(),
-            SubscriptionResult::TooManyCourts { max: 20 }
-        );
-        assert_eq!(
-            svc.handle(&uref("1"), courts_cmd(vec!["x".repeat(101)]))
+            svc.subscribe(&uref("1"), &courts_request(too_many))
                 .await
                 .unwrap(),
-            SubscriptionResult::CourtNameTooLong { max: 100 }
+            Err(SubscriptionRejection::TooManyCourts { max: 20 })
         );
         assert_eq!(
-            svc.handle(&uref("1"), SubscriptionCommand::List)
+            svc.subscribe(&uref("1"), &courts_request(vec!["x".repeat(101)]))
                 .await
                 .unwrap(),
-            SubscriptionResult::SubscriptionList(vec![])
+            Err(SubscriptionRejection::CourtNameTooLong { max: 100 })
         );
+        assert!(svc.list(&uref("1")).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -933,30 +795,20 @@ mod tests {
         let chosen = subscribed_courts(&svc, Sport::Tennis, None, names(&["Centre Court"])).await;
         assert_eq!(chosen.len(), 25);
 
-        assert_eq!(
-            listed_courts(
-                svc.handle(&uref("1"), SubscriptionCommand::List)
-                    .await
-                    .unwrap()
-            )
-            .len(),
-            25
-        );
+        assert_eq!(listed_courts(svc.list(&uref("1")).await.unwrap()).len(), 25);
     }
 
     #[tokio::test]
     async fn courts_named_twice_are_stored_once() {
         let svc = service().await;
-        let SubscriptionResult::Subscribed { summary, .. } = svc
-            .handle(
+        let Subscribed { summary, .. } = svc
+            .subscribe(
                 &uref("1"),
-                courts_cmd(vec!["2".into(), "Court 2".into(), "5".into()]),
+                &courts_request(vec!["2".into(), "Court 2".into(), "5".into()]),
             )
             .await
             .unwrap()
-        else {
-            panic!("expected Subscribed");
-        };
+            .unwrap();
         assert_eq!(
             summary.courts,
             Some(vec![tennis_court("Court 2"), tennis_court("Court 5")])
@@ -966,10 +818,10 @@ mod tests {
     #[tokio::test]
     async fn an_empty_court_list_means_every_court() {
         let svc = service_defaulting_to_clay().await;
-        let SubscriptionResult::Subscribed { summary, .. } = svc
-            .handle(
+        let Subscribed { summary, .. } = svc
+            .subscribe(
                 &uref("1"),
-                SubscriptionCommand::Subscribe {
+                &SubscriptionRequest {
                     sport: Sport::Tennis,
                     venue: None,
                     schedule: Schedule::Weekday(Weekday::Tue),
@@ -981,9 +833,7 @@ mod tests {
             )
             .await
             .unwrap()
-        else {
-            panic!("expected Subscribed");
-        };
+            .unwrap();
         assert_eq!(summary.courts, None);
         assert_eq!(summary.filter, CourtFilter::CLAY);
     }
@@ -992,9 +842,9 @@ mod tests {
     async fn subscribe_rejects_unknown_courts_and_stores_nothing() {
         let svc = service().await;
         let reply = svc
-            .handle(
+            .subscribe(
                 &uref("1"),
-                SubscriptionCommand::Subscribe {
+                &SubscriptionRequest {
                     sport: Sport::Tennis,
                     venue: None,
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
@@ -1009,17 +859,12 @@ mod tests {
             )
             .await
             .unwrap();
-        let SubscriptionResult::UnknownCourts { unknown, available } = reply else {
+        let Err(SubscriptionRejection::UnknownCourts { unknown, available }) = reply else {
             panic!("expected UnknownCourts, got {reply:?}");
         };
         assert_eq!(unknown, CourtChoice::Names(vec!["Court 42".to_string()]));
-        assert!(available.iter().any(|court| court.name == "Court 2"));
-        assert_eq!(
-            svc.handle(&uref("1"), SubscriptionCommand::List)
-                .await
-                .unwrap(),
-            SubscriptionResult::SubscriptionList(vec![])
-        );
+        assert!(available.iter().any(|court| court.name() == "Court 2"));
+        assert!(svc.list(&uref("1")).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1027,9 +872,9 @@ mod tests {
         let svc = service().await;
         let stranger = uuid::Uuid::from_u128(4242);
         let reply = svc
-            .handle(
+            .subscribe(
                 &uref("1"),
-                SubscriptionCommand::Subscribe {
+                &SubscriptionRequest {
                     sport: Sport::Tennis,
                     venue: Some(venue_id()),
                     schedule: Schedule::Weekday(Weekday::Tue),
@@ -1041,38 +886,31 @@ mod tests {
             )
             .await
             .unwrap();
-        let SubscriptionResult::UnknownCourts { unknown, .. } = reply else {
+        let Err(SubscriptionRejection::UnknownCourts { unknown, .. }) = reply else {
             panic!("expected UnknownCourts, got {reply:?}");
         };
         assert_eq!(unknown, CourtChoice::Ids(vec![stranger]));
-        assert_eq!(
-            svc.handle(&uref("1"), SubscriptionCommand::List)
-                .await
-                .unwrap(),
-            SubscriptionResult::SubscriptionList(vec![])
-        );
+        assert!(svc.list(&uref("1")).await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn subscribe_without_courts_takes_the_configured_default_filter() {
         let svc = service_defaulting_to_clay().await;
-        let SubscriptionResult::Subscribed { summary, .. } = svc
-            .handle(&uref("1"), subscribe_cmd(18 * 60, 20 * 60))
+        let Subscribed { summary, .. } = svc
+            .subscribe(&uref("1"), &subscribe_request(18 * 60, 20 * 60))
             .await
             .unwrap()
-        else {
-            panic!("expected Subscribed");
-        };
+            .unwrap();
         assert_eq!(summary.filter, CourtFilter::CLAY);
     }
 
     #[tokio::test]
     async fn naming_courts_overrides_the_default_filter() {
         let svc = service_defaulting_to_clay().await;
-        let SubscriptionResult::Subscribed { summary, .. } = svc
-            .handle(
+        let Subscribed { summary, .. } = svc
+            .subscribe(
                 &uref("1"),
-                SubscriptionCommand::Subscribe {
+                &SubscriptionRequest {
                     sport: Sport::Tennis,
                     venue: None,
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
@@ -1084,9 +922,7 @@ mod tests {
             )
             .await
             .unwrap()
-        else {
-            panic!("expected Subscribed");
-        };
+            .unwrap();
         assert_eq!(summary.courts, Some(vec![tennis_court(SYNTHETIC_COURT)]));
         assert_eq!(summary.filter, CourtFilter::Any);
     }
@@ -1094,10 +930,10 @@ mod tests {
     #[tokio::test]
     async fn an_explicit_filter_beats_the_configured_default() {
         let svc = service_defaulting_to_clay().await;
-        let SubscriptionResult::Subscribed { summary, .. } = svc
-            .handle(
+        let Subscribed { summary, .. } = svc
+            .subscribe(
                 &uref("1"),
-                SubscriptionCommand::Subscribe {
+                &SubscriptionRequest {
                     sport: Sport::Tennis,
                     venue: None,
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
@@ -1109,9 +945,7 @@ mod tests {
             )
             .await
             .unwrap()
-        else {
-            panic!("expected Subscribed");
-        };
+            .unwrap();
         assert_eq!(
             summary.filter,
             CourtFilter::Surface(CourtSurface::Synthetic)
@@ -1122,9 +956,9 @@ mod tests {
     async fn a_filter_contradicting_the_named_courts_is_rejected_and_stores_nothing() {
         let svc = service().await;
         let reply = svc
-            .handle(
+            .subscribe(
                 &uref("1"),
-                SubscriptionCommand::Subscribe {
+                &SubscriptionRequest {
                     sport: Sport::Tennis,
                     venue: None,
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
@@ -1139,26 +973,21 @@ mod tests {
 
         assert_eq!(
             reply,
-            SubscriptionResult::FilterExcludesCourts {
+            Err(SubscriptionRejection::FilterExcludesCourts {
                 courts: vec![SYNTHETIC_COURT.to_string()],
                 filter: CourtFilter::CLAY,
-            }
+            })
         );
-        assert_eq!(
-            svc.handle(&uref("1"), SubscriptionCommand::List)
-                .await
-                .unwrap(),
-            SubscriptionResult::SubscriptionList(vec![])
-        );
+        assert!(svc.list(&uref("1")).await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn a_filter_matching_the_named_courts_is_accepted() {
         let svc = service().await;
-        let SubscriptionResult::Subscribed { summary, .. } = svc
-            .handle(
+        let Subscribed { summary, .. } = svc
+            .subscribe(
                 &uref("1"),
-                SubscriptionCommand::Subscribe {
+                &SubscriptionRequest {
                     sport: Sport::Tennis,
                     venue: None,
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
@@ -1170,9 +999,7 @@ mod tests {
             )
             .await
             .unwrap()
-        else {
-            panic!("expected Subscribed");
-        };
+            .unwrap();
         assert_eq!(summary.filter, CourtFilter::CLAY);
     }
 
@@ -1185,9 +1012,9 @@ mod tests {
         ];
         for (sport, filter) in cases {
             let reply = svc
-                .handle(
+                .subscribe(
                     &uref("1"),
-                    SubscriptionCommand::Subscribe {
+                    &SubscriptionRequest {
                         sport,
                         venue: None,
                         schedule: Schedule::Weekday(Weekday::Tue),
@@ -1201,19 +1028,14 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 reply,
-                SubscriptionResult::FilterNotForSport { sport, filter }
+                Err(SubscriptionRejection::FilterNotForSport { sport, filter })
             );
         }
-        assert_eq!(
-            svc.handle(&uref("1"), SubscriptionCommand::List)
-                .await
-                .unwrap(),
-            SubscriptionResult::SubscriptionList(vec![])
-        );
+        assert!(svc.list(&uref("1")).await.unwrap().is_empty());
     }
 
-    fn padel_cmd(venue: Option<crate::model::VenueId>) -> SubscriptionCommand {
-        SubscriptionCommand::Subscribe {
+    fn padel_request(venue: Option<crate::model::VenueId>) -> SubscriptionRequest {
+        SubscriptionRequest {
             sport: Sport::Padel,
             venue,
             schedule: Schedule::Weekday(Weekday::Tue),
@@ -1228,11 +1050,11 @@ mod tests {
     async fn padel_does_not_inherit_the_configured_tennis_default() {
         let svc = service_defaulting_to_clay().await;
 
-        let SubscriptionResult::Subscribed { summary, .. } =
-            svc.handle(&uref("1"), padel_cmd(None)).await.unwrap()
-        else {
-            panic!("expected Subscribed");
-        };
+        let Subscribed { summary, .. } = svc
+            .subscribe(&uref("1"), &padel_request(None))
+            .await
+            .unwrap()
+            .unwrap();
 
         assert_eq!(summary.filter, CourtFilter::Any);
         assert_eq!(summary.sport, Sport::Padel);
@@ -1242,13 +1064,11 @@ mod tests {
     async fn padel_records_the_club_it_was_given_and_none_for_all_clubs() {
         let svc = service().await;
 
-        let SubscriptionResult::Subscribed { summary, .. } = svc
-            .handle(&uref("1"), padel_cmd(Some(padel_venue_id())))
+        let Subscribed { summary, .. } = svc
+            .subscribe(&uref("1"), &padel_request(Some(padel_venue_id())))
             .await
             .unwrap()
-        else {
-            panic!("expected Subscribed");
-        };
+            .unwrap();
         assert_eq!(
             summary.club,
             Some(ClubRef {
@@ -1257,11 +1077,11 @@ mod tests {
             })
         );
 
-        let SubscriptionResult::Subscribed { summary, .. } =
-            svc.handle(&uref("1"), padel_cmd(None)).await.unwrap()
-        else {
-            panic!("expected Subscribed");
-        };
+        let Subscribed { summary, .. } = svc
+            .subscribe(&uref("1"), &padel_request(None))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(summary.club, None);
     }
 
@@ -1270,17 +1090,17 @@ mod tests {
         let svc = service().await;
 
         let reply = svc
-            .handle(
+            .subscribe(
                 &uref("1"),
-                padel_cmd(Some(crate::model::VenueId::new("not-a-club"))),
+                &padel_request(Some(crate::model::VenueId::new("not-a-club"))),
             )
             .await
             .unwrap();
 
-        let SubscriptionResult::UnknownClub { unknown, available } = reply else {
+        let Err(SubscriptionRejection::UnknownClub { unknown, available }) = reply else {
             panic!("expected UnknownClub, got {reply:?}");
         };
-        assert_eq!(unknown, "not-a-club");
+        assert_eq!(unknown, VenueId::new("not-a-club"));
         assert_eq!(
             available,
             vec![ClubRef {
@@ -1288,45 +1108,36 @@ mod tests {
                 name: PADEL_CLUB_NAME.to_string(),
             }]
         );
-        assert_eq!(
-            svc.handle(&uref("1"), SubscriptionCommand::List)
-                .await
-                .unwrap(),
-            SubscriptionResult::SubscriptionList(vec![])
-        );
+        assert!(svc.list(&uref("1")).await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn padel_with_no_configured_club_says_so_and_stores_nothing() {
         let svc = service_without_padel().await;
 
-        let reply = svc.handle(&uref("1"), padel_cmd(None)).await.unwrap();
+        let reply = svc
+            .subscribe(&uref("1"), &padel_request(None))
+            .await
+            .unwrap();
 
         assert_eq!(
             reply,
-            SubscriptionResult::NoClubsConfigured {
+            Err(SubscriptionRejection::NoClubsConfigured {
                 sport: Sport::Padel
-            }
+            })
         );
-        assert_eq!(
-            svc.handle(&uref("1"), SubscriptionCommand::List)
-                .await
-                .unwrap(),
-            SubscriptionResult::SubscriptionList(vec![])
-        );
+        assert!(svc.list(&uref("1")).await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn tennis_still_takes_the_configured_default() {
         let svc = service_defaulting_to_clay().await;
 
-        let SubscriptionResult::Subscribed { summary, .. } = svc
-            .handle(&uref("1"), subscribe_cmd(18 * 60, 20 * 60))
+        let Subscribed { summary, .. } = svc
+            .subscribe(&uref("1"), &subscribe_request(18 * 60, 20 * 60))
             .await
             .unwrap()
-        else {
-            panic!("expected Subscribed");
-        };
+            .unwrap();
 
         assert_eq!(summary.filter, CourtFilter::CLAY);
         assert_eq!(summary.sport, Sport::Tennis);
@@ -1353,13 +1164,11 @@ mod tests {
         .await;
 
         let reply = svc
-            .handle(&uref("1"), subscribe_cmd(18 * 60, 20 * 60))
+            .subscribe(&uref("1"), &subscribe_request(18 * 60, 20 * 60))
             .await
             .unwrap();
 
-        let SubscriptionResult::Subscribed { open_slots, .. } = reply else {
-            panic!("expected Subscribed, got {reply:?}");
-        };
+        let Subscribed { open_slots, .. } = reply.unwrap();
         assert_eq!(open_slots.len(), 2);
         assert_eq!(open_slots[0].court, "Court 5"); // 18:00 sorts first
         assert_eq!(open_slots[1].court, "Court 2");
@@ -1377,9 +1186,9 @@ mod tests {
         .await;
 
         let reply = svc
-            .handle(
+            .subscribe(
                 &uref("1"),
-                SubscriptionCommand::Subscribe {
+                &SubscriptionRequest {
                     sport: Sport::Tennis,
                     venue: None,
                     schedule: Schedule::Weekday(chrono::Weekday::Tue),
@@ -1392,9 +1201,7 @@ mod tests {
             .await
             .unwrap();
 
-        let SubscriptionResult::Subscribed { open_slots, .. } = reply else {
-            panic!("expected Subscribed, got {reply:?}");
-        };
+        let Subscribed { open_slots, .. } = reply.unwrap();
         assert_eq!(open_slots.len(), 1);
         assert_eq!(open_slots[0].court, "Court 5");
     }
@@ -1411,13 +1218,11 @@ mod tests {
         .await;
 
         let reply = svc
-            .handle(&uref("1"), subscribe_cmd(18 * 60, 20 * 60))
+            .subscribe(&uref("1"), &subscribe_request(18 * 60, 20 * 60))
             .await
             .unwrap();
 
-        let SubscriptionResult::Subscribed { open_slots, .. } = reply else {
-            panic!("expected Subscribed, got {reply:?}");
-        };
+        let Subscribed { open_slots, .. } = reply.unwrap();
         assert_eq!(open_slots.len(), 1);
         assert_eq!(open_slots[0].court, "Court 5");
     }
@@ -1427,22 +1232,14 @@ mod tests {
         let svc = service_with_failing_slot_snapshot().await;
 
         let reply = svc
-            .handle(&uref("1"), subscribe_cmd(18 * 60, 20 * 60))
+            .subscribe(&uref("1"), &subscribe_request(18 * 60, 20 * 60))
             .await
             .unwrap();
 
-        let SubscriptionResult::Subscribed { open_slots, .. } = reply else {
-            panic!("expected Subscribed, got {reply:?}");
-        };
+        let Subscribed { open_slots, .. } = reply.unwrap();
         assert!(open_slots.is_empty());
 
-        let SubscriptionResult::SubscriptionList(subs) = svc
-            .handle(&uref("1"), SubscriptionCommand::List)
-            .await
-            .unwrap()
-        else {
-            panic!("expected SubscriptionList");
-        };
+        let subs = svc.list(&uref("1")).await.unwrap();
         assert_eq!(subs.len(), 1);
     }
 }

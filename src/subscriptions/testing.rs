@@ -11,7 +11,7 @@ use crate::model::{
 use crate::ports::BookableSlotSnapshotRepository;
 use crate::store::SqliteStore;
 use crate::subscriptions::contract::{
-    AlertSender, AvailabilityAlert, CourtChoice, SubscriptionCommand,
+    AlertSender, AvailabilityAlert, CourtChoice, SubscriptionRequest,
 };
 use uuid::Uuid;
 
@@ -292,8 +292,8 @@ pub(super) fn subscribe_to_courts(
     sport: Sport,
     venue: Option<&VenueId>,
     courts: CourtChoice,
-) -> SubscriptionCommand {
-    SubscriptionCommand::Subscribe {
+) -> SubscriptionRequest {
+    SubscriptionRequest {
         sport,
         venue: venue.cloned(),
         schedule: Schedule::Weekday(Weekday::Tue),
@@ -371,8 +371,8 @@ impl AlertSender for RecordingSender {
     }
 }
 
-pub(super) fn subscribe_cmd(from: u32, to: u32) -> SubscriptionCommand {
-    SubscriptionCommand::Subscribe {
+pub(super) fn subscribe_request(from: u32, to: u32) -> SubscriptionRequest {
+    SubscriptionRequest {
         sport: Sport::Tennis,
         venue: None,
         schedule: Schedule::Weekday(Weekday::Tue),
@@ -383,8 +383,8 @@ pub(super) fn subscribe_cmd(from: u32, to: u32) -> SubscriptionCommand {
     }
 }
 
-pub(super) fn date_subscribe_cmd(date: NaiveDate, from: u32, to: u32) -> SubscriptionCommand {
-    SubscriptionCommand::Subscribe {
+pub(super) fn date_subscribe_request(date: NaiveDate, from: u32, to: u32) -> SubscriptionRequest {
+    SubscriptionRequest {
         sport: Sport::Tennis,
         venue: None,
         schedule: Schedule::Date(date),

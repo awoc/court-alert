@@ -138,9 +138,7 @@ mod tests {
     };
     use crate::store::SqliteStore;
     use crate::subscriptions::SubscriptionService;
-    use crate::subscriptions::contract::{
-        SelectedCourtSummary, SubscriptionCommand, SubscriptionResult,
-    };
+    use crate::subscriptions::contract::SelectedCourtSummary;
     use crate::subscriptions::testing::{
         RecordingSender, clay_court, dispatcher_on, padel_club, padel_court, registry_of,
         service_on, store, tennis_club, tuesday_slot, uref,
@@ -666,15 +664,8 @@ mod tests {
             .await;
         deployment.pass().await;
 
-        let reply = deployment
-            .service
-            .handle(&uref("1"), SubscriptionCommand::List)
-            .await
-            .unwrap();
+        let subs = deployment.service.list(&uref("1")).await.unwrap();
 
-        let SubscriptionResult::SubscriptionList(subs) = reply else {
-            panic!("expected SubscriptionList, got {reply:?}");
-        };
         assert_eq!(
             subs[0].courts,
             Some(vec![SelectedCourtSummary::Identified {

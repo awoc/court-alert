@@ -16,7 +16,7 @@ use crate::model::{
 };
 use crate::ports::{BookableSlotSnapshotRepository, SubscriptionRepository};
 use crate::store::SqliteStore;
-use crate::subscriptions::contract::{AlertSender, AvailabilityAlert, SubscriptionCommand};
+use crate::subscriptions::contract::{AlertSender, AvailabilityAlert, SubscriptionRequest};
 use crate::subscriptions::testing::registry;
 use crate::subscriptions::{AlertDispatcher, BerlinClock, ClubDirectory, SubscriptionService};
 use uuid::Uuid;
@@ -1078,9 +1078,9 @@ async fn subscribe_to_padel_on_tuesday_evenings(
 ) {
     services
         .subscriptions
-        .handle(
+        .subscribe(
             subscriber,
-            SubscriptionCommand::Subscribe {
+            &SubscriptionRequest {
                 sport: Sport::Padel,
                 venue: None,
                 schedule: Schedule::Weekday(chrono::Weekday::Tue),
@@ -1091,6 +1091,7 @@ async fn subscribe_to_padel_on_tuesday_evenings(
             },
         )
         .await
+        .unwrap()
         .unwrap();
 }
 

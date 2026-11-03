@@ -16,13 +16,15 @@ use tracing::{error, info, warn};
 use crate::integrations::ReadySignal;
 use crate::model::Sport;
 use crate::model::SubscriberRef;
-use crate::subscriptions::contract::{SubscriptionCommand, SubscriptionResult};
 use crate::subscriptions::{ClubDirectory, SubscriptionService};
 
 use super::INTEGRATION;
 use super::commands::register_commands;
-use super::parse::{parse_component, parse_interaction, unsubscribe_custom_id};
-use super::render::{ReplyMessage, render_button_reply, render_help, render_reply, render_text};
+use super::parse::{SlashCommand, parse_component, parse_interaction, unsubscribe_custom_id};
+use super::render::{
+    ReplyMessage, render_button_unsubscribe, render_help, render_list, render_list_all,
+    render_subscribe, render_text, render_unsubscribe,
+};
 
 pub(super) struct Handler {
     pub(super) service: Arc<SubscriptionService>,
@@ -74,7 +76,7 @@ impl Handler {
             render_help()
         } else {
             match parse_interaction(cmd) {
-                Ok(command) => self.run(cmd.user.id, command, render_reply).await,
+                Ok(command) => or_internal_error(self.run(cmd.user.id, command).await),
                 Err(e) => render_text(&format!("Error: {e:#}")),
             }
         };
@@ -90,8 +92,8 @@ impl Handler {
     }
 
     async fn handle_component(&self, ctx: &Context, component: &ComponentInteraction) {
-        let command = match parse_component(&component.data.custom_id) {
-            Ok(command) => command,
+        let id = match parse_component(&component.data.custom_id) {
+            Ok(id) => id,
             Err(e) => {
                 warn!(error = %format!("{e:#}"), "unknown component interaction");
                 // Every interaction needs an answer within 3s, or the click ends
@@ -109,32 +111,43 @@ impl Handler {
             error!(error = %format!("{e:#}"), "failed to acknowledge component interaction");
             return;
         }
-        let messages = self
-            .run(component.user.id, command, render_button_reply)
+        let outcome = self
+            .service
+            .unsubscribe(&subscriber_of(component.user.id), id)
             .await;
+        let messages = or_internal_error(outcome.map(render_button_unsubscribe));
         if let Err(e) = replace_message(ctx, component, &messages).await {
             error!(error = %format!("{e:#}"), "failed to update interaction message");
         }
     }
 
-    async fn run(
-        &self,
-        user_id: UserId,
-        command: SubscriptionCommand,
-        render: impl Fn(&SubscriptionResult) -> Vec<ReplyMessage> + Send,
-    ) -> Vec<ReplyMessage> {
-        let subscriber = SubscriberRef {
-            integration: INTEGRATION,
-            subscriber_id: user_id.get().to_string(),
-        };
-        match self.service.handle(&subscriber, command).await {
-            Ok(reply) => render(&reply),
-            Err(e) => {
-                error!(error = %format!("{e:#}"), "command handling failed");
-                render_text("Error: something went wrong internally, please try again later.")
+    async fn run(&self, user_id: UserId, command: SlashCommand) -> Result<Vec<ReplyMessage>> {
+        let subscriber = subscriber_of(user_id);
+        Ok(match command {
+            SlashCommand::Subscribe(request) => {
+                render_subscribe(&self.service.subscribe(&subscriber, &request).await?)
             }
-        }
+            SlashCommand::List => render_list(&self.service.list(&subscriber).await?),
+            SlashCommand::Unsubscribe { id } => {
+                render_unsubscribe(self.service.unsubscribe(&subscriber, id).await?)
+            }
+            SlashCommand::ListAll => render_list_all(&self.service.list_all(&subscriber).await?),
+        })
     }
+}
+
+fn subscriber_of(user_id: UserId) -> SubscriberRef {
+    SubscriberRef {
+        integration: INTEGRATION,
+        subscriber_id: user_id.get().to_string(),
+    }
+}
+
+fn or_internal_error(reply: Result<Vec<ReplyMessage>>) -> Vec<ReplyMessage> {
+    reply.unwrap_or_else(|e| {
+        error!(error = %format!("{e:#}"), "command handling failed");
+        render_text("Error: something went wrong internally, please try again later.")
+    })
 }
 
 async fn defer(ctx: &Context, cmd: &CommandInteraction, ephemeral: bool) -> Result<()> {
@@ -340,10 +353,6 @@ mod tests {
         let rows = components(&message);
         assert_eq!(rows.len(), 1);
         // The id has to survive the round trip, or the click cannot be routed.
-        let command = parse_component(&unsubscribe_custom_id(7)).unwrap();
-        assert!(matches!(
-            command,
-            SubscriptionCommand::Unsubscribe { id: 7 }
-        ));
+        assert_eq!(parse_component(&unsubscribe_custom_id(7)).unwrap(), 7);
     }
 }
