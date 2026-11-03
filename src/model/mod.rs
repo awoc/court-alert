@@ -15,10 +15,12 @@ pub use slot::{
 };
 pub use subscription::{
     CourtSelection, IntegrationId, MINUTES_PER_DAY, Schedule, SelectedCourt, SubscriberRef,
-    Subscription, SubscriptionDraft, TimeRange,
+    Subscription, TimeRange,
 };
+#[cfg(test)]
+pub(crate) use subscription_policy::UncheckedDraft;
 pub use subscription_policy::{
-    CourtChoice, SubscriptionPolicy, SubscriptionRejection, SubscriptionRequest,
+    CourtChoice, SubscriptionDraft, SubscriptionPolicy, SubscriptionRejection, SubscriptionRequest,
     courts_with_stored_names,
 };
 pub use venue::{OperatingWindow, Provider, Sport, Venue, VenueId, VenueIdentity};

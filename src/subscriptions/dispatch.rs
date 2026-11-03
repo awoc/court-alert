@@ -136,7 +136,7 @@ mod tests {
     };
     use crate::model::{
         AvailabilityChange, BookableSlot, BookableSlotId, CourtCatalog, CourtFilter,
-        CourtSelection, Schedule, Sport, SubscriptionDraft, TimeRange, VenueId, VenueRegistry,
+        CourtSelection, Schedule, Sport, TimeRange, UncheckedDraft, VenueId, VenueRegistry,
     };
     use crate::ports::SubscriptionRepository;
     use crate::subscriptions::SubscriptionService;
@@ -492,15 +492,18 @@ mod tests {
     async fn daily_cleanup_removes_expired_date_subscriptions() {
         let (svc, store) = service_with_store().await;
         store
-            .add(SubscriptionDraft {
-                subscriber: uref("1"),
-                sport: Sport::Tennis,
-                venue: None,
-                schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
-                time_range: TimeRange::new(0, 24 * 60).unwrap(),
-                courts: CourtSelection::Every,
-                filter: CourtFilter::Any,
-            })
+            .add(
+                UncheckedDraft {
+                    subscriber: uref("1"),
+                    sport: Sport::Tennis,
+                    venue: None,
+                    schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
+                    time_range: TimeRange::new(0, 24 * 60).unwrap(),
+                    courts: CourtSelection::Every,
+                    filter: CourtFilter::Any,
+                }
+                .assume_valid(),
+            )
             .await
             .unwrap();
         let before_expiry = chrono::NaiveDate::from_ymd_opt(1900, 1, 1).unwrap();
@@ -513,15 +516,18 @@ mod tests {
         assert_eq!(last_cleanup, Some(today_berlin()));
 
         store
-            .add(SubscriptionDraft {
-                subscriber: uref("1"),
-                sport: Sport::Tennis,
-                venue: None,
-                schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
-                time_range: TimeRange::new(0, 24 * 60).unwrap(),
-                courts: CourtSelection::Every,
-                filter: CourtFilter::Any,
-            })
+            .add(
+                UncheckedDraft {
+                    subscriber: uref("1"),
+                    sport: Sport::Tennis,
+                    venue: None,
+                    schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
+                    time_range: TimeRange::new(0, 24 * 60).unwrap(),
+                    courts: CourtSelection::Every,
+                    filter: CourtFilter::Any,
+                }
+                .assume_valid(),
+            )
             .await
             .unwrap();
         svc.cleanup_expired_if_needed(&mut last_cleanup).await;

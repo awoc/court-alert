@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use super::{
     Court, CourtCatalog, CourtFilter, CourtSelection, Schedule, SelectedCourt, Sport,
-    SubscriberRef, SubscriptionDraft, TimeRange, VenueId, VenueRegistry,
+    SubscriberRef, Subscription, TimeRange, VenueId, VenueRegistry,
 };
 
 const MAX_COURTS: usize = 20;
@@ -67,6 +67,89 @@ pub enum SubscriptionRejection {
         courts: Vec<String>,
         filter: CourtFilter,
     },
+}
+
+/// A subscription that has passed `SubscriptionPolicy`, which is the only way to
+/// make one and the only thing a repository will add.
+#[derive(Debug, Clone)]
+pub struct SubscriptionDraft {
+    subscriber: SubscriberRef,
+    sport: Sport,
+    venue: Option<VenueId>,
+    schedule: Schedule,
+    time_range: TimeRange,
+    courts: CourtSelection,
+    filter: CourtFilter,
+}
+
+impl SubscriptionDraft {
+    pub fn subscriber(&self) -> &SubscriberRef {
+        &self.subscriber
+    }
+
+    pub fn sport(&self) -> Sport {
+        self.sport
+    }
+
+    pub fn venue(&self) -> Option<&VenueId> {
+        self.venue.as_ref()
+    }
+
+    pub fn schedule(&self) -> Schedule {
+        self.schedule
+    }
+
+    pub fn time_range(&self) -> TimeRange {
+        self.time_range
+    }
+
+    pub fn courts(&self) -> &CourtSelection {
+        &self.courts
+    }
+
+    pub fn filter(&self) -> CourtFilter {
+        self.filter
+    }
+
+    pub fn into_subscription(self, id: i64) -> Subscription {
+        Subscription {
+            id,
+            subscriber: self.subscriber,
+            sport: self.sport,
+            venue: self.venue,
+            schedule: self.schedule,
+            time_range: self.time_range,
+            courts: self.courts,
+            filter: self.filter,
+        }
+    }
+}
+
+/// Seeds rows the policy would refuse, such as legacy selections and past dates.
+#[cfg(test)]
+pub(crate) struct UncheckedDraft {
+    pub subscriber: SubscriberRef,
+    pub sport: Sport,
+    pub venue: Option<VenueId>,
+    pub schedule: Schedule,
+    pub time_range: TimeRange,
+    pub courts: CourtSelection,
+    pub filter: CourtFilter,
+}
+
+#[cfg(test)]
+impl UncheckedDraft {
+    pub(crate) fn assume_valid(self) -> SubscriptionDraft {
+        SubscriptionDraft {
+            subscriber: self.subscriber,
+            sport: self.sport,
+            venue: self.venue,
+            schedule: self.schedule,
+            time_range: self.time_range,
+            courts: self.courts,
+            filter: self.filter,
+        }
+    }
 }
 
 /// What a new subscription is checked against. Rows already stored are never
@@ -317,9 +400,7 @@ mod tests {
     use chrono::Weekday;
 
     use super::*;
-    use crate::model::{
-        CourtAttributes, CourtLocation, CourtSurface, Subscription, Venue, VenueIdentity,
-    };
+    use crate::model::{CourtAttributes, CourtLocation, CourtSurface, Venue, VenueIdentity};
 
     use SubscriptionRejection as Rejected;
 

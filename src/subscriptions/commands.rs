@@ -220,7 +220,7 @@ mod tests {
     };
     use crate::model::{
         Court, CourtAttributes, CourtCatalog, CourtFilter, CourtLocation, CourtSelection,
-        CourtSurface, Schedule, SelectedCourt, Sport, SubscriptionDraft, TimeRange, VenueId,
+        CourtSurface, Schedule, SelectedCourt, Sport, TimeRange, UncheckedDraft, VenueId,
     };
     use crate::ports::SubscriptionRepository;
     use crate::subscriptions::contract::{
@@ -498,18 +498,21 @@ mod tests {
     async fn listing_keeps_a_selection_whose_catalog_is_not_ready() {
         let store = store().await;
         store
-            .add(SubscriptionDraft {
-                subscriber: uref("1"),
-                sport: Sport::Padel,
-                venue: Some(VenueId::new("club")),
-                schedule: Schedule::Weekday(Weekday::Tue),
-                time_range: TimeRange::new(0, 24 * 60).unwrap(),
-                courts: CourtSelection::Selected(vec![SelectedCourt {
-                    venue_id: VenueId::new("club"),
-                    court_id: Uuid::from_u128(1),
-                }]),
-                filter: CourtFilter::Any,
-            })
+            .add(
+                UncheckedDraft {
+                    subscriber: uref("1"),
+                    sport: Sport::Padel,
+                    venue: Some(VenueId::new("club")),
+                    schedule: Schedule::Weekday(Weekday::Tue),
+                    time_range: TimeRange::new(0, 24 * 60).unwrap(),
+                    courts: CourtSelection::Selected(vec![SelectedCourt {
+                        venue_id: VenueId::new("club"),
+                        court_id: Uuid::from_u128(1),
+                    }]),
+                    filter: CourtFilter::Any,
+                }
+                .assume_valid(),
+            )
             .await
             .unwrap();
         let svc = service_on(store, registry_of(vec![(padel_club("club"), None)]));
@@ -531,15 +534,18 @@ mod tests {
     async fn listing_shows_a_pending_selection_by_its_stored_name() {
         let (svc, store) = service_with_store().await;
         store
-            .add(SubscriptionDraft {
-                subscriber: uref("1"),
-                sport: Sport::Tennis,
-                venue: None,
-                schedule: Schedule::Weekday(Weekday::Tue),
-                time_range: TimeRange::new(0, 24 * 60).unwrap(),
-                courts: CourtSelection::PendingNames(vec!["Court 2".into()]),
-                filter: CourtFilter::Any,
-            })
+            .add(
+                UncheckedDraft {
+                    subscriber: uref("1"),
+                    sport: Sport::Tennis,
+                    venue: None,
+                    schedule: Schedule::Weekday(Weekday::Tue),
+                    time_range: TimeRange::new(0, 24 * 60).unwrap(),
+                    courts: CourtSelection::PendingNames(vec!["Court 2".into()]),
+                    filter: CourtFilter::Any,
+                }
+                .assume_valid(),
+            )
             .await
             .unwrap();
 
@@ -550,6 +556,43 @@ mod tests {
                     .unwrap()
             ),
             [SelectedCourtSummary::PendingName("Court 2".into())]
+        );
+    }
+
+    #[tokio::test]
+    async fn listing_keeps_a_row_the_policy_would_refuse_today() {
+        let (svc, store) = service_with_store().await;
+        let long_name = "x".repeat(101);
+        let many_names = vec![long_name.clone(); 25];
+        store
+            .add(
+                UncheckedDraft {
+                    subscriber: uref("1"),
+                    sport: Sport::Padel,
+                    venue: Some(VenueId::new("closed-club")),
+                    schedule: Schedule::Weekday(Weekday::Tue),
+                    time_range: TimeRange::new(0, 24 * 60).unwrap(),
+                    courts: CourtSelection::PendingNames(many_names),
+                    filter: CourtFilter::CLAY,
+                }
+                .assume_valid(),
+            )
+            .await
+            .unwrap();
+
+        let SubscriptionResult::SubscriptionList(subs) = svc
+            .handle(&uref("1"), SubscriptionCommand::List)
+            .await
+            .unwrap()
+        else {
+            panic!("expected SubscriptionList");
+        };
+
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].filter, CourtFilter::CLAY);
+        assert_eq!(
+            subs[0].courts,
+            Some(vec![SelectedCourtSummary::PendingName(long_name); 25])
         );
     }
 
@@ -623,15 +666,18 @@ mod tests {
     async fn list_filters_expired_one_shot_subscriptions_without_cleanup_write() {
         let (svc, store) = super::super::testing::service_with_store().await;
         store
-            .add(SubscriptionDraft {
-                subscriber: uref("1"),
-                sport: Sport::Tennis,
-                venue: None,
-                schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
-                time_range: TimeRange::new(18 * 60, 20 * 60).unwrap(),
-                courts: CourtSelection::Every,
-                filter: CourtFilter::Any,
-            })
+            .add(
+                UncheckedDraft {
+                    subscriber: uref("1"),
+                    sport: Sport::Tennis,
+                    venue: None,
+                    schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
+                    time_range: TimeRange::new(18 * 60, 20 * 60).unwrap(),
+                    courts: CourtSelection::Every,
+                    filter: CourtFilter::Any,
+                }
+                .assume_valid(),
+            )
             .await
             .unwrap();
 

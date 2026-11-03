@@ -11,8 +11,8 @@ use crate::config::WebhookSettings;
 use crate::integrations::{Integration, readiness};
 use crate::model::{
     AvailabilityChange, BookableSlot, BookableSlotId, Court, CourtAttributes, CourtCatalog,
-    CourtFilter, CourtSelection, Schedule, Sport, SubscriberRef, SubscriptionDraft, TimeRange,
-    Venue, VenueId, VenueIdentity, VenueRegistry,
+    CourtFilter, CourtSelection, Schedule, Sport, SubscriberRef, TimeRange, UncheckedDraft, Venue,
+    VenueId, VenueIdentity, VenueRegistry,
 };
 use crate::ports::{BookableSlotSnapshotRepository, SubscriptionRepository};
 use crate::store::SqliteStore;
@@ -847,15 +847,18 @@ async fn listing_keeps_the_id_of_a_court_whose_name_is_not_known_right_now() {
 async fn listing_shows_a_selection_stored_by_name_without_an_id() {
     let store = Arc::new(SqliteStore::open_in_memory().await.unwrap());
     store
-        .add(SubscriptionDraft {
-            subscriber: subscriber("alice"),
-            sport: Sport::Tennis,
-            venue: None,
-            schedule: Schedule::Weekday(chrono::Weekday::Tue),
-            time_range: TimeRange::new(0, 24 * 60).unwrap(),
-            courts: CourtSelection::PendingNames(vec!["Court 2".into()]),
-            filter: CourtFilter::Any,
-        })
+        .add(
+            UncheckedDraft {
+                subscriber: subscriber("alice"),
+                sport: Sport::Tennis,
+                venue: None,
+                schedule: Schedule::Weekday(chrono::Weekday::Tue),
+                time_range: TimeRange::new(0, 24 * 60).unwrap(),
+                courts: CourtSelection::PendingNames(vec!["Court 2".into()]),
+                filter: CourtFilter::Any,
+            }
+            .assume_valid(),
+        )
         .await
         .unwrap();
     let api = serve(service_over(store)).await;

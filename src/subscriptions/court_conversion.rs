@@ -134,7 +134,7 @@ mod tests {
 
     use super::*;
     use crate::model::{
-        Court, CourtCatalog, CourtFilter, Schedule, SubscriptionDraft, TimeRange, Venue,
+        Court, CourtCatalog, CourtFilter, Schedule, TimeRange, UncheckedDraft, Venue,
     };
     use crate::store::SqliteStore;
     use crate::subscriptions::BerlinClock;
@@ -194,15 +194,18 @@ mod tests {
             courts: CourtSelection,
         ) -> i64 {
             self.store
-                .add(SubscriptionDraft {
-                    subscriber: uref("1"),
-                    sport,
-                    venue,
-                    schedule: Schedule::Weekday(Weekday::Tue),
-                    time_range: TimeRange::new(0, 24 * 60).unwrap(),
-                    courts,
-                    filter: CourtFilter::Any,
-                })
+                .add(
+                    UncheckedDraft {
+                        subscriber: uref("1"),
+                        sport,
+                        venue,
+                        schedule: Schedule::Weekday(Weekday::Tue),
+                        time_range: TimeRange::new(0, 24 * 60).unwrap(),
+                        courts,
+                        filter: CourtFilter::Any,
+                    }
+                    .assume_valid(),
+                )
                 .await
                 .unwrap()
         }
@@ -354,6 +357,22 @@ mod tests {
         deployment.pass().await;
 
         assert_eq!(deployment.courts_of(id).await, selected(&[(north(), 1)]));
+    }
+
+    #[tokio::test]
+    async fn a_row_beyond_the_input_limits_still_converts() {
+        let courts = (1..=25).map(|id| clay_court(id, &format!("Court {id}")));
+        let mut deployment =
+            Deployment::of(vec![(tennis_club("north"), Some(courts.collect()))]).await;
+        let names: Vec<String> = (1..=25).map(|id| format!("Court {id}")).collect();
+        let id = deployment
+            .stored(Sport::Tennis, None, CourtSelection::PendingNames(names))
+            .await;
+
+        assert_eq!(deployment.pass().await, converted(1));
+
+        let all: Vec<(VenueId, u128)> = (1..=25).map(|court| (north(), court)).collect();
+        assert_eq!(deployment.courts_of(id).await, selected(&all));
     }
 
     #[tokio::test]
@@ -617,15 +636,18 @@ mod tests {
         let mut deployment = Deployment::of(two_ready_tennis_clubs()).await;
         let id = deployment
             .store
-            .add(SubscriptionDraft {
-                subscriber: uref("1"),
-                sport: Sport::Tennis,
-                venue: None,
-                schedule: Schedule::Date(NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
-                time_range: TimeRange::new(0, 24 * 60).unwrap(),
-                courts: pending(&["Court 2"]),
-                filter: CourtFilter::Any,
-            })
+            .add(
+                UncheckedDraft {
+                    subscriber: uref("1"),
+                    sport: Sport::Tennis,
+                    venue: None,
+                    schedule: Schedule::Date(NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
+                    time_range: TimeRange::new(0, 24 * 60).unwrap(),
+                    courts: pending(&["Court 2"]),
+                    filter: CourtFilter::Any,
+                }
+                .assume_valid(),
+            )
             .await
             .unwrap();
 

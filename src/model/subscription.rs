@@ -108,6 +108,9 @@ impl CourtSelection {
     }
 }
 
+/// A subscription as stored. A row can predate today's rules or outlive its
+/// catalog, so holding one promises nothing about them, and there is no way back
+/// from here to a `SubscriptionDraft`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Subscription {
     pub id: i64,
@@ -118,32 +121,6 @@ pub struct Subscription {
     pub time_range: TimeRange,
     pub courts: CourtSelection,
     pub filter: CourtFilter,
-}
-
-#[derive(Debug, Clone)]
-pub struct SubscriptionDraft {
-    pub subscriber: SubscriberRef,
-    pub sport: Sport,
-    pub venue: Option<VenueId>,
-    pub schedule: Schedule,
-    pub time_range: TimeRange,
-    pub courts: CourtSelection,
-    pub filter: CourtFilter,
-}
-
-impl SubscriptionDraft {
-    pub fn into_subscription(self, id: i64) -> Subscription {
-        Subscription {
-            id,
-            subscriber: self.subscriber,
-            sport: self.sport,
-            venue: self.venue,
-            schedule: self.schedule,
-            time_range: self.time_range,
-            courts: self.courts,
-            filter: self.filter,
-        }
-    }
 }
 
 #[cfg(test)]

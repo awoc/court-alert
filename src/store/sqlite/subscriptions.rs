@@ -3,7 +3,9 @@ use async_trait::async_trait;
 use chrono::NaiveDate;
 use rusqlite::{Row, params};
 
-use crate::model::{CourtSelection, SelectedCourt, SubscriberRef, Subscription, SubscriptionDraft};
+use crate::model::{
+    CourtSelection, SelectedCourt, SubscriberRef, Subscription, SubscriptionDraft, VenueId,
+};
 use crate::ports::SubscriptionRepository;
 
 use super::{DbRepr, SqliteStore, SubscriptionRow};
@@ -19,24 +21,24 @@ fn map_subscription(row: &Row<'_>) -> rusqlite::Result<Subscription> {
 impl SubscriptionRepository for SqliteStore {
     async fn add(&self, sub: SubscriptionDraft) -> Result<i64> {
         self.with_writer("insert", move |conn| {
-            let (weekday, on_date) = sub.schedule.into_db()?;
-            let (courts, selected_courts) = sub.courts.into_db()?;
-            let filter = sub.filter.into_db()?;
-            let sport = sub.sport.into_db()?;
+            let (weekday, on_date) = sub.schedule().into_db()?;
+            let (courts, selected_courts) = sub.courts().clone().into_db()?;
+            let filter = sub.filter().into_db()?;
+            let sport = sub.sport().into_db()?;
             conn.execute(
                 "INSERT INTO subscriptions
                  (provider, user_id, sport, venue, weekday, on_date,
                   start_minute, end_minute, courts, selected_courts, court_filter)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
-                    sub.subscriber.integration.as_str(),
-                    sub.subscriber.subscriber_id,
+                    sub.subscriber().integration.as_str(),
+                    sub.subscriber().subscriber_id,
                     sport,
-                    sub.venue.map(|venue| venue.to_string()),
+                    sub.venue().map(VenueId::to_string),
                     weekday,
                     on_date,
-                    sub.time_range.start_minute(),
-                    sub.time_range.end_minute(),
+                    sub.time_range().start_minute(),
+                    sub.time_range().end_minute(),
                     courts,
                     selected_courts,
                     filter,
@@ -164,7 +166,7 @@ impl SubscriptionRepository for SqliteStore {
 mod tests {
     use super::*;
     use crate::model::{
-        CourtFilter, CourtLocation, CourtSurface, Schedule, Sport, TimeRange, VenueId,
+        CourtFilter, CourtLocation, CourtSurface, Schedule, Sport, TimeRange, UncheckedDraft,
     };
     use chrono::{NaiveDate, Weekday};
     use uuid::Uuid;
@@ -185,7 +187,11 @@ mod tests {
     }
 
     fn sample(weekday: Weekday) -> SubscriptionDraft {
-        SubscriptionDraft {
+        unchecked(weekday).assume_valid()
+    }
+
+    fn unchecked(weekday: Weekday) -> UncheckedDraft {
+        UncheckedDraft {
             subscriber: uref("12345"),
             sport: Sport::Tennis,
             venue: None,
@@ -224,9 +230,9 @@ mod tests {
             CourtFilter::Location(CourtLocation::Outdoor),
         ];
         for filter in filters {
-            let mut sub = sample(Weekday::Tue);
+            let mut sub = unchecked(Weekday::Tue);
             sub.filter = filter;
-            store.add(sub).await.unwrap();
+            store.add(sub.assume_valid()).await.unwrap();
         }
         let stored: Vec<CourtFilter> = store
             .list_all(query_date())
@@ -242,15 +248,15 @@ mod tests {
     async fn list_for_subscriber_filters_by_subscriber_and_integration() {
         let store = SqliteStore::open_in_memory().await.unwrap();
         store.add(sample(Weekday::Tue)).await.unwrap();
-        let mut other_subscriber = sample(Weekday::Wed);
+        let mut other_subscriber = unchecked(Weekday::Wed);
         other_subscriber.subscriber = uref("99999");
-        store.add(other_subscriber).await.unwrap();
-        let mut other_integration = sample(Weekday::Thu);
+        store.add(other_subscriber.assume_valid()).await.unwrap();
+        let mut other_integration = unchecked(Weekday::Thu);
         other_integration.subscriber = SubscriberRef {
             integration: "telegram".into(),
             subscriber_id: "12345".into(),
         };
-        store.add(other_integration).await.unwrap();
+        store.add(other_integration.assume_valid()).await.unwrap();
 
         let subs = store
             .list_for_subscriber(&uref("12345"), query_date())
@@ -264,9 +270,9 @@ mod tests {
     async fn list_all_returns_everything() {
         let store = SqliteStore::open_in_memory().await.unwrap();
         store.add(sample(Weekday::Tue)).await.unwrap();
-        let mut other = sample(Weekday::Wed);
+        let mut other = unchecked(Weekday::Wed);
         other.subscriber = uref("99999");
-        store.add(other).await.unwrap();
+        store.add(other.assume_valid()).await.unwrap();
         assert_eq!(store.list_all(query_date()).await.unwrap().len(), 2);
     }
 
@@ -293,9 +299,9 @@ mod tests {
 
     async fn round_trip(courts: CourtSelection) -> CourtSelection {
         let store = SqliteStore::open_in_memory().await.unwrap();
-        let mut sub = sample(Weekday::Tue);
+        let mut sub = unchecked(Weekday::Tue);
         sub.courts = courts;
-        store.add(sub).await.unwrap();
+        store.add(sub.assume_valid()).await.unwrap();
         store
             .list_for_subscriber(&uref("12345"), query_date())
             .await
@@ -339,9 +345,9 @@ mod tests {
     #[tokio::test]
     async fn converting_replaces_pending_names_with_courts() {
         let store = SqliteStore::open_in_memory().await.unwrap();
-        let mut sub = sample(Weekday::Tue);
+        let mut sub = unchecked(Weekday::Tue);
         sub.courts = CourtSelection::PendingNames(vec!["Court 2".into()]);
-        let id = store.add(sub).await.unwrap();
+        let id = store.add(sub.assume_valid()).await.unwrap();
 
         let courts = vec![court("zhs-munich", 2)];
         assert!(
@@ -360,9 +366,9 @@ mod tests {
     #[tokio::test]
     async fn converting_twice_keeps_the_first_result() {
         let store = SqliteStore::open_in_memory().await.unwrap();
-        let mut sub = sample(Weekday::Tue);
+        let mut sub = unchecked(Weekday::Tue);
         sub.courts = CourtSelection::PendingNames(vec!["Court 2".into()]);
-        let id = store.add(sub).await.unwrap();
+        let id = store.add(sub.assume_valid()).await.unwrap();
         let first = vec![court("zhs-munich", 2)];
         store
             .convert_pending_courts(id, first.clone())
@@ -408,7 +414,7 @@ mod tests {
     }
 
     fn date_sample(date: NaiveDate) -> SubscriptionDraft {
-        SubscriptionDraft {
+        UncheckedDraft {
             subscriber: uref("12345"),
             sport: Sport::Tennis,
             venue: None,
@@ -417,6 +423,7 @@ mod tests {
             courts: CourtSelection::Every,
             filter: CourtFilter::CLAY,
         }
+        .assume_valid()
     }
 
     #[tokio::test]
