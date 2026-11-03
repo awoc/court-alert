@@ -6,7 +6,7 @@ use crate::model::{
     SubscriptionPolicy, SubscriptionRejection, SubscriptionRequest, VenueRegistry,
 };
 use crate::subscriptions::contract::{
-    AvailableSlotSummary, ClubRef, OwnedSubscriptionSummary, SelectedCourtSummary,
+    AvailableSlotSummary, ClubRef, CourtSummary, OwnedSubscriptionSummary, SelectedCourtSummary,
     SubscriptionCommand, SubscriptionResult, SubscriptionSummary,
 };
 
@@ -40,7 +40,7 @@ impl SubscriptionService {
                 };
                 let draft = match self.validate_subscribe(subscriber, &request) {
                     Ok(draft) => draft,
-                    Err(rejection) => return Ok(self.rejected(&request, rejection)),
+                    Err(rejection) => return Ok(rejected(rejection)),
                 };
 
                 let id = self.store.add(draft.clone()).await?;
@@ -103,44 +103,6 @@ impl SubscriptionService {
         .draft(subscriber, request)
     }
 
-    fn rejected(
-        &self,
-        request: &SubscriptionRequest,
-        rejection: SubscriptionRejection,
-    ) -> SubscriptionResult {
-        match rejection {
-            SubscriptionRejection::NoClubsConfigured { sport } => {
-                SubscriptionResult::NoClubsConfigured { sport }
-            }
-            SubscriptionRejection::UnknownClub { unknown } => SubscriptionResult::UnknownClub {
-                unknown: unknown.to_string(),
-                available: self.clubs.clubs_of(request.sport),
-            },
-            SubscriptionRejection::InvalidTimeRange => SubscriptionResult::InvalidTimeRange,
-            SubscriptionRejection::InvalidSchedule => SubscriptionResult::InvalidSchedule,
-            SubscriptionRejection::FilterNotForSport { sport, filter } => {
-                SubscriptionResult::FilterNotForSport { sport, filter }
-            }
-            SubscriptionRejection::TooManyCourts { max } => {
-                SubscriptionResult::TooManyCourts { max }
-            }
-            SubscriptionRejection::CourtNameTooLong { max } => {
-                SubscriptionResult::CourtNameTooLong { max }
-            }
-            SubscriptionRejection::CourtCatalogsNotReady => {
-                SubscriptionResult::CourtCatalogsNotReady
-            }
-            SubscriptionRejection::CourtsNeedClub => SubscriptionResult::CourtsNeedClub,
-            SubscriptionRejection::UnknownCourts { unknown } => SubscriptionResult::UnknownCourts {
-                unknown,
-                available: self.court_summaries(request.sport, request.venue.as_ref()),
-            },
-            SubscriptionRejection::FilterExcludesCourts { courts, filter } => {
-                SubscriptionResult::FilterExcludesCourts { courts, filter }
-            }
-        }
-    }
-
     fn summarize(&self, sub: Subscription) -> SubscriptionSummary {
         let registry = self.registry.read().expect("venue registry poisoned");
         let club = sub.venue.map(|venue_id| ClubRef {
@@ -180,6 +142,40 @@ impl SubscriptionService {
             .into_iter()
             .map(|slot| slot_summary(&registry, slot))
             .collect()
+    }
+}
+
+fn rejected(rejection: SubscriptionRejection) -> SubscriptionResult {
+    match rejection {
+        SubscriptionRejection::NoClubsConfigured { sport } => {
+            SubscriptionResult::NoClubsConfigured { sport }
+        }
+        SubscriptionRejection::UnknownClub { unknown, available } => {
+            SubscriptionResult::UnknownClub {
+                unknown: unknown.to_string(),
+                available,
+            }
+        }
+        SubscriptionRejection::InvalidTimeRange => SubscriptionResult::InvalidTimeRange,
+        SubscriptionRejection::InvalidSchedule => SubscriptionResult::InvalidSchedule,
+        SubscriptionRejection::FilterNotForSport { sport, filter } => {
+            SubscriptionResult::FilterNotForSport { sport, filter }
+        }
+        SubscriptionRejection::TooManyCourts { max } => SubscriptionResult::TooManyCourts { max },
+        SubscriptionRejection::CourtNameTooLong { max } => {
+            SubscriptionResult::CourtNameTooLong { max }
+        }
+        SubscriptionRejection::CourtCatalogsNotReady => SubscriptionResult::CourtCatalogsNotReady,
+        SubscriptionRejection::CourtsNeedClub => SubscriptionResult::CourtsNeedClub,
+        SubscriptionRejection::UnknownCourts { unknown, available } => {
+            SubscriptionResult::UnknownCourts {
+                unknown,
+                available: available.iter().map(CourtSummary::from).collect(),
+            }
+        }
+        SubscriptionRejection::FilterExcludesCourts { courts, filter } => {
+            SubscriptionResult::FilterExcludesCourts { courts, filter }
+        }
     }
 }
 

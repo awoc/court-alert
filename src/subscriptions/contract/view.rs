@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+pub use crate::model::ClubRef;
 use crate::model::{
     Court, CourtFilter, CourtLocation, CourtSurface, Schedule, Sport, SubscriberRef, TimeRange,
     VenueId,
@@ -41,12 +42,6 @@ pub struct AvailableSlotSummary {
     pub court_id: Uuid,
     pub starts_at: DateTime<Utc>,
     pub ends_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClubRef {
-    pub venue_id: VenueId,
-    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

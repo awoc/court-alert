@@ -23,4 +23,4 @@ pub use subscription_policy::{
     CourtChoice, SubscriptionDraft, SubscriptionPolicy, SubscriptionRejection, SubscriptionRequest,
     courts_with_stored_names,
 };
-pub use venue::{OperatingWindow, Provider, Sport, Venue, VenueId, VenueIdentity};
+pub use venue::{ClubRef, OperatingWindow, Provider, Sport, Venue, VenueId, VenueIdentity};

@@ -13,7 +13,7 @@ use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, NaiveDate, Utc};
 
-use crate::model::{CourtCatalog, CourtFilter, Sport, SubscriberRef, VenueId, VenueRegistry};
+use crate::model::{CourtFilter, SubscriberRef, VenueRegistry};
 use crate::ports::{BookableSlotSnapshotRepository, SubscriptionRepository};
 
 pub use club_directory::ClubDirectory;
@@ -41,7 +41,6 @@ pub struct SubscriptionService {
     slot_snapshots: Arc<dyn BookableSlotSnapshotRepository>,
     admins: HashSet<SubscriberRef>,
     registry: Arc<RwLock<VenueRegistry>>,
-    clubs: ClubDirectory,
     tennis_default_filter: CourtFilter,
     clock: Arc<dyn Clock>,
 }
@@ -59,7 +58,6 @@ impl SubscriptionService {
             store,
             slot_snapshots,
             admins,
-            clubs: ClubDirectory::new(registry.clone()),
             registry,
             tennis_default_filter,
             clock,
@@ -68,32 +66,6 @@ impl SubscriptionService {
 
     fn is_admin(&self, subscriber: &SubscriberRef) -> bool {
         self.admins.contains(subscriber)
-    }
-
-    fn catalogs_for(
-        &self,
-        sport: Sport,
-        venue: Option<&VenueId>,
-    ) -> Vec<(VenueId, Arc<CourtCatalog>)> {
-        let registry = self.registry.read().expect("venue registry poisoned");
-        match venue {
-            Some(venue_id) => registry
-                .catalog(venue_id)
-                .map(|catalog| vec![(venue_id.clone(), catalog)])
-                .unwrap_or_default(),
-            None => registry.catalogs_for_sport(sport),
-        }
-    }
-
-    fn court_summaries(
-        &self,
-        sport: Sport,
-        venue: Option<&VenueId>,
-    ) -> Vec<contract::CourtSummary> {
-        self.catalogs_for(sport, venue)
-            .iter()
-            .flat_map(|(_, catalog)| catalog.courts().iter().map(contract::CourtSummary::from))
-            .collect()
     }
 }
 

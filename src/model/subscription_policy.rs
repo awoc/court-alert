@@ -5,7 +5,7 @@ use chrono::NaiveDate;
 use uuid::Uuid;
 
 use super::{
-    Court, CourtCatalog, CourtFilter, CourtSelection, Schedule, SelectedCourt, Sport,
+    ClubRef, Court, CourtCatalog, CourtFilter, CourtSelection, Schedule, SelectedCourt, Sport,
     SubscriberRef, Subscription, TimeRange, VenueId, VenueRegistry,
 };
 
@@ -45,6 +45,7 @@ pub enum SubscriptionRejection {
     },
     UnknownClub {
         unknown: VenueId,
+        available: Vec<ClubRef>,
     },
     InvalidTimeRange,
     InvalidSchedule,
@@ -62,6 +63,7 @@ pub enum SubscriptionRejection {
     CourtsNeedClub,
     UnknownCourts {
         unknown: CourtChoice,
+        available: Vec<Court>,
     },
     FilterExcludesCourts {
         courts: Vec<String>,
@@ -177,6 +179,13 @@ impl SubscriptionPolicy<'_> {
         {
             return Err(SubscriptionRejection::UnknownClub {
                 unknown: chosen.clone(),
+                available: clubs
+                    .into_iter()
+                    .map(|venue_id| ClubRef {
+                        name: self.registry.club_label(&venue_id),
+                        venue_id,
+                    })
+                    .collect(),
             });
         }
 
@@ -243,9 +252,28 @@ impl SubscriptionPolicy<'_> {
                 self.courts_by_id(venue, ids).map_err(CourtChoice::Ids)
             }
         };
-        resolved
-            .map(CourtSelection::Selected)
-            .map_err(|unknown| SubscriptionRejection::UnknownCourts { unknown })
+        resolved.map(CourtSelection::Selected).map_err(|unknown| {
+            SubscriptionRejection::UnknownCourts {
+                unknown,
+                available: self.courts_in_scope(request),
+            }
+        })
+    }
+
+    fn courts_in_scope(&self, request: &SubscriptionRequest) -> Vec<Court> {
+        let catalogs: Vec<Arc<CourtCatalog>> = match &request.venue {
+            Some(venue_id) => self.registry.catalog(venue_id).into_iter().collect(),
+            None => self
+                .registry
+                .catalogs_for_sport(request.sport)
+                .into_iter()
+                .map(|(_, catalog)| catalog)
+                .collect(),
+        };
+        catalogs
+            .iter()
+            .flat_map(|catalog| catalog.courts().iter().cloned())
+            .collect()
     }
 
     fn courts_by_id(&self, venue: &VenueId, ids: &[Uuid]) -> Result<Vec<SelectedCourt>, Vec<Uuid>> {
@@ -528,6 +556,20 @@ mod tests {
             .expect_err("the policy should reject this")
     }
 
+    fn unknown_club(rejection: Rejected) -> VenueId {
+        let Rejected::UnknownClub { unknown, .. } = rejection else {
+            panic!("expected UnknownClub, got {rejection:?}");
+        };
+        unknown
+    }
+
+    fn unknown_courts(rejection: Rejected) -> CourtChoice {
+        let Rejected::UnknownCourts { unknown, .. } = rejection else {
+            panic!("expected UnknownCourts, got {rejection:?}");
+        };
+        unknown
+    }
+
     fn accepted(registry: &VenueRegistry, request: SubscriptionRequest) -> Subscription {
         policy(registry)
             .draft(&subscriber(), &request)
@@ -610,12 +652,7 @@ mod tests {
                 ..request()
             },
         );
-        assert_eq!(
-            reply,
-            Rejected::UnknownClub {
-                unknown: VenueId::new("nowhere")
-            }
-        );
+        assert_eq!(unknown_club(reply), VenueId::new("nowhere"));
     }
 
     #[test]
@@ -628,11 +665,28 @@ mod tests {
                 ..request()
             },
         );
+        assert_eq!(unknown_club(reply), VenueId::new("casa"));
+    }
+
+    #[test]
+    fn an_unknown_club_lists_only_the_clubs_of_that_sport() {
+        let registry = registry_of(vec![(tennis("north"), None), (padel("casa"), Some(vec![]))]);
+        let reply = rejection(
+            &registry,
+            SubscriptionRequest {
+                venue: Some(VenueId::new("casa")),
+                ..request()
+            },
+        );
+        let Rejected::UnknownClub { available, .. } = reply else {
+            panic!("expected UnknownClub, got {reply:?}");
+        };
         assert_eq!(
-            reply,
-            Rejected::UnknownClub {
-                unknown: VenueId::new("casa")
-            }
+            available,
+            [ClubRef {
+                venue_id: VenueId::new("north"),
+                name: "north".into(),
+            }]
         );
     }
 
@@ -760,10 +814,8 @@ mod tests {
             },
         );
         assert_eq!(
-            reply,
-            Rejected::UnknownCourts {
-                unknown: names(&[&longest]).unwrap()
-            },
+            unknown_courts(reply),
+            names(&[&longest]).unwrap(),
             "the length is counted in characters, and this one is within it"
         );
     }
@@ -836,12 +888,7 @@ mod tests {
                 ..request()
             },
         );
-        assert_eq!(
-            reply,
-            Rejected::UnknownCourts {
-                unknown: ids(&[1]).unwrap()
-            }
-        );
+        assert_eq!(unknown_courts(reply), ids(&[1]).unwrap());
     }
 
     #[test]
@@ -854,12 +901,7 @@ mod tests {
                 ..request()
             },
         );
-        assert_eq!(
-            by_name,
-            Rejected::UnknownCourts {
-                unknown: names(&["Court 42"]).unwrap()
-            }
-        );
+        assert_eq!(unknown_courts(by_name), names(&["Court 42"]).unwrap());
 
         let by_id = rejection(
             &registry,
@@ -870,12 +912,37 @@ mod tests {
             },
         );
         assert_eq!(
-            by_id,
-            Rejected::UnknownCourts {
-                unknown: ids(&[4]).unwrap()
-            },
+            unknown_courts(by_id),
+            ids(&[4]).unwrap(),
             "south's court is not at north"
         );
+    }
+
+    #[test]
+    fn unknown_courts_list_the_courts_of_the_chosen_club_or_of_every_club() {
+        let registry = two_clubs();
+        let available = |venue| {
+            let reply = rejection(
+                &registry,
+                SubscriptionRequest {
+                    venue,
+                    courts: names(&["Court 42"]),
+                    ..request()
+                },
+            );
+            let Rejected::UnknownCourts { available, .. } = reply else {
+                panic!("expected UnknownCourts, got {reply:?}");
+            };
+            available.iter().map(|court| court.id()).collect::<Vec<_>>()
+        };
+        let court_ids = |ids: &[u128]| {
+            ids.iter()
+                .map(|id| Uuid::from_u128(*id))
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(available(north()), court_ids(&[1, 2, 3]));
+        assert_eq!(available(None), court_ids(&[1, 2, 3, 4, 5]));
     }
 
     #[test]
@@ -890,12 +957,7 @@ mod tests {
                 ..request()
             },
         );
-        assert_eq!(
-            reply,
-            Rejected::UnknownCourts {
-                unknown: ids(&[99]).unwrap()
-            }
-        );
+        assert_eq!(unknown_courts(reply), ids(&[99]).unwrap());
     }
 
     #[test]
