@@ -5,14 +5,16 @@ use hmac::{Hmac, KeyInit, Mac};
 use serde_json::{Value, json};
 use sha2::Sha256;
 
+use super::alerts::WebhookAlertSender;
 use super::{INTEGRATION, WebhookIntegration};
 use crate::config::WebhookSettings;
 use crate::integrations::{Integration, readiness};
 use crate::model::{
-    AvailabilityChange, BookableSlot, BookableSlotId, CourtFilter, Schedule, Sport, SubscriberRef,
-    VenueId,
+    AvailabilityChange, BookableSlot, BookableSlotId, Court, CourtAttributes, CourtCatalog,
+    CourtFilter, CourtSelection, Schedule, Sport, SubscriberRef, SubscriptionDraft, TimeRange,
+    Venue, VenueId, VenueIdentity, VenueRegistry,
 };
-use crate::ports::BookableSlotSnapshotRepository;
+use crate::ports::{BookableSlotSnapshotRepository, SubscriptionRepository};
 use crate::store::SqliteStore;
 use crate::subscriptions::contract::{AlertSender, AvailabilityAlert, SubscriptionCommand};
 use crate::subscriptions::testing::registry;
@@ -38,7 +40,7 @@ fn service_over(store: Arc<SqliteStore>) -> Arc<SubscriptionService> {
 
 fn service_with(
     store: Arc<SqliteStore>,
-    registry: Arc<std::sync::RwLock<crate::model::VenueRegistry>>,
+    registry: Arc<std::sync::RwLock<VenueRegistry>>,
 ) -> Arc<SubscriptionService> {
     Arc::new(SubscriptionService::new(
         store.clone(),
@@ -649,7 +651,219 @@ async fn courts_are_chosen_by_id_within_the_club() {
 
     assert_eq!(response.status(), 201);
     let body: Value = response.json().await.unwrap();
-    assert_eq!(body["subscription"]["courts"], json!(["Court 6 (Outdoor)"]));
+    assert_eq!(
+        body["subscription"]["courts"],
+        json!([{"id": court(106), "name": "Court 6 (Outdoor)"}])
+    );
+}
+
+fn club_with_two_centre_courts() -> Arc<std::sync::RwLock<VenueRegistry>> {
+    let mut registry = VenueRegistry::new();
+    registry.register(&padel_club());
+    registry.set_catalog(
+        &club_id(),
+        CourtCatalog::new(vec![
+            centre_court(1, "Centre Court"),
+            centre_court(2, "Centre Court"),
+        ]),
+    );
+    Arc::new(std::sync::RwLock::new(registry))
+}
+
+fn club_id() -> VenueId {
+    VenueId::new("club")
+}
+
+fn padel_club() -> Venue {
+    Venue {
+        id: club_id(),
+        display_name: "Club".into(),
+        sport: Sport::Padel,
+        identity: VenueIdentity::Playtomic {
+            tenant_id: Uuid::nil(),
+            slug: "club".into(),
+        },
+        poll_interval_secs: None,
+        lookahead_days: None,
+        operating_window: None,
+    }
+}
+
+fn centre_court(id: u128, name: &str) -> Court {
+    Court::new(
+        Uuid::from_u128(id),
+        name.into(),
+        CourtAttributes::padel(None),
+    )
+}
+
+fn centre_court_slot(id: u128, name: &str) -> BookableSlot {
+    BookableSlot {
+        venue_id: club_id(),
+        ..tuesday_evening_padel(id, name)
+    }
+}
+
+fn subscribe_to_court_one(subscriber_id: &str) -> Value {
+    json!({
+        "subscriber_id": subscriber_id,
+        "sport": "padel",
+        "club": "club",
+        "weekday": "Tue",
+        "start": "00:00",
+        "end": "24:00",
+        "courts": [court(1)],
+    })
+}
+
+#[tokio::test]
+async fn a_court_chosen_through_the_api_alerts_by_identity() {
+    let receiver = receiver_accepting_alerts().await;
+    let registry = club_with_two_centre_courts();
+    let service = service_with(
+        Arc::new(SqliteStore::open_in_memory().await.unwrap()),
+        registry.clone(),
+    );
+    service.register_sender(
+        INTEGRATION,
+        Arc::new(
+            WebhookAlertSender::new(
+                format!("{}{ALERT_PATH}", receiver.uri()).parse().unwrap(),
+                ALERT_SECRET.into(),
+            )
+            .unwrap(),
+        ),
+    );
+    let api = serve(service.clone()).await;
+
+    let created = api.subscribe(subscribe_to_court_one("alice")).await;
+    assert_eq!(created.status(), 201);
+    let created: Value = created.json().await.unwrap();
+    assert_eq!(
+        created["subscription"]["courts"],
+        json!([{"id": court(1), "name": "Centre Court"}])
+    );
+
+    opens(&service, centre_court_slot(2, "Centre Court")).await;
+    assert!(
+        alerts_received(&receiver).await.is_empty(),
+        "the other court of that name alerted"
+    );
+
+    opens(&service, centre_court_slot(1, "Centre Court")).await;
+    let received = alerts_received(&receiver).await;
+    assert_eq!(received.len(), 1);
+    let alert: Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(alert["slots"][0]["court_id"], court(1));
+
+    registry.write().unwrap().set_catalog(
+        &club_id(),
+        CourtCatalog::new(vec![
+            centre_court(1, "Show Court"),
+            centre_court(2, "Centre Court"),
+        ]),
+    );
+    assert_eq!(
+        api.subscriptions_of("alice").await["subscriptions"][0]["courts"],
+        json!([{"id": court(1), "name": "Show Court"}]),
+        "the listing follows the rename"
+    );
+
+    opens(
+        &service,
+        BookableSlot {
+            starts_at: centre_court_slot(1, "Show Court").starts_at + chrono::Duration::days(7),
+            ends_at: centre_court_slot(1, "Show Court").ends_at + chrono::Duration::days(7),
+            ..centre_court_slot(1, "Show Court")
+        },
+    )
+    .await;
+    assert_eq!(
+        alerts_received(&receiver).await.len(),
+        2,
+        "the renamed court stopped alerting"
+    );
+}
+
+#[tokio::test]
+async fn courts_sharing_a_name_can_both_be_chosen_and_stay_apart() {
+    let api = serve(service_with(
+        Arc::new(SqliteStore::open_in_memory().await.unwrap()),
+        club_with_two_centre_courts(),
+    ))
+    .await;
+
+    let response = api
+        .subscribe(with(
+            subscribe_to_court_one("alice"),
+            json!({"courts": [court(2), court(1), court(2)]}),
+        ))
+        .await;
+
+    assert_eq!(response.status(), 201);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(
+        body["subscription"]["courts"],
+        json!([
+            {"id": court(2), "name": "Centre Court"},
+            {"id": court(1), "name": "Centre Court"},
+        ])
+    );
+}
+
+#[tokio::test]
+async fn listing_keeps_the_id_of_a_court_whose_name_is_not_known_right_now() {
+    let store = Arc::new(SqliteStore::open_in_memory().await.unwrap());
+    let registry = club_with_two_centre_courts();
+    let api = serve(service_with(store.clone(), registry.clone())).await;
+    let response = api.subscribe(subscribe_to_court_one("alice")).await;
+    assert_eq!(response.status(), 201);
+
+    registry.write().unwrap().set_catalog(
+        &club_id(),
+        CourtCatalog::new(vec![centre_court(2, "Centre Court")]),
+    );
+    assert_eq!(
+        api.subscriptions_of("alice").await["subscriptions"][0]["courts"],
+        json!([{"id": court(1), "name": null}]),
+        "the court left the catalog"
+    );
+
+    let mut unresolved = VenueRegistry::new();
+    unresolved.register(&padel_club());
+    let restarted = serve(service_with(
+        store,
+        Arc::new(std::sync::RwLock::new(unresolved)),
+    ))
+    .await;
+    assert_eq!(
+        restarted.subscriptions_of("alice").await["subscriptions"][0]["courts"],
+        json!([{"id": court(1), "name": null}]),
+        "the catalog is not ready after a restart"
+    );
+}
+
+#[tokio::test]
+async fn listing_shows_a_selection_stored_by_name_without_an_id() {
+    let store = Arc::new(SqliteStore::open_in_memory().await.unwrap());
+    store
+        .add(SubscriptionDraft {
+            subscriber: subscriber("alice"),
+            sport: Sport::Tennis,
+            venue: None,
+            schedule: Schedule::Weekday(chrono::Weekday::Tue),
+            time_range: TimeRange::new(0, 24 * 60).unwrap(),
+            courts: CourtSelection::PendingNames(vec!["Court 2".into()]),
+            filter: CourtFilter::Any,
+        })
+        .await
+        .unwrap();
+    let api = serve(service_over(store)).await;
+
+    assert_eq!(
+        api.subscriptions_of("alice").await["subscriptions"][0]["courts"],
+        json!([{"id": null, "name": "Court 2"}])
+    );
 }
 
 fn with(mut base: Value, changes: Value) -> Value {
@@ -753,7 +967,7 @@ async fn each_validation_rejection_is_unprocessable_with_its_details() {
 async fn subscribing_to_a_sport_without_clubs_is_unprocessable() {
     let api = serve(service_with(
         Arc::new(SqliteStore::open_in_memory().await.unwrap()),
-        Arc::new(std::sync::RwLock::new(crate::model::VenueRegistry::new())),
+        Arc::new(std::sync::RwLock::new(VenueRegistry::new())),
     ))
     .await;
 

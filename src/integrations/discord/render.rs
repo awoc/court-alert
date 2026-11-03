@@ -2,7 +2,8 @@ use super::INTEGRATION;
 use super::text::{DISCORD_CHUNK_BUDGET, chunk_lines, fmt_club_slot_line};
 use crate::model::{CourtFilter, Schedule, TimeRange};
 use crate::subscriptions::contract::{
-    CourtChoice, OwnedSubscriptionSummary, SubscriptionResult, SubscriptionSummary,
+    CourtChoice, OwnedSubscriptionSummary, SelectedCourtSummary, SubscriptionResult,
+    SubscriptionSummary,
 };
 use crate::time::fmt_hhmm;
 
@@ -79,14 +80,22 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
         SubscriptionResult::CourtsNeedClub => {
             vec!["Pick a club to choose courts from.".to_string()]
         }
-        SubscriptionResult::FilterExcludesCourts { courts, filter } => vec![format!(
-            "{} not {filter}, so `{filter}` would never match. \
-             Drop the filter or pick other courts.",
-            match courts.len() {
-                1 => format!("{} is", courts[0]),
-                _ => format!("{} are", courts.join(", ")),
-            },
-        )],
+        SubscriptionResult::CourtCatalogsNotReady => {
+            vec![
+                "The courts of some clubs have not loaded yet. Please try again later.".to_string(),
+            ]
+        }
+        SubscriptionResult::FilterExcludesCourts { courts, filter } => {
+            let courts = distinct_labels(courts.iter().cloned());
+            vec![format!(
+                "{} not {filter}, so `{filter}` would never match. \
+                 Drop the filter or pick other courts.",
+                match courts.len() {
+                    1 => format!("{} is", courts[0]),
+                    _ => format!("{} are", courts.join(", ")),
+                },
+            )]
+        }
         SubscriptionResult::FilterNotForSport { sport, filter } => {
             vec![format!("`{filter}` is not a {sport} filter.")]
         }
@@ -229,9 +238,30 @@ fn unknown_courts_label(unknown: &CourtChoice) -> String {
     }
 }
 
-fn scope_label(courts: Option<&[String]>, filter: CourtFilter) -> String {
+fn court_label(court: &SelectedCourtSummary) -> String {
+    match court {
+        SelectedCourtSummary::Identified {
+            name: Some(name), ..
+        }
+        | SelectedCourtSummary::PendingName(name) => name.clone(),
+        SelectedCourtSummary::Identified { id, name: None } => format!("unknown court ({id})"),
+    }
+}
+
+/// One name can select a court at each of several clubs; it reads as one name.
+fn distinct_labels(labels: impl Iterator<Item = String>) -> Vec<String> {
+    let mut distinct = Vec::new();
+    for label in labels {
+        if !distinct.contains(&label) {
+            distinct.push(label);
+        }
+    }
+    distinct
+}
+
+fn scope_label(courts: Option<&[SelectedCourtSummary]>, filter: CourtFilter) -> String {
     match (courts, filter) {
-        (Some(courts), _) => courts.join(", "),
+        (Some(courts), _) => distinct_labels(courts.iter().map(court_label)).join(", "),
         (None, CourtFilter::Any) => "all courts".to_string(),
         (None, filter) => format!("all {filter} courts"),
     }
@@ -285,6 +315,13 @@ mod tests {
         }
     }
 
+    fn named(name: &str) -> SelectedCourtSummary {
+        SelectedCourtSummary::Identified {
+            id: Uuid::new_v4(),
+            name: Some(name.into()),
+        }
+    }
+
     fn reply_text(reply: &SubscriptionResult) -> String {
         join(&render_reply(reply))
     }
@@ -330,9 +367,36 @@ mod tests {
     #[test]
     fn renders_subscribed_with_court_filter() {
         let mut s = summary();
-        s.courts = Some(vec!["Court 2".into(), "Court 5".into()]);
+        s.courts = Some(vec![named("Court 2"), named("Court 5")]);
         let text = reply_text(&subscribed(s));
         assert!(text.contains("Court 2, Court 5"));
+    }
+
+    #[test]
+    fn courts_sharing_a_name_read_as_that_name_once() {
+        let mut s = summary();
+        s.courts = Some(vec![named("Court 2"), named("Court 2"), named("Court 5")]);
+        assert!(reply_text(&subscribed(s)).contains("(Court 2, Court 5 at"));
+    }
+
+    #[test]
+    fn pending_courts_show_their_stored_name() {
+        let mut s = summary();
+        s.courts = Some(vec![SelectedCourtSummary::PendingName("Court 2".into())]);
+        assert!(reply_text(&subscribed(s)).contains("(Court 2 at"));
+    }
+
+    #[test]
+    fn a_court_without_a_current_name_is_still_listed_by_its_id() {
+        let mut s = summary();
+        s.courts = Some(vec![SelectedCourtSummary::Identified {
+            id: Uuid::from_u128(42),
+            name: None,
+        }]);
+        assert!(
+            reply_text(&SubscriptionResult::SubscriptionList(vec![s]))
+                .contains("unknown court (00000000-0000-0000-0000-00000000002a)")
+        );
     }
 
     #[test]
@@ -394,7 +458,7 @@ mod tests {
     #[test]
     fn an_overlong_reminder_keeps_its_button_below_the_last_chunk() {
         let mut s = summary();
-        s.courts = Some(vec!["ä".repeat(DISCORD_CHUNK_BUDGET + 1)]);
+        s.courts = Some(vec![named(&"ä".repeat(DISCORD_CHUNK_BUDGET + 1))]);
         let messages = render_reply(&SubscriptionResult::SubscriptionList(vec![s]));
 
         assert!(messages.len() > 1);
@@ -456,7 +520,7 @@ mod tests {
     #[test]
     fn named_courts_are_shown_instead_of_a_surface() {
         let mut s = summary();
-        s.courts = Some(vec!["Court 19 - Synthetic".into()]);
+        s.courts = Some(vec![named("Court 19 - Synthetic")]);
         s.filter = CourtFilter::Any;
         let text = reply_text(&subscribed(s));
         assert!(text.contains("Court 19 - Synthetic"));
@@ -471,6 +535,21 @@ mod tests {
         });
         assert!(text.contains("Court 19 - Synthetic is not clay"));
         assert!(text.contains("`clay`"));
+    }
+
+    #[test]
+    fn a_name_excluded_at_several_clubs_is_named_once() {
+        let text = reply_text(&SubscriptionResult::FilterExcludesCourts {
+            courts: vec!["Court 2".into(), "Court 2".into()],
+            filter: CourtFilter::CLAY,
+        });
+        assert!(text.starts_with("Court 2 is not clay"), "{text}");
+    }
+
+    #[test]
+    fn says_when_the_courts_of_some_clubs_have_not_loaded() {
+        let text = reply_text(&SubscriptionResult::CourtCatalogsNotReady);
+        assert!(text.contains("try again"), "{text}");
     }
 
     #[test]
@@ -623,7 +702,7 @@ mod tests {
     #[test]
     fn a_single_overlong_court_filter_is_split_safely() {
         let mut s = summary();
-        s.courts = Some(vec!["ä".repeat(DISCORD_CHUNK_BUDGET + 1)]);
+        s.courts = Some(vec![named(&"ä".repeat(DISCORD_CHUNK_BUDGET + 1))]);
         let replies = render_reply(&subscribed(s));
         assert!(replies.len() > 1);
         assert!(

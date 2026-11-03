@@ -130,72 +130,23 @@ impl SubscriptionService {
 #[cfg(test)]
 mod tests {
     use super::super::testing::{
-        INDOOR_COURT, PADEL_CLUB_NAME, court_id, padel_court_id, padel_venue_id, service,
-        service_with_store, subscribe_cmd, uref, venue_id,
+        INDOOR_COURT, PADEL_CLUB_NAME, RecordingSender, court_id, padel_club, padel_court,
+        padel_court_id, padel_venue_id, registry_of, service, service_over, service_with_store,
+        subscribe_cmd, subscribe_to_courts, tuesday_slot, uref, venue_id,
     };
     use crate::model::{
-        AvailabilityChange, BookableSlot, BookableSlotId, CourtFilter, Schedule, Sport,
-        SubscriptionDraft, TimeRange,
+        AvailabilityChange, BookableSlot, BookableSlotId, CourtCatalog, CourtFilter,
+        CourtSelection, Schedule, Sport, SubscriptionDraft, TimeRange, VenueId, VenueRegistry,
     };
     use crate::ports::SubscriptionRepository;
-    use crate::subscriptions::contract::{AlertSender, AvailabilityAlert, SubscriptionCommand};
+    use crate::subscriptions::SubscriptionService;
+    use crate::subscriptions::contract::{
+        AlertSender, AvailabilityAlert, CourtChoice, SubscriptionCommand,
+    };
     use crate::time::today_berlin;
     use chrono::{TimeZone, Utc};
-    use std::sync::{Arc, Mutex};
-
-    struct RecordingSender {
-        sent: Mutex<Vec<(String, AvailabilityAlert)>>,
-        struck: Mutex<Vec<Vec<BookableSlotId>>>,
-        order: Mutex<Vec<&'static str>>,
-        fail: bool,
-    }
-
-    impl RecordingSender {
-        fn new(fail: bool) -> Arc<Self> {
-            Arc::new(Self {
-                sent: Mutex::new(Vec::new()),
-                struck: Mutex::new(Vec::new()),
-                order: Mutex::new(Vec::new()),
-                fail,
-            })
-        }
-
-        fn struck(&self) -> Vec<BookableSlotId> {
-            self.struck.lock().unwrap().concat()
-        }
-
-        fn order(&self) -> Vec<&'static str> {
-            self.order.lock().unwrap().clone()
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl AlertSender for RecordingSender {
-        async fn send_alert(
-            &self,
-            subscriber_id: &str,
-            alert: &AvailabilityAlert,
-        ) -> anyhow::Result<()> {
-            self.sent
-                .lock()
-                .unwrap()
-                .push((subscriber_id.to_string(), alert.clone()));
-            self.order.lock().unwrap().push("send");
-            if self.fail {
-                anyhow::bail!("simulated alert failure");
-            }
-            Ok(())
-        }
-
-        async fn strike_taken(&self, slots: &[BookableSlotId]) -> anyhow::Result<()> {
-            self.struck.lock().unwrap().push(slots.to_vec());
-            self.order.lock().unwrap().push("strike");
-            if self.fail {
-                anyhow::bail!("simulated strike failure");
-            }
-            Ok(())
-        }
-    }
+    use std::sync::{Arc, RwLock};
+    use uuid::Uuid;
 
     fn unbookable(name: &str) -> AvailabilityChange {
         match bookable(name) {
@@ -437,6 +388,106 @@ mod tests {
         assert_eq!(sender.sent.lock().unwrap().len(), 1);
     }
 
+    const COURT_A: u128 = 1;
+    const COURT_B: u128 = 2;
+
+    /// One club, two courts with the same name, a subscriber who chose only A.
+    async fn subscribed_to_court_a() -> (
+        Arc<SubscriptionService>,
+        Arc<RecordingSender>,
+        Arc<RwLock<VenueRegistry>>,
+    ) {
+        let club = VenueId::new("club");
+        let registry = registry_of(vec![(
+            padel_club("club"),
+            Some(vec![
+                padel_court(COURT_A, "Centre Court"),
+                padel_court(COURT_B, "Centre Court"),
+            ]),
+        )]);
+        let svc = service_over(registry.clone()).await;
+        let sender = RecordingSender::new(false);
+        svc.register_sender("discord".into(), sender.clone());
+        svc.handle(
+            &uref("1"),
+            subscribe_to_courts(
+                Sport::Padel,
+                Some(&club),
+                CourtChoice::Ids(vec![Uuid::from_u128(COURT_A)]),
+            ),
+        )
+        .await
+        .unwrap();
+        (svc, sender, registry)
+    }
+
+    #[tokio::test]
+    async fn a_selected_court_keeps_alerting_after_it_is_renamed() {
+        let (svc, sender, registry) = subscribed_to_court_a().await;
+        let club = VenueId::new("club");
+        registry.write().unwrap().set_catalog(
+            &club,
+            CourtCatalog::new(vec![padel_court(COURT_A, "Show Court")]),
+        );
+
+        svc.dispatch(&[tuesday_slot(&club, COURT_A, "Show Court")])
+            .await;
+
+        let sent = sender.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1, "a renamed court stopped alerting");
+        assert_eq!(sent[0].1.slots[0].court_id, Uuid::from_u128(COURT_A));
+    }
+
+    #[tokio::test]
+    async fn a_selected_court_does_not_alert_for_another_court_of_the_same_name() {
+        let (svc, sender, _) = subscribed_to_court_a().await;
+
+        svc.dispatch(&[tuesday_slot(&VenueId::new("club"), COURT_B, "Centre Court")])
+            .await;
+
+        assert!(
+            sender.sent.lock().unwrap().is_empty(),
+            "court B alerted a subscriber who chose only court A"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_name_does_not_pick_up_a_court_that_takes_it_later() {
+        let club = VenueId::new("club");
+        let registry = registry_of(vec![(
+            padel_club("club"),
+            Some(vec![padel_court(COURT_A, "Centre Court")]),
+        )]);
+        let svc = service_over(registry.clone()).await;
+        let sender = RecordingSender::new(false);
+        svc.register_sender("discord".into(), sender.clone());
+        svc.handle(
+            &uref("1"),
+            subscribe_to_courts(
+                Sport::Padel,
+                None,
+                CourtChoice::Names(vec!["Centre Court".into()]),
+            ),
+        )
+        .await
+        .unwrap();
+        registry.write().unwrap().set_catalog(
+            &club,
+            CourtCatalog::new(vec![
+                padel_court(COURT_A, "Centre Court"),
+                padel_court(COURT_B, "Centre Court"),
+            ]),
+        );
+
+        svc.dispatch(&[tuesday_slot(&club, COURT_B, "Centre Court")])
+            .await;
+        assert!(sender.sent.lock().unwrap().is_empty());
+
+        svc.dispatch(&[tuesday_slot(&club, COURT_A, "Centre Court")])
+            .await;
+        assert_eq!(sender.sent.lock().unwrap().len(), 1);
+    }
+
     #[tokio::test]
     async fn daily_cleanup_removes_expired_date_subscriptions() {
         let (svc, store) = service_with_store().await;
@@ -447,7 +498,7 @@ mod tests {
                 venue: None,
                 schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
                 time_range: TimeRange::new(0, 24 * 60).unwrap(),
-                courts: None,
+                courts: CourtSelection::Every,
                 filter: CourtFilter::Any,
             })
             .await
@@ -468,7 +519,7 @@ mod tests {
                 venue: None,
                 schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
                 time_range: TimeRange::new(0, 24 * 60).unwrap(),
-                courts: None,
+                courts: CourtSelection::Every,
                 filter: CourtFilter::Any,
             })
             .await

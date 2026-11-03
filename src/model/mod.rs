@@ -13,7 +13,7 @@ pub use slot::{
     diff_availability,
 };
 pub use subscription::{
-    IntegrationId, MINUTES_PER_DAY, Schedule, SubscriberRef, Subscription, SubscriptionDraft,
-    TimeRange,
+    CourtSelection, IntegrationId, MINUTES_PER_DAY, Schedule, SelectedCourt, SubscriberRef,
+    Subscription, SubscriptionDraft, TimeRange,
 };
 pub use venue::{OperatingWindow, Provider, Sport, Venue, VenueId, VenueIdentity};

@@ -9,7 +9,7 @@ use crate::ports::SubscriptionRepository;
 use super::{DbRepr, SqliteStore, SubscriptionRow};
 
 const SUB_COLUMNS: &str = "id, provider, user_id, sport, venue, weekday, on_date, \
-                           start_minute, end_minute, courts, court_filter";
+                           start_minute, end_minute, courts, selected_courts, court_filter";
 
 fn map_subscription(row: &Row<'_>) -> rusqlite::Result<Subscription> {
     Subscription::try_from(SubscriptionRow::try_from(row)?)
@@ -20,14 +20,14 @@ impl SubscriptionRepository for SqliteStore {
     async fn add(&self, sub: SubscriptionDraft) -> Result<i64> {
         self.with_writer("insert", move |conn| {
             let (weekday, on_date) = sub.schedule.into_db()?;
-            let courts_json = sub.courts.into_db()?;
+            let (courts, selected_courts) = sub.courts.into_db()?;
             let filter = sub.filter.into_db()?;
             let sport = sub.sport.into_db()?;
             conn.execute(
                 "INSERT INTO subscriptions
                  (provider, user_id, sport, venue, weekday, on_date,
-                  start_minute, end_minute, courts, court_filter)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                  start_minute, end_minute, courts, selected_courts, court_filter)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     sub.subscriber.integration.as_str(),
                     sub.subscriber.subscriber_id,
@@ -37,7 +37,8 @@ impl SubscriptionRepository for SqliteStore {
                     on_date,
                     sub.time_range.start_minute(),
                     sub.time_range.end_minute(),
-                    courts_json,
+                    courts,
+                    selected_courts,
                     filter,
                 ],
             )
@@ -147,8 +148,12 @@ impl SubscriptionRepository for SqliteStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{CourtFilter, CourtLocation, CourtSurface, Schedule, Sport, TimeRange};
+    use crate::model::{
+        CourtFilter, CourtLocation, CourtSelection, CourtSurface, Schedule, SelectedCourt, Sport,
+        TimeRange, VenueId,
+    };
     use chrono::{NaiveDate, Weekday};
+    use uuid::Uuid;
 
     fn uref(id: &str) -> SubscriberRef {
         SubscriberRef {
@@ -172,7 +177,7 @@ mod tests {
             venue: None,
             schedule: Schedule::Weekday(weekday),
             time_range: range(18 * 60, 22 * 60),
-            courts: None,
+            courts: CourtSelection::Every,
             filter: CourtFilter::CLAY,
         }
     }
@@ -190,7 +195,7 @@ mod tests {
         assert_eq!(subs[0].subscriber, uref("12345"));
         assert_eq!(subs[0].schedule, Schedule::Weekday(Weekday::Tue));
         assert_eq!(subs[0].time_range, range(1080, 1320));
-        assert!(subs[0].courts.is_none());
+        assert_eq!(subs[0].courts, CourtSelection::Every);
         assert_eq!(subs[0].filter, CourtFilter::CLAY);
     }
 
@@ -272,19 +277,45 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn courts_filter_roundtrip() {
+    async fn round_trip(courts: CourtSelection) -> CourtSelection {
         let store = SqliteStore::open_in_memory().await.unwrap();
         let mut sub = sample(Weekday::Tue);
-        sub.courts = Some(vec!["Court 2".into(), "Court 5".into()]);
+        sub.courts = courts;
         store.add(sub).await.unwrap();
-        let subs = store
+        store
             .list_for_subscriber(&uref("12345"), query_date())
             .await
-            .unwrap();
+            .unwrap()
+            .remove(0)
+            .courts
+    }
+
+    #[tokio::test]
+    async fn selected_courts_roundtrip_with_their_venues() {
+        let selection = CourtSelection::Selected(vec![
+            SelectedCourt {
+                venue_id: VenueId::new("zhs-munich"),
+                court_id: Uuid::from_u128(2),
+            },
+            SelectedCourt {
+                venue_id: VenueId::new("casa-padel"),
+                court_id: Uuid::from_u128(101),
+            },
+        ]);
+        assert_eq!(round_trip(selection.clone()).await, selection);
+    }
+
+    #[tokio::test]
+    async fn pending_court_names_roundtrip() {
+        let selection = CourtSelection::PendingNames(vec!["Court 2".into(), "Court 5".into()]);
+        assert_eq!(round_trip(selection.clone()).await, selection);
+    }
+
+    #[tokio::test]
+    async fn a_row_with_neither_kind_of_courts_watches_every_court() {
         assert_eq!(
-            subs[0].courts.as_deref(),
-            Some(&["Court 2".to_string(), "Court 5".to_string()][..])
+            round_trip(CourtSelection::Every).await,
+            CourtSelection::Every
         );
     }
 
@@ -295,7 +326,7 @@ mod tests {
             venue: None,
             schedule: Schedule::Date(date),
             time_range: range(18 * 60, 22 * 60),
-            courts: None,
+            courts: CourtSelection::Every,
             filter: CourtFilter::CLAY,
         }
     }

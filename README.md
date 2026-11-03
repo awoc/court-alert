@@ -52,6 +52,24 @@ Install the Rust toolchain specified in `rust-toolchain.toml`, then run locally:
 cargo run --release
 ```
 
+## Upgrading
+
+The app never changes the schema of an existing database. It refuses to start against one that is behind and names the migration files to run. Stop the service, back up the database, then apply every file in `sql/migrations` above the database's `PRAGMA user_version`, in order:
+
+```sh
+sqlite3 -bail data/court-alert.db < sql/migrations/0007_subscription_court_ids.sql
+```
+
+`0007` adds the `selected_courts` column. Subscriptions created before it keep their court names and keep matching by name.
+
+`0007` comes with a change to the webhook API: a subscription's `courts` used to be a list of names and is now a list of `{"id", "name"}` objects, so callers need updating when you deploy it.
+
+## Court selections
+
+A subscription stores each court it selects as a club and a court ID. A court keeps alerting after a rename, and a selection never alerts for a different court with the same name.
+
+A Discord court name, or a number such as `2`, picks every court with that name or number when the reminder is created. With no club set it looks across all clubs of the sport, and with a club set it looks only at that club. A court added later under the same name is not included. Naming courts is rejected while a club in scope has not loaded its courts yet.
+
 ## Webhook integration
 
 The webhook integration lets an agent on the same LAN manage subscriptions for the people it talks to and receive matching alerts, all over HTTP. It runs alongside Discord and is enabled by `COURT_ALERT_WEBHOOK_LISTEN`.
@@ -66,6 +84,8 @@ The API is plain HTTP and JSON, meant for the LAN only. Every request carries a 
 | `POST /subscriptions`                                   | `201` with the subscription and open slots |
 | `GET /subscriptions?subscriber_id=<subscriber>`         | `200` with the subscriber's subscriptions  |
 | `DELETE /subscriptions/<id>?subscriber_id=<subscriber>` | `204`                                      |
+
+In a subscription, `courts` is `null` when it watches every court, otherwise one `{"id", "name"}` object per selected court. `id` is the court ID from `GET /clubs`, and it is what the subscription matches on. `name` is the court's current name, so it follows renames. `name` is `null` while the club's catalog has not loaded, for example just after a restart, and once the court has left the catalog; the court stays selected either way. `id` is `null` only for an older subscription still stored by name.
 
 Errors are JSON with an `error` kind: `400` for malformed JSON or query parameters, `401` for a missing or invalid signature, `404` for a missing subscription, `408` for a body that takes over 10 seconds to arrive, `413` for a body over 64 KiB, `422` for validation rejections (with the valid alternatives where there are any) and `500` for a server failure.
 

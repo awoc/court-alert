@@ -13,8 +13,19 @@ pub struct SubscriptionSummary {
     pub club: Option<ClubRef>,
     pub schedule: Schedule,
     pub time_range: TimeRange,
-    pub courts: Option<Vec<String>>,
+    pub courts: Option<Vec<SelectedCourtSummary>>,
     pub filter: CourtFilter,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectedCourtSummary {
+    /// `name` comes from the current catalog: `None` while the catalog is not
+    /// ready or once the court has left it.
+    Identified {
+        id: Uuid,
+        name: Option<String>,
+    },
+    PendingName(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

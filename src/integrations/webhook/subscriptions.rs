@@ -17,7 +17,7 @@ use super::slot::Slot;
 use crate::model::{CourtFilter, MINUTES_PER_DAY, Schedule, Sport, SubscriberRef, VenueId};
 use crate::subscriptions::SubscriptionService;
 use crate::subscriptions::contract::{
-    CourtChoice, SubscriptionCommand, SubscriptionResult, SubscriptionSummary,
+    CourtChoice, SelectedCourtSummary, SubscriptionCommand, SubscriptionResult, SubscriptionSummary,
 };
 use crate::time::fmt_hhmm;
 
@@ -54,8 +54,26 @@ struct Subscription {
     date: Option<NaiveDate>,
     start: String,
     end: String,
-    courts: Option<Vec<String>>,
+    courts: Option<Vec<SelectedCourt>>,
     filter: &'static str,
+}
+
+#[derive(Serialize)]
+struct SelectedCourt {
+    id: Option<Uuid>,
+    name: Option<String>,
+}
+
+impl From<SelectedCourtSummary> for SelectedCourt {
+    fn from(court: SelectedCourtSummary) -> Self {
+        match court {
+            SelectedCourtSummary::Identified { id, name } => Self { id: Some(id), name },
+            SelectedCourtSummary::PendingName(name) => Self {
+                id: None,
+                name: Some(name),
+            },
+        }
+    }
 }
 
 impl From<SubscriptionSummary> for Subscription {
@@ -76,7 +94,9 @@ impl From<SubscriptionSummary> for Subscription {
             date,
             start: fmt_hhmm(summary.time_range.start_minute()),
             end: fmt_hhmm(summary.time_range.end_minute()),
-            courts: summary.courts,
+            courts: summary
+                .courts
+                .map(|courts| courts.into_iter().map(SelectedCourt::from).collect()),
             filter: summary.filter.as_str(),
         }
     }
@@ -207,6 +227,9 @@ fn respond(result: SubscriptionResult) -> Response {
                 .collect::<Vec<_>>(),
         })),
         SubscriptionResult::CourtsNeedClub => rejected(json!({ "error": "courts_need_club" })),
+        SubscriptionResult::CourtCatalogsNotReady => {
+            rejected(json!({ "error": "court_catalogs_not_ready" }))
+        }
         SubscriptionResult::UnknownClub { unknown, available } => rejected(json!({
             "error": "unknown_club",
             "unknown": unknown,

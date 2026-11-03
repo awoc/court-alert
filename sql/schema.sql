@@ -11,7 +11,10 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     on_date      TEXT    CHECK (on_date IS date(on_date)),
     start_minute INTEGER NOT NULL CHECK (start_minute BETWEEN 0 AND 1440),
     end_minute   INTEGER NOT NULL CHECK (end_minute BETWEEN 0 AND 1440),
+    -- Court names stored before selected_courts existed. Matched by name until converted.
     courts       TEXT    CHECK (courts IS NULL OR (json_valid(courts) AND json_type(courts) = 'array')),
+    -- Array of {venue_id, court_id}. With courts also NULL the subscription watches every court.
+    selected_courts TEXT CHECK (selected_courts IS NULL OR (json_valid(selected_courts) AND json_type(selected_courts) = 'array')),
     court_filter TEXT    NOT NULL
                          CHECK (court_filter IN ('any', 'clay', 'synthetic', 'indoor', 'outdoor')),
     created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -19,7 +22,9 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     -- Exactly one schedule kind: recurring weekday or single date.
     CHECK ((weekday IS NULL) <> (on_date IS NULL)),
     -- Half-open [start_minute, end_minute) within a single day.
-    CHECK (start_minute < end_minute)
+    CHECK (start_minute < end_minute),
+    -- A selection is stored either by name or by identity, never both.
+    CHECK (courts IS NULL OR selected_courts IS NULL)
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS subscriptions_user_idx ON subscriptions (provider, user_id);

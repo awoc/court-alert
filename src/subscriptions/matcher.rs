@@ -29,16 +29,7 @@ pub(super) fn slot_matches(
         return false;
     }
     let attributes = registry.attributes_of(&slot.venue_id, slot.court_id);
-    if !sub.filter.allows(attributes.as_ref()) {
-        return false;
-    }
-    match &sub.courts {
-        Some(courts) => {
-            let name_lower = slot.court_name.to_lowercase();
-            courts.iter().any(|c| c.to_lowercase() == name_lower)
-        }
-        None => true,
-    }
+    sub.filter.allows(attributes.as_ref()) && sub.courts.includes(slot)
 }
 
 pub fn match_subscriptions(
@@ -86,7 +77,9 @@ mod tests {
         INDOOR_COURT, OUTDOOR_COURT, SYNTHETIC_COURT, court_id, padel_court_id, padel_venue_id,
         registry, uref, venue_id,
     };
-    use crate::model::{CourtFilter, CourtLocation, CourtSurface, Sport, TimeRange};
+    use crate::model::{
+        CourtFilter, CourtLocation, CourtSelection, CourtSurface, SelectedCourt, Sport, TimeRange,
+    };
 
     fn slot(name: &str, hour_utc: u32, minute_utc: u32) -> BookableSlot {
         let starts_at = Utc
@@ -132,8 +125,24 @@ mod tests {
             venue: None,
             schedule: Schedule::Weekday(weekday),
             time_range: TimeRange::new(from, to).unwrap(),
-            courts: courts.map(|v| v.into_iter().map(String::from).collect()),
+            courts: courts.map_or(CourtSelection::Every, |names| {
+                CourtSelection::PendingNames(names.into_iter().map(String::from).collect())
+            }),
             filter: CourtFilter::Any,
+        }
+    }
+
+    fn selecting(courts: Vec<SelectedCourt>) -> Subscription {
+        Subscription {
+            courts: CourtSelection::Selected(courts),
+            ..sub("1", Weekday::Tue, 18 * 60, 22 * 60, None)
+        }
+    }
+
+    fn court_2() -> SelectedCourt {
+        SelectedCourt {
+            venue_id: venue_id(),
+            court_id: court_id("Court 2"),
         }
     }
 
@@ -145,7 +154,7 @@ mod tests {
             venue: None,
             schedule: Schedule::Date(date),
             time_range: TimeRange::new(from, to).unwrap(),
-            courts: None,
+            courts: CourtSelection::Every,
             filter: CourtFilter::Any,
         }
     }
@@ -313,7 +322,65 @@ mod tests {
     }
 
     #[test]
-    fn court_filter_excludes_non_matching_courts() {
+    fn a_selected_court_matches_on_its_id_whatever_the_slot_calls_it() {
+        let renamed = BookableSlot {
+            court_name: "Show Court".into(),
+            ..slot("Court 2", 18, 0)
+        };
+
+        let m = match_subscriptions(
+            &[AvailabilityChange::BecameBookable(renamed)],
+            &[selecting(vec![court_2()])],
+        );
+
+        assert_eq!(m[&uref("1")].len(), 1);
+    }
+
+    #[test]
+    fn a_selected_court_excludes_another_court_of_the_same_name() {
+        let namesake = BookableSlot {
+            court_id: court_id("Court 5"),
+            ..slot("Court 2", 18, 0)
+        };
+
+        let m = match_subscriptions(
+            &[AvailabilityChange::BecameBookable(namesake)],
+            &[selecting(vec![court_2()])],
+        );
+
+        assert!(m.is_empty());
+    }
+
+    #[test]
+    fn a_selected_court_only_matches_at_its_own_venue() {
+        let elsewhere = BookableSlot {
+            venue_id: crate::model::VenueId::new("zhs-other"),
+            ..slot("Court 2", 18, 0)
+        };
+        let mut registry = VenueRegistry::new();
+        registry.register(&crate::model::Venue {
+            id: elsewhere.venue_id.clone(),
+            display_name: "Elsewhere".into(),
+            sport: Sport::Tennis,
+            identity: crate::model::VenueIdentity::Zhs {
+                base_url: "https://example.test".into(),
+            },
+            poll_interval_secs: None,
+            lookahead_days: None,
+            operating_window: None,
+        });
+
+        let m = super::match_subscriptions(
+            &[AvailabilityChange::BecameBookable(elsewhere)],
+            &[selecting(vec![court_2()])],
+            &registry,
+        );
+
+        assert!(m.is_empty());
+    }
+
+    #[test]
+    fn pending_court_names_keep_matching_by_name() {
         let changes = vec![
             AvailabilityChange::BecameBookable(slot("Court 2", 18, 0)),
             AvailabilityChange::BecameBookable(slot("Court 5", 18, 0)),
@@ -331,7 +398,19 @@ mod tests {
     }
 
     #[test]
-    fn court_filter_is_case_insensitive() {
+    fn court_filter_excludes_non_matching_courts() {
+        let changes = vec![
+            AvailabilityChange::BecameBookable(slot("Court 2", 18, 0)),
+            AvailabilityChange::BecameBookable(slot("Court 5", 18, 0)),
+        ];
+        let subs = vec![selecting(vec![court_2()])];
+        let m = match_subscriptions(&changes, &subs);
+        assert_eq!(m[&uref("1")].len(), 1);
+        assert_eq!(m[&uref("1")][0].court_name, "Court 2");
+    }
+
+    #[test]
+    fn pending_court_names_match_case_insensitively() {
         let changes = vec![AvailabilityChange::BecameBookable(slot("Court 2", 18, 0))];
         let subs = vec![sub(
             "1",

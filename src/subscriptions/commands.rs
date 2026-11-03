@@ -1,14 +1,17 @@
+use std::collections::HashSet;
+use std::sync::Arc;
+
 use anyhow::Result;
 use tracing::warn;
 use uuid::Uuid;
 
 use crate::model::{
-    BookableSlot, CourtFilter, Schedule, Sport, SubscriberRef, Subscription, SubscriptionDraft,
-    TimeRange, VenueId,
+    BookableSlot, Court, CourtCatalog, CourtFilter, CourtSelection, Schedule, SelectedCourt, Sport,
+    SubscriberRef, Subscription, SubscriptionDraft, TimeRange, VenueId, VenueRegistry,
 };
 use crate::subscriptions::contract::{
-    AvailableSlotSummary, ClubRef, CourtChoice, OwnedSubscriptionSummary, SubscriptionCommand,
-    SubscriptionResult, SubscriptionSummary,
+    AvailableSlotSummary, ClubRef, CourtChoice, OwnedSubscriptionSummary, SelectedCourtSummary,
+    SubscriptionCommand, SubscriptionResult, SubscriptionSummary,
 };
 
 use super::matcher::slot_matches;
@@ -148,8 +151,7 @@ impl SubscriptionService {
         let courts = self.select_courts(sport, venue.as_ref(), courts)?;
 
         if let Some(chosen) = filter
-            && let Some(excluded) =
-                self.courts_excluded_by(sport, venue.as_ref(), chosen, courts.as_deref())
+            && let Some(excluded) = self.courts_excluded_by(chosen, &courts)
         {
             return Err(Box::new(SubscriptionResult::FilterExcludesCourts {
                 courts: excluded,
@@ -163,18 +165,15 @@ impl SubscriptionService {
             venue,
             schedule,
             time_range,
-            filter: self.resolve_filter(sport, filter, courts.as_deref()),
+            filter: self.resolve_filter(sport, filter, &courts),
             courts,
         })
     }
 
     fn summarize(&self, sub: Subscription) -> SubscriptionSummary {
+        let registry = self.registry.read().expect("venue registry poisoned");
         let club = sub.venue.map(|venue_id| ClubRef {
-            name: self
-                .registry
-                .read()
-                .expect("venue registry poisoned")
-                .club_label(&venue_id),
+            name: registry.club_label(&venue_id),
             venue_id,
         });
         SubscriptionSummary {
@@ -183,7 +182,7 @@ impl SubscriptionService {
             club,
             schedule: sub.schedule,
             time_range: sub.time_range,
-            courts: sub.courts,
+            courts: selected_court_summaries(&registry, sub.courts),
             filter: sub.filter,
         }
     }
@@ -193,16 +192,16 @@ impl SubscriptionService {
         sport: Sport,
         venue: Option<&VenueId>,
         courts: Option<CourtChoice>,
-    ) -> Result<Option<Vec<String>>, Box<SubscriptionResult>> {
+    ) -> Result<CourtSelection, Box<SubscriptionResult>> {
         let Some(courts) = courts else {
-            return Ok(None);
+            return Ok(CourtSelection::Every);
         };
         let count = match &courts {
             CourtChoice::Names(names) => names.len(),
             CourtChoice::Ids(ids) => ids.len(),
         };
         if count == 0 {
-            return Ok(None);
+            return Ok(CourtSelection::Every);
         }
         if count > MAX_COURTS {
             return Err(Box::new(SubscriptionResult::TooManyCourts {
@@ -219,18 +218,25 @@ impl SubscriptionService {
                         max: MAX_COURT_NAME_CHARS,
                     }));
                 }
-                self.canonicalize_court_names(sport, venue, names)
-                    .map_err(CourtChoice::Names)
+                let catalogs = self
+                    .registry
+                    .read()
+                    .expect("venue registry poisoned")
+                    .ready_catalogs(sport, venue);
+                let Some(catalogs) = catalogs else {
+                    return Err(Box::new(SubscriptionResult::CourtCatalogsNotReady));
+                };
+                courts_by_name(&catalogs, names).map_err(CourtChoice::Names)
             }
             CourtChoice::Ids(ids) => {
                 let Some(venue) = venue else {
                     return Err(Box::new(SubscriptionResult::CourtsNeedClub));
                 };
-                self.court_names_by_id(sport, venue, ids)
+                self.courts_by_id(sport, venue, ids)
                     .map_err(CourtChoice::Ids)
             }
         };
-        resolved.map(Some).map_err(|unknown| {
+        resolved.map(CourtSelection::Selected).map_err(|unknown| {
             Box::new(SubscriptionResult::UnknownCourts {
                 unknown,
                 available: self.court_summaries(sport, venue),
@@ -238,53 +244,29 @@ impl SubscriptionService {
         })
     }
 
-    fn court_names_by_id(
+    fn courts_by_id(
         &self,
         sport: Sport,
         venue: &VenueId,
         ids: Vec<Uuid>,
-    ) -> Result<Vec<String>, Vec<Uuid>> {
+    ) -> Result<Vec<SelectedCourt>, Vec<Uuid>> {
         let catalogs = self.catalogs_for(sport, Some(venue));
-        let mut names: Vec<String> = Vec::with_capacity(ids.len());
+        let mut selected = Vec::with_capacity(ids.len());
         let mut unknown = Vec::new();
         for id in ids {
             match catalogs
                 .iter()
                 .find_map(|(_, catalog)| catalog.find_by_id(id))
             {
-                Some(court) if names.iter().any(|name| name == court.name()) => {}
-                Some(court) => names.push(court.name().to_owned()),
+                Some(court) => selected.push(SelectedCourt {
+                    venue_id: venue.clone(),
+                    court_id: court.id(),
+                }),
                 None => unknown.push(id),
             }
         }
         if unknown.is_empty() {
-            Ok(names)
-        } else {
-            Err(unknown)
-        }
-    }
-
-    fn canonicalize_court_names(
-        &self,
-        sport: Sport,
-        venue: Option<&VenueId>,
-        courts: Vec<String>,
-    ) -> Result<Vec<String>, Vec<String>> {
-        let catalogs = self.catalogs_for(sport, venue);
-        let mut canonical = Vec::with_capacity(courts.len());
-        let mut unknown = Vec::new();
-        for court in courts {
-            match catalogs
-                .iter()
-                .find_map(|(_, catalog)| catalog.resolve(&court))
-            {
-                Some(known) if canonical.iter().any(|name| name == known.name()) => {}
-                Some(known) => canonical.push(known.name().to_owned()),
-                None => unknown.push(court),
-            }
-        }
-        if unknown.is_empty() {
-            Ok(canonical)
+            Ok(distinct_courts(selected))
         } else {
             Err(unknown)
         }
@@ -294,33 +276,34 @@ impl SubscriptionService {
         &self,
         sport: Sport,
         chosen: Option<CourtFilter>,
-        courts: Option<&[String]>,
+        courts: &CourtSelection,
     ) -> CourtFilter {
         chosen.unwrap_or(match (sport, courts) {
-            (_, Some(_)) => CourtFilter::Any,
-            (Sport::Tennis, None) => self.tennis_default_filter,
-            (Sport::Padel, None) => CourtFilter::Any,
+            (Sport::Tennis, CourtSelection::Every) => self.tennis_default_filter,
+            _ => CourtFilter::Any,
         })
     }
 
     fn courts_excluded_by(
         &self,
-        sport: Sport,
-        venue: Option<&VenueId>,
         filter: CourtFilter,
-        courts: Option<&[String]>,
+        courts: &CourtSelection,
     ) -> Option<Vec<String>> {
-        let catalogs = self.catalogs_for(sport, venue);
-        let excluded: Vec<String> = courts?
+        let CourtSelection::Selected(courts) = courts else {
+            return None;
+        };
+        let registry = self.registry.read().expect("venue registry poisoned");
+        let excluded: Vec<String> = courts
             .iter()
-            .filter(|name| {
-                let attributes = catalogs
-                    .iter()
-                    .find_map(|(_, catalog)| catalog.find_by_name(name))
-                    .map(|court| court.attributes().clone());
+            .filter(|court| {
+                let attributes = registry.attributes_of(&court.venue_id, court.court_id);
                 !filter.allows(attributes.as_ref())
             })
-            .cloned()
+            .map(|court| {
+                registry
+                    .court_name(&court.venue_id, court.court_id)
+                    .unwrap_or_else(|| court.court_id.to_string())
+            })
             .collect();
         (!excluded.is_empty()).then_some(excluded)
     }
@@ -350,22 +333,427 @@ impl SubscriptionService {
     }
 }
 
+fn selected_court_summaries(
+    registry: &VenueRegistry,
+    courts: CourtSelection,
+) -> Option<Vec<SelectedCourtSummary>> {
+    match courts {
+        CourtSelection::Every => None,
+        CourtSelection::Selected(courts) => Some(
+            courts
+                .into_iter()
+                .map(|court| SelectedCourtSummary::Identified {
+                    id: court.court_id,
+                    name: registry.court_name(&court.venue_id, court.court_id),
+                })
+                .collect(),
+        ),
+        CourtSelection::PendingNames(names) => Some(
+            names
+                .into_iter()
+                .map(SelectedCourtSummary::PendingName)
+                .collect(),
+        ),
+    }
+}
+
+/// A name found anywhere in scope selects every court of that name. Only an
+/// input no court is called falls back to the number it contains, so "Court 2"
+/// never picks up another club's "Pista 2" but "2" picks up both.
+fn courts_by_name(
+    catalogs: &[(VenueId, Arc<CourtCatalog>)],
+    names: Vec<String>,
+) -> Result<Vec<SelectedCourt>, Vec<String>> {
+    let mut selected = Vec::with_capacity(names.len());
+    let mut unknown = Vec::new();
+    for name in names {
+        let input = name.trim();
+        let mut found = select_from(catalogs, |catalog| catalog.courts_named(input));
+        if found.is_empty() {
+            found = select_from(catalogs, |catalog| catalog.courts_numbered_in(input));
+        }
+        if found.is_empty() {
+            unknown.push(name);
+        } else {
+            selected.append(&mut found);
+        }
+    }
+    if unknown.is_empty() {
+        Ok(distinct_courts(selected))
+    } else {
+        Err(unknown)
+    }
+}
+
+fn select_from<'a, I>(
+    catalogs: &'a [(VenueId, Arc<CourtCatalog>)],
+    courts_of: impl Fn(&'a CourtCatalog) -> I,
+) -> Vec<SelectedCourt>
+where
+    I: Iterator<Item = &'a Court>,
+{
+    catalogs
+        .iter()
+        .flat_map(|(venue_id, catalog)| {
+            courts_of(catalog).map(|court| SelectedCourt {
+                venue_id: venue_id.clone(),
+                court_id: court.id(),
+            })
+        })
+        .collect()
+}
+
+fn distinct_courts(mut courts: Vec<SelectedCourt>) -> Vec<SelectedCourt> {
+    let mut seen = HashSet::new();
+    courts.retain(|court| seen.insert(court.clone()));
+    courts
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::SubscriptionService;
     use super::super::testing::{
-        PADEL_CLUB_NAME, SYNTHETIC_COURT, admin_uref, court_id, date_subscribe_cmd, open_slot,
-        padel_venue_id, service, service_defaulting_to_clay, service_with_admin,
+        PADEL_CLUB_NAME, SYNTHETIC_COURT, admin_uref, clay_court, court_id, date_subscribe_cmd,
+        open_slot, padel_club, padel_court, padel_venue_id, registry_of, service,
+        service_defaulting_to_clay, service_on, service_over, service_with_admin,
         service_with_clock, service_with_failing_slot_snapshot, service_with_slots,
-        service_without_padel, subscribe_cmd, uref, venue_id,
+        service_with_store, service_without_padel, store, subscribe_cmd, subscribe_to_courts,
+        tennis_club, uref, venue_id,
     };
     use crate::model::{
-        CourtFilter, CourtLocation, CourtSurface, Schedule, Sport, SubscriptionDraft, TimeRange,
+        Court, CourtAttributes, CourtCatalog, CourtFilter, CourtLocation, CourtSelection,
+        CourtSurface, Schedule, SelectedCourt, Sport, SubscriptionDraft, TimeRange, VenueId,
     };
     use crate::ports::SubscriptionRepository;
     use crate::subscriptions::contract::{
-        ClubRef, CourtChoice, SubscriptionCommand, SubscriptionResult,
+        ClubRef, CourtChoice, SelectedCourtSummary, SubscriptionCommand, SubscriptionResult,
     };
     use chrono::Weekday;
+    use std::sync::Arc;
+    use uuid::Uuid;
+
+    fn tennis_court(name: &str) -> SelectedCourtSummary {
+        SelectedCourtSummary::Identified {
+            id: court_id(name),
+            name: Some(name.into()),
+        }
+    }
+
+    fn court_ids(summary_courts: Option<Vec<SelectedCourtSummary>>) -> Vec<u128> {
+        summary_courts
+            .unwrap()
+            .into_iter()
+            .map(|court| match court {
+                SelectedCourtSummary::Identified { id, .. } => id.as_u128(),
+                SelectedCourtSummary::PendingName(name) => panic!("{name} has no id"),
+            })
+            .collect()
+    }
+
+    async fn subscribed_courts(
+        svc: &SubscriptionService,
+        sport: Sport,
+        venue: Option<&VenueId>,
+        courts: CourtChoice,
+    ) -> Vec<u128> {
+        let reply = svc
+            .handle(&uref("1"), subscribe_to_courts(sport, venue, courts))
+            .await
+            .unwrap();
+        let SubscriptionResult::Subscribed { summary, .. } = reply else {
+            panic!("expected Subscribed, got {reply:?}");
+        };
+        court_ids(summary.courts)
+    }
+
+    fn names(names: &[&str]) -> CourtChoice {
+        CourtChoice::Names(names.iter().map(|name| (*name).to_owned()).collect())
+    }
+
+    fn ids(ids: &[u128]) -> CourtChoice {
+        CourtChoice::Ids(ids.iter().map(|id| Uuid::from_u128(*id)).collect())
+    }
+
+    /// Clubs `north` and `south` share "Court 2". South also has "Pista 2".
+    async fn two_tennis_clubs() -> Arc<SubscriptionService> {
+        service_over(registry_of(vec![
+            (
+                tennis_club("north"),
+                Some(vec![clay_court(1, "Court 2"), clay_court(2, "Court 3")]),
+            ),
+            (
+                tennis_club("south"),
+                Some(vec![clay_court(3, "Court 2"), clay_court(4, "Pista 2")]),
+            ),
+        ]))
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_name_with_no_club_selects_every_court_of_that_name() {
+        let svc = two_tennis_clubs().await;
+        let chosen = subscribed_courts(&svc, Sport::Tennis, None, names(&["court 2"])).await;
+        assert_eq!(chosen, [1, 3]);
+    }
+
+    #[tokio::test]
+    async fn a_number_with_no_club_selects_every_court_with_that_number() {
+        let svc = two_tennis_clubs().await;
+        let chosen = subscribed_courts(&svc, Sport::Tennis, None, names(&["2"])).await;
+        assert_eq!(chosen, [1, 3, 4]);
+    }
+
+    #[tokio::test]
+    async fn a_name_with_a_club_stays_within_that_club() {
+        let svc = two_tennis_clubs().await;
+        let south = VenueId::new("south");
+
+        let by_name = subscribed_courts(&svc, Sport::Tennis, Some(&south), names(&["Court 2"]));
+        assert_eq!(by_name.await, [3]);
+
+        let by_number = subscribed_courts(&svc, Sport::Tennis, Some(&south), names(&["2"]));
+        assert_eq!(by_number.await, [3, 4]);
+    }
+
+    #[tokio::test]
+    async fn a_court_called_exactly_that_beats_a_number_the_name_contains() {
+        let svc = two_tennis_clubs().await;
+        let chosen = subscribed_courts(&svc, Sport::Tennis, None, names(&["Pista 2"])).await;
+        assert_eq!(chosen, [4]);
+    }
+
+    #[tokio::test]
+    async fn a_name_cannot_resolve_while_a_club_in_scope_has_no_catalog_yet() {
+        let svc = service_over(registry_of(vec![
+            (tennis_club("north"), Some(vec![clay_court(1, "Court 2")])),
+            (tennis_club("south"), None),
+        ]))
+        .await;
+
+        let reply = svc
+            .handle(
+                &uref("1"),
+                subscribe_to_courts(Sport::Tennis, None, names(&["Court 2"])),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply, SubscriptionResult::CourtCatalogsNotReady);
+        assert_eq!(
+            svc.handle(&uref("1"), SubscriptionCommand::List)
+                .await
+                .unwrap(),
+            SubscriptionResult::SubscriptionList(vec![])
+        );
+
+        let north = VenueId::new("north");
+        let chosen = subscribed_courts(&svc, Sport::Tennis, Some(&north), names(&["Court 2"]));
+        assert_eq!(chosen.await, [1]);
+    }
+
+    #[tokio::test]
+    async fn court_ids_are_deduplicated_by_identity_rather_than_by_name() {
+        let club = VenueId::new("club");
+        let svc = service_over(registry_of(vec![(
+            padel_club("club"),
+            Some(vec![
+                padel_court(1, "Centre Court"),
+                padel_court(2, "Centre Court"),
+            ]),
+        )]))
+        .await;
+
+        let chosen = subscribed_courts(&svc, Sport::Padel, Some(&club), ids(&[1, 2, 1])).await;
+
+        assert_eq!(chosen, [1, 2]);
+    }
+
+    #[tokio::test]
+    async fn a_filter_checks_the_chosen_court_rather_than_its_namesake() {
+        let club = VenueId::new("club");
+        let svc = service_over(registry_of(vec![(
+            tennis_club("club"),
+            Some(vec![
+                clay_court(1, "Centre Court"),
+                Court::new(
+                    Uuid::from_u128(2),
+                    "Centre Court".into(),
+                    CourtAttributes::tennis(CourtSurface::Synthetic),
+                ),
+            ]),
+        )]))
+        .await;
+        let choosing = |court: u128| SubscriptionCommand::Subscribe {
+            sport: Sport::Tennis,
+            venue: Some(club.clone()),
+            schedule: Schedule::Weekday(Weekday::Tue),
+            start_minute: 0,
+            end_minute: 24 * 60,
+            courts: Some(ids(&[court])),
+            filter: Some(CourtFilter::CLAY),
+        };
+
+        let clay = svc.handle(&uref("1"), choosing(1)).await.unwrap();
+        assert!(matches!(clay, SubscriptionResult::Subscribed { .. }));
+
+        let synthetic = svc.handle(&uref("1"), choosing(2)).await.unwrap();
+        assert_eq!(
+            synthetic,
+            SubscriptionResult::FilterExcludesCourts {
+                courts: vec!["Centre Court".to_string()],
+                filter: CourtFilter::CLAY,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_filter_rejects_a_name_when_any_of_its_courts_is_excluded() {
+        let svc = service_over(registry_of(vec![
+            (tennis_club("north"), Some(vec![clay_court(1, "Court 2")])),
+            (
+                tennis_club("south"),
+                Some(vec![Court::new(
+                    Uuid::from_u128(2),
+                    "Court 2".into(),
+                    CourtAttributes::tennis(CourtSurface::Synthetic),
+                )]),
+            ),
+        ]))
+        .await;
+
+        let reply = svc
+            .handle(
+                &uref("1"),
+                SubscriptionCommand::Subscribe {
+                    sport: Sport::Tennis,
+                    venue: None,
+                    schedule: Schedule::Weekday(Weekday::Tue),
+                    start_minute: 0,
+                    end_minute: 24 * 60,
+                    courts: Some(names(&["Court 2"])),
+                    filter: Some(CourtFilter::CLAY),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            reply,
+            SubscriptionResult::FilterExcludesCourts {
+                courts: vec!["Court 2".to_string()],
+                filter: CourtFilter::CLAY,
+            }
+        );
+    }
+
+    fn listed_courts(reply: SubscriptionResult) -> Vec<SelectedCourtSummary> {
+        let SubscriptionResult::SubscriptionList(mut subs) = reply else {
+            panic!("expected SubscriptionList, got {reply:?}");
+        };
+        subs.remove(0).courts.unwrap()
+    }
+
+    #[tokio::test]
+    async fn listing_takes_court_names_from_the_current_catalog() {
+        let club = VenueId::new("club");
+        let registry = registry_of(vec![(
+            padel_club("club"),
+            Some(vec![padel_court(1, "Centre Court")]),
+        )]);
+        let svc = service_over(registry.clone()).await;
+        subscribed_courts(&svc, Sport::Padel, Some(&club), ids(&[1])).await;
+
+        registry
+            .write()
+            .unwrap()
+            .set_catalog(&club, CourtCatalog::new(vec![padel_court(1, "Show Court")]));
+        assert_eq!(
+            listed_courts(
+                svc.handle(&uref("1"), SubscriptionCommand::List)
+                    .await
+                    .unwrap()
+            ),
+            [SelectedCourtSummary::Identified {
+                id: Uuid::from_u128(1),
+                name: Some("Show Court".into()),
+            }]
+        );
+
+        registry
+            .write()
+            .unwrap()
+            .set_catalog(&club, CourtCatalog::default());
+        assert_eq!(
+            listed_courts(
+                svc.handle(&uref("1"), SubscriptionCommand::List)
+                    .await
+                    .unwrap()
+            ),
+            [SelectedCourtSummary::Identified {
+                id: Uuid::from_u128(1),
+                name: None,
+            }],
+            "a court that left the catalog stays listed"
+        );
+    }
+
+    #[tokio::test]
+    async fn listing_keeps_a_selection_whose_catalog_is_not_ready() {
+        let store = store().await;
+        store
+            .add(SubscriptionDraft {
+                subscriber: uref("1"),
+                sport: Sport::Padel,
+                venue: Some(VenueId::new("club")),
+                schedule: Schedule::Weekday(Weekday::Tue),
+                time_range: TimeRange::new(0, 24 * 60).unwrap(),
+                courts: CourtSelection::Selected(vec![SelectedCourt {
+                    venue_id: VenueId::new("club"),
+                    court_id: Uuid::from_u128(1),
+                }]),
+                filter: CourtFilter::Any,
+            })
+            .await
+            .unwrap();
+        let svc = service_on(store, registry_of(vec![(padel_club("club"), None)]));
+
+        assert_eq!(
+            listed_courts(
+                svc.handle(&uref("1"), SubscriptionCommand::List)
+                    .await
+                    .unwrap()
+            ),
+            [SelectedCourtSummary::Identified {
+                id: Uuid::from_u128(1),
+                name: None,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn listing_shows_a_pending_selection_by_its_stored_name() {
+        let (svc, store) = service_with_store().await;
+        store
+            .add(SubscriptionDraft {
+                subscriber: uref("1"),
+                sport: Sport::Tennis,
+                venue: None,
+                schedule: Schedule::Weekday(Weekday::Tue),
+                time_range: TimeRange::new(0, 24 * 60).unwrap(),
+                courts: CourtSelection::PendingNames(vec!["Court 2".into()]),
+                filter: CourtFilter::Any,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            listed_courts(
+                svc.handle(&uref("1"), SubscriptionCommand::List)
+                    .await
+                    .unwrap()
+            ),
+            [SelectedCourtSummary::PendingName("Court 2".into())]
+        );
+    }
 
     #[tokio::test]
     async fn subscribe_persists_and_returns_summary() {
@@ -443,7 +831,7 @@ mod tests {
                 venue: None,
                 schedule: Schedule::Date(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
                 time_range: TimeRange::new(18 * 60, 20 * 60).unwrap(),
-                courts: None,
+                courts: CourtSelection::Every,
                 filter: CourtFilter::Any,
             })
             .await
@@ -634,7 +1022,7 @@ mod tests {
         let SubscriptionResult::Subscribed { summary, .. } = reply else {
             panic!("expected Subscribed");
         };
-        assert_eq!(summary.courts, Some(vec!["Court 2".to_string()]));
+        assert_eq!(summary.courts, Some(vec![tennis_court("Court 2")]));
     }
 
     #[tokio::test]
@@ -659,7 +1047,7 @@ mod tests {
             let SubscriptionResult::Subscribed { summary, .. } = reply else {
                 panic!("expected Subscribed for {input:?}");
             };
-            assert_eq!(summary.courts, Some(vec!["Court 2".to_string()]));
+            assert_eq!(summary.courts, Some(vec![tennis_court("Court 2")]));
         }
     }
 
@@ -712,7 +1100,7 @@ mod tests {
         };
         assert_eq!(
             summary.courts,
-            Some(vec!["Court 2".to_string(), "Court 5".to_string()])
+            Some(vec![tennis_court("Court 2"), tennis_court("Court 5")])
         );
     }
 
@@ -840,7 +1228,7 @@ mod tests {
         else {
             panic!("expected Subscribed");
         };
-        assert_eq!(summary.courts, Some(vec![SYNTHETIC_COURT.to_string()]));
+        assert_eq!(summary.courts, Some(vec![tennis_court(SYNTHETIC_COURT)]));
         assert_eq!(summary.filter, CourtFilter::Any);
     }
 

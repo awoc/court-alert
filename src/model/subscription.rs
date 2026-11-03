@@ -2,8 +2,10 @@ use std::borrow::Cow;
 use std::fmt;
 
 use chrono::{NaiveDate, Weekday};
+use uuid::Uuid;
 
-use super::{CourtFilter, Sport, VenueId};
+use super::court::same_court_name;
+use super::{BookableSlot, CourtFilter, Sport, VenueId};
 
 pub const MINUTES_PER_DAY: u32 = 24 * 60;
 
@@ -77,6 +79,35 @@ impl TimeRange {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SelectedCourt {
+    pub venue_id: VenueId,
+    pub court_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CourtSelection {
+    Every,
+    Selected(Vec<SelectedCourt>),
+    /// Stored by name before courts had an identity here. Matches by name until
+    /// it is converted to `Selected`.
+    PendingNames(Vec<String>),
+}
+
+impl CourtSelection {
+    pub fn includes(&self, slot: &BookableSlot) -> bool {
+        match self {
+            Self::Every => true,
+            Self::Selected(courts) => courts
+                .iter()
+                .any(|court| court.venue_id == slot.venue_id && court.court_id == slot.court_id),
+            Self::PendingNames(names) => names
+                .iter()
+                .any(|name| same_court_name(name, &slot.court_name)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Subscription {
     pub id: i64,
@@ -85,7 +116,7 @@ pub struct Subscription {
     pub venue: Option<VenueId>,
     pub schedule: Schedule,
     pub time_range: TimeRange,
-    pub courts: Option<Vec<String>>,
+    pub courts: CourtSelection,
     pub filter: CourtFilter,
 }
 
@@ -96,7 +127,7 @@ pub struct SubscriptionDraft {
     pub venue: Option<VenueId>,
     pub schedule: Schedule,
     pub time_range: TimeRange,
-    pub courts: Option<Vec<String>>,
+    pub courts: CourtSelection,
     pub filter: CourtFilter,
 }
 

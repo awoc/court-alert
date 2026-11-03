@@ -56,6 +56,7 @@ pub enum SubscriptionResult {
         available: Vec<CourtSummary>,
     },
     CourtsNeedClub,
+    CourtCatalogsNotReady,
     UnknownClub {
         unknown: String,
         available: Vec<ClubRef>,

@@ -99,6 +99,13 @@ impl VenueRegistry {
         }
     }
 
+    pub fn court_name(&self, venue_id: &VenueId, court_id: Uuid) -> Option<String> {
+        let catalog = self.catalog(venue_id)?;
+        catalog
+            .find_by_id(court_id)
+            .map(|court| court.name().to_owned())
+    }
+
     pub fn catalogs_for_sport(&self, sport: Sport) -> Vec<(VenueId, Arc<CourtCatalog>)> {
         self.venues_of_sport(sport)
             .into_iter()
@@ -107,6 +114,29 @@ impl VenueRegistry {
                     .map(|catalog| (venue_id.clone(), catalog))
             })
             .collect()
+    }
+
+    /// The catalogs a court name must be looked up in: the club's own, or with
+    /// no club every club of the sport. `None` while any of them is unresolved,
+    /// because courts would be missed. A club no longer configured adds nothing.
+    pub fn ready_catalogs(
+        &self,
+        sport: Sport,
+        venue: Option<&VenueId>,
+    ) -> Option<Vec<(VenueId, Arc<CourtCatalog>)>> {
+        let scope = match venue {
+            Some(venue_id) => vec![venue_id.clone()],
+            None => self.venues_of_sport(sport),
+        };
+        let mut catalogs = Vec::with_capacity(scope.len());
+        for venue_id in scope {
+            match self.state(&venue_id) {
+                Some(CatalogState::Ready(catalog)) => catalogs.push((venue_id, catalog.clone())),
+                Some(CatalogState::Unresolved) => return None,
+                None => {}
+            }
+        }
+        Some(catalogs)
     }
 }
 
@@ -248,6 +278,75 @@ mod tests {
         assert_eq!(tennis.len(), 1);
         assert_eq!(tennis[0].0, venue());
         assert!(registry.catalogs_for_sport(Sport::Padel).is_empty());
+    }
+
+    #[test]
+    fn ready_catalogs_of_a_sport_wait_for_every_club() {
+        let mut registry = VenueRegistry::new();
+        registry.register(&padel_venue());
+        registry.register(&tennis_venue());
+        registry.set_catalog(&venue(), catalog());
+
+        assert!(registry.ready_catalogs(Sport::Padel, None).is_none());
+        assert_eq!(
+            registry.ready_catalogs(Sport::Tennis, None).unwrap().len(),
+            1
+        );
+
+        registry.set_catalog(&padel_venue().id, CourtCatalog::default());
+        assert_eq!(
+            registry.ready_catalogs(Sport::Padel, None).unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn ready_catalogs_of_a_club_wait_for_that_club_alone() {
+        let mut registry = VenueRegistry::new();
+        registry.register(&padel_venue());
+        registry.register(&tennis_venue());
+        registry.set_catalog(&venue(), catalog());
+
+        let tennis = registry
+            .ready_catalogs(Sport::Tennis, Some(&venue()))
+            .unwrap();
+        assert_eq!(tennis[0].0, venue());
+        assert!(
+            registry
+                .ready_catalogs(Sport::Padel, Some(&padel_venue().id))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_club_no_longer_configured_has_nothing_to_wait_for() {
+        let registry = VenueRegistry::new();
+
+        assert_eq!(
+            registry
+                .ready_catalogs(Sport::Tennis, Some(&venue()))
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            registry.ready_catalogs(Sport::Tennis, None).unwrap().len(),
+            0
+        );
+    }
+
+    #[test]
+    fn a_court_name_comes_from_the_current_catalog() {
+        let mut registry = VenueRegistry::new();
+        registry.register(&tennis_venue());
+        assert_eq!(registry.court_name(&venue(), Uuid::from_u128(2)), None);
+
+        registry.set_catalog(&venue(), catalog());
+        assert_eq!(
+            registry.court_name(&venue(), Uuid::from_u128(2)).as_deref(),
+            Some("Court 2")
+        );
+        assert_eq!(registry.court_name(&venue(), Uuid::nil()), None);
     }
 
     #[test]
