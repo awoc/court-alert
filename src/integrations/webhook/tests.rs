@@ -11,16 +11,18 @@ use crate::config::WebhookSettings;
 use crate::integrations::{Integration, IntegrationServices, readiness};
 use crate::model::{
     AvailabilityChange, BookableSlot, BookableSlotId, Court, CourtAttributes, CourtCatalog,
-    CourtFilter, CourtSelection, Schedule, Sport, SubscriberRef, TimeRange, UncheckedDraft, Venue,
-    VenueId, VenueIdentity, VenueRegistry,
+    CourtFilter, CourtSelection, IntegrationId, Schedule, Sport, SubscriberRef, TimeRange,
+    UncheckedDraft, Venue, VenueId, VenueIdentity, VenueRegistry,
 };
 use crate::ports::{BookableSlotSnapshotRepository, SubscriptionRepository};
 use crate::store::SqliteStore;
 use crate::subscriptions::contract::{
     AlertMessageUpdater, AlertSender, AvailabilityAlert, SubscriptionRequest,
 };
-use crate::subscriptions::testing::registry;
-use crate::subscriptions::{AlertDispatcher, BerlinClock, ClubDirectory, SubscriptionService};
+use crate::subscriptions::testing::{chat_route, dispatcher_on, registry};
+use crate::subscriptions::{
+    AlertDispatcher, AlertRoute, BerlinClock, ClubDirectory, SubscriptionService,
+};
 use uuid::Uuid;
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -53,8 +55,7 @@ fn services_with(
             CourtFilter::Any,
             Arc::new(BerlinClock),
         )),
-        clubs: ClubDirectory::new(registry.clone()),
-        dispatcher: Arc::new(AlertDispatcher::new(store, registry, Arc::new(BerlinClock))),
+        clubs: ClubDirectory::new(registry),
     }
 }
 
@@ -726,21 +727,26 @@ fn subscribe_to_court_one(subscriber_id: &str) -> Value {
 async fn a_court_chosen_through_the_api_alerts_by_identity() {
     let receiver = receiver_accepting_alerts().await;
     let registry = club_with_two_centre_courts();
-    let services = services_with(
-        Arc::new(SqliteStore::open_in_memory().await.unwrap()),
-        registry.clone(),
-    );
-    services.dispatcher.register_sender(
-        INTEGRATION,
-        Arc::new(
-            WebhookAlertSender::new(
-                format!("{}{ALERT_PATH}", receiver.uri()).parse().unwrap(),
-                ALERT_SECRET.into(),
-            )
-            .unwrap(),
+    let store = Arc::new(SqliteStore::open_in_memory().await.unwrap());
+    let services = services_with(store.clone(), registry.clone());
+    let deployment = Deployment {
+        subscriptions: services.subscriptions.clone(),
+        dispatcher: dispatcher_on(
+            store,
+            registry.clone(),
+            [(
+                INTEGRATION,
+                AlertRoute::delivery_only(Arc::new(
+                    WebhookAlertSender::new(
+                        format!("{}{ALERT_PATH}", receiver.uri()).parse().unwrap(),
+                        ALERT_SECRET.into(),
+                    )
+                    .unwrap(),
+                )),
+            )],
         ),
-    );
-    let api = serve(services.clone()).await;
+    };
+    let api = serve(services).await;
 
     let created = api.subscribe(subscribe_to_court_one("alice")).await;
     assert_eq!(created.status(), 201);
@@ -750,13 +756,13 @@ async fn a_court_chosen_through_the_api_alerts_by_identity() {
         json!([{"id": court(1), "name": "Centre Court"}])
     );
 
-    opens(&services, centre_court_slot(2, "Centre Court")).await;
+    opens(&deployment, centre_court_slot(2, "Centre Court")).await;
     assert!(
         alerts_received(&receiver).await.is_empty(),
         "the other court of that name alerted"
     );
 
-    opens(&services, centre_court_slot(1, "Centre Court")).await;
+    opens(&deployment, centre_court_slot(1, "Centre Court")).await;
     let received = alerts_received(&receiver).await;
     assert_eq!(received.len(), 1);
     let alert: Value = serde_json::from_slice(&received[0].body).unwrap();
@@ -776,7 +782,7 @@ async fn a_court_chosen_through_the_api_alerts_by_identity() {
     );
 
     opens(
-        &services,
+        &deployment,
         BookableSlot {
             starts_at: centre_court_slot(1, "Show Court").starts_at + chrono::Duration::days(7),
             ends_at: centre_court_slot(1, "Show Court").ends_at + chrono::Duration::days(7),
@@ -1051,20 +1057,43 @@ async fn a_subscription_may_end_at_midnight() {
 const ALERT_SECRET: &str = "alert-secret";
 const ALERT_PATH: &str = "/webhooks/court-alert";
 
-async fn run_against(receiver: &MockServer) -> IntegrationServices {
-    let services = services().await;
-    let webhook = WebhookIntegration::new(WebhookSettings {
+struct Deployment {
+    subscriptions: Arc<SubscriptionService>,
+    dispatcher: Arc<AlertDispatcher>,
+}
+
+fn webhook_alerting(receiver: &MockServer) -> WebhookIntegration {
+    WebhookIntegration::new(WebhookSettings {
         listen: "127.0.0.1:0".parse().unwrap(),
         api_secret: API_SECRET.into(),
         alert_url: format!("{}{ALERT_PATH}", receiver.uri()).parse().unwrap(),
         alert_secret: ALERT_SECRET.into(),
-    });
+    })
+}
+
+async fn run_against(receiver: &MockServer) -> Deployment {
+    run_alongside(receiver, []).await
+}
+
+async fn run_alongside(
+    receiver: &MockServer,
+    others: impl IntoIterator<Item = (IntegrationId, AlertRoute)>,
+) -> Deployment {
+    let store = Arc::new(SqliteStore::open_in_memory().await.unwrap());
+    let registry = registry();
+    let services = services_with(store.clone(), registry.clone());
+    let webhook = webhook_alerting(receiver);
+    let routes = std::iter::once(webhook.alert_route().unwrap()).chain(others);
+    let deployment = Deployment {
+        subscriptions: services.subscriptions.clone(),
+        dispatcher: dispatcher_on(store, registry, routes),
+    };
     let (mut signals, barrier) = readiness(1);
-    tokio::spawn(Box::new(webhook).run(services.clone(), signals.remove(0)));
+    tokio::spawn(Box::new(webhook).run(services, signals.remove(0)));
     tokio::time::timeout(std::time::Duration::from_secs(5), barrier.wait())
         .await
         .expect("the webhook integration never signalled readiness");
-    services
+    deployment
 }
 
 fn subscriber(subscriber_id: &str) -> SubscriberRef {
@@ -1075,10 +1104,10 @@ fn subscriber(subscriber_id: &str) -> SubscriberRef {
 }
 
 async fn subscribe_to_padel_on_tuesday_evenings(
-    services: &IntegrationServices,
+    deployment: &Deployment,
     subscriber: &SubscriberRef,
 ) {
-    services
+    deployment
         .subscriptions
         .subscribe(
             subscriber,
@@ -1118,8 +1147,8 @@ fn outdoor_slot() -> BookableSlot {
     tuesday_evening_padel(106, "Court 6 (Outdoor)")
 }
 
-async fn opens(services: &IntegrationServices, slot: BookableSlot) {
-    services
+async fn opens(deployment: &Deployment, slot: BookableSlot) {
+    deployment
         .dispatcher
         .dispatch(&[AvailabilityChange::BecameBookable(slot)])
         .await;
@@ -1147,10 +1176,10 @@ fn alerted_subscriber(alert: &Request) -> String {
 #[tokio::test]
 async fn matching_slots_reach_the_alert_url_in_one_alert_per_subscriber() {
     let receiver = receiver_accepting_alerts().await;
-    let services = run_against(&receiver).await;
-    subscribe_to_padel_on_tuesday_evenings(&services, &subscriber("alice")).await;
+    let deployment = run_against(&receiver).await;
+    subscribe_to_padel_on_tuesday_evenings(&deployment, &subscriber("alice")).await;
 
-    services
+    deployment
         .dispatcher
         .dispatch(&[
             AvailabilityChange::BecameBookable(indoor_slot()),
@@ -1188,10 +1217,10 @@ async fn matching_slots_reach_the_alert_url_in_one_alert_per_subscriber() {
 #[tokio::test]
 async fn an_alert_is_signed_with_the_alert_secret() {
     let receiver = receiver_accepting_alerts().await;
-    let services = run_against(&receiver).await;
-    subscribe_to_padel_on_tuesday_evenings(&services, &subscriber("alice")).await;
+    let deployment = run_against(&receiver).await;
+    subscribe_to_padel_on_tuesday_evenings(&deployment, &subscriber("alice")).await;
 
-    opens(&services, indoor_slot()).await;
+    opens(&deployment, indoor_slot()).await;
 
     let received = alerts_received(&receiver).await;
     let alert = &received[0];
@@ -1221,12 +1250,12 @@ async fn an_alert_is_signed_with_the_alert_secret() {
 #[tokio::test]
 async fn each_delivery_carries_its_own_webhook_id() {
     let receiver = receiver_accepting_alerts().await;
-    let services = run_against(&receiver).await;
-    subscribe_to_padel_on_tuesday_evenings(&services, &subscriber("alice")).await;
-    subscribe_to_padel_on_tuesday_evenings(&services, &subscriber("bob")).await;
+    let deployment = run_against(&receiver).await;
+    subscribe_to_padel_on_tuesday_evenings(&deployment, &subscriber("alice")).await;
+    subscribe_to_padel_on_tuesday_evenings(&deployment, &subscriber("bob")).await;
 
-    opens(&services, indoor_slot()).await;
-    opens(&services, outdoor_slot()).await;
+    opens(&deployment, indoor_slot()).await;
+    opens(&deployment, outdoor_slot()).await;
 
     let ids: HashSet<Uuid> = alerts_received(&receiver)
         .await
@@ -1254,12 +1283,12 @@ async fn the_receiver_rejecting_one_subscribers_alert_does_not_stop_the_others()
         .respond_with(ResponseTemplate::new(202))
         .mount(&receiver)
         .await;
-    let services = run_against(&receiver).await;
+    let deployment = run_against(&receiver).await;
     for id in ["alice", "bob", "carol"] {
-        subscribe_to_padel_on_tuesday_evenings(&services, &subscriber(id)).await;
+        subscribe_to_padel_on_tuesday_evenings(&deployment, &subscriber(id)).await;
     }
 
-    opens(&services, indoor_slot()).await;
+    opens(&deployment, indoor_slot()).await;
 
     let mut users: Vec<String> = alerts_received(&receiver)
         .await
@@ -1273,10 +1302,10 @@ async fn the_receiver_rejecting_one_subscribers_alert_does_not_stop_the_others()
 #[tokio::test]
 async fn a_slot_that_is_taken_sends_no_alert() {
     let receiver = receiver_accepting_alerts().await;
-    let services = run_against(&receiver).await;
-    subscribe_to_padel_on_tuesday_evenings(&services, &subscriber("alice")).await;
+    let deployment = run_against(&receiver).await;
+    subscribe_to_padel_on_tuesday_evenings(&deployment, &subscriber("alice")).await;
 
-    services
+    deployment
         .dispatcher
         .dispatch(&[AvailabilityChange::BecameUnbookable(indoor_slot())])
         .await;
@@ -1313,20 +1342,17 @@ impl AlertMessageUpdater for DiscordDms {
 #[tokio::test]
 async fn discord_dms_keep_flowing_alongside_webhook_alerts() {
     let receiver = receiver_accepting_alerts().await;
-    let services = run_against(&receiver).await;
     let dms = Arc::new(DiscordDms::default());
-    services
-        .dispatcher
-        .register_chat_provider("discord".into(), dms.clone());
+    let deployment = run_alongside(&receiver, [chat_route("discord", dms.clone())]).await;
     let discord_subscriber = SubscriberRef {
         integration: "discord".into(),
         subscriber_id: "42".into(),
     };
-    subscribe_to_padel_on_tuesday_evenings(&services, &discord_subscriber).await;
-    subscribe_to_padel_on_tuesday_evenings(&services, &subscriber("alice")).await;
+    subscribe_to_padel_on_tuesday_evenings(&deployment, &discord_subscriber).await;
+    subscribe_to_padel_on_tuesday_evenings(&deployment, &subscriber("alice")).await;
 
-    opens(&services, indoor_slot()).await;
-    services
+    opens(&deployment, indoor_slot()).await;
+    deployment
         .dispatcher
         .dispatch(&[AvailabilityChange::BecameUnbookable(indoor_slot())])
         .await;
@@ -1341,4 +1367,21 @@ async fn discord_dms_keep_flowing_alongside_webhook_alerts() {
         *dms.struck.lock().unwrap(),
         [BookableSlotId::from(&indoor_slot())]
     );
+}
+
+#[tokio::test]
+async fn the_alert_route_delivers_without_the_listener_having_started() {
+    let receiver = receiver_accepting_alerts().await;
+    let webhook = webhook_alerting(&receiver);
+    let store = Arc::new(SqliteStore::open_in_memory().await.unwrap());
+    let registry = registry();
+    let deployment = Deployment {
+        subscriptions: services_with(store.clone(), registry.clone()).subscriptions,
+        dispatcher: dispatcher_on(store, registry, [webhook.alert_route().unwrap()]),
+    };
+    subscribe_to_padel_on_tuesday_evenings(&deployment, &subscriber("alice")).await;
+
+    opens(&deployment, indoor_slot()).await;
+
+    assert_eq!(alerts_received(&receiver).await.len(), 1);
 }

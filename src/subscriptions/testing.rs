@@ -5,8 +5,8 @@ use chrono::{DateTime, NaiveDate, TimeZone, Utc, Weekday};
 
 use crate::model::{
     AvailabilityChange, BookableSlot, BookableSlotId, BookableSlotSnapshot, Court, CourtAttributes,
-    CourtCatalog, CourtFilter, CourtLocation, CourtSurface, Schedule, Sport, SubscriberRef, Venue,
-    VenueId, VenueIdentity, VenueRegistry,
+    CourtCatalog, CourtFilter, CourtLocation, CourtSurface, IntegrationId, Schedule, Sport,
+    SubscriberRef, Venue, VenueId, VenueIdentity, VenueRegistry,
 };
 use crate::ports::BookableSlotSnapshotRepository;
 use crate::store::SqliteStore;
@@ -15,7 +15,7 @@ use crate::subscriptions::contract::{
 };
 use uuid::Uuid;
 
-use super::{AlertDispatcher, BerlinClock, Clock, SubscriptionService};
+use super::{AlertDispatcher, AlertRoute, BerlinClock, Clock, SubscriptionService};
 
 pub(super) fn uref(id: &str) -> SubscriberRef {
     SubscriberRef {
@@ -227,26 +227,52 @@ pub(super) async fn service_over(registry: Arc<RwLock<VenueRegistry>>) -> Arc<Su
     service_on(store().await, registry)
 }
 
-pub(super) fn dispatcher_on(
+pub(crate) fn delivery_route(
+    integration: &'static str,
+    sender: Arc<dyn AlertSender>,
+) -> (IntegrationId, AlertRoute) {
+    (integration.into(), AlertRoute::delivery_only(sender))
+}
+
+pub(crate) fn chat_route<P>(
+    integration: &'static str,
+    provider: Arc<P>,
+) -> (IntegrationId, AlertRoute)
+where
+    P: AlertSender + AlertMessageUpdater + 'static,
+{
+    (integration.into(), AlertRoute::chat_provider(provider))
+}
+
+pub(crate) fn dispatcher_on(
     store: Arc<SqliteStore>,
     registry: Arc<RwLock<VenueRegistry>>,
+    routes: impl IntoIterator<Item = (IntegrationId, AlertRoute)>,
 ) -> Arc<AlertDispatcher> {
-    Arc::new(AlertDispatcher::new(store, registry, Arc::new(BerlinClock)))
+    Arc::new(AlertDispatcher::new(
+        store,
+        registry,
+        routes.into_iter().collect(),
+        Arc::new(BerlinClock),
+    ))
 }
 
 /// A service and a dispatcher sharing one store and registry, as in production.
 pub(super) async fn service_and_dispatcher_over(
     registry: Arc<RwLock<VenueRegistry>>,
+    routes: impl IntoIterator<Item = (IntegrationId, AlertRoute)>,
 ) -> (Arc<SubscriptionService>, Arc<AlertDispatcher>) {
     let store = store().await;
     (
         service_on(store.clone(), registry.clone()),
-        dispatcher_on(store, registry),
+        dispatcher_on(store, registry, routes),
     )
 }
 
-pub(super) async fn service_and_dispatcher() -> (Arc<SubscriptionService>, Arc<AlertDispatcher>) {
-    service_and_dispatcher_over(registry()).await
+pub(super) async fn service_and_dispatcher(
+    routes: impl IntoIterator<Item = (IntegrationId, AlertRoute)>,
+) -> (Arc<SubscriptionService>, Arc<AlertDispatcher>) {
+    service_and_dispatcher_over(registry(), routes).await
 }
 
 pub(super) async fn service_defaulting_to_clay() -> Arc<SubscriptionService> {

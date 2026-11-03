@@ -140,8 +140,8 @@ mod tests {
     use crate::subscriptions::SubscriptionService;
     use crate::subscriptions::contract::SelectedCourtSummary;
     use crate::subscriptions::testing::{
-        RecordingSender, clay_court, dispatcher_on, padel_club, padel_court, registry_of,
-        service_on, store, tennis_club, tuesday_slot, uref,
+        RecordingSender, clay_court, delivery_route, dispatcher_on, padel_club, padel_court,
+        registry_of, service_on, store, tennis_club, tuesday_slot, uref,
     };
     use crate::subscriptions::{AlertDispatcher, BerlinClock};
 
@@ -171,9 +171,12 @@ mod tests {
         fn over(store: Arc<SqliteStore>, clubs: Vec<(Venue, Option<Vec<Court>>)>) -> Self {
             let registry = registry_of(clubs);
             let service = service_on(store.clone(), registry.clone());
-            let dispatcher = dispatcher_on(store.clone(), registry.clone());
             let sender = RecordingSender::new(false);
-            dispatcher.register_sender("discord".into(), sender.clone());
+            let dispatcher = dispatcher_on(
+                store.clone(),
+                registry.clone(),
+                [delivery_route("discord", sender.clone())],
+            );
             Self {
                 conversion: CourtNameConversion::new(
                     store.clone(),

@@ -19,7 +19,7 @@ use tracing::info;
 use crate::config::WebhookSettings;
 use crate::integrations::{Integration, IntegrationServices, ReadySignal};
 use crate::model::IntegrationId;
-use crate::subscriptions::{ClubDirectory, SubscriptionService};
+use crate::subscriptions::{AlertRoute, ClubDirectory, SubscriptionService};
 use alerts::WebhookAlertSender;
 
 pub(crate) const INTEGRATION: IntegrationId = IntegrationId::from_static("webhook");
@@ -77,11 +77,12 @@ impl BoundWebhookApi {
 
 #[async_trait]
 impl Integration for WebhookIntegration {
-    async fn run(self: Box<Self>, services: IntegrationServices, ready: ReadySignal) -> Result<()> {
+    fn alert_route(&self) -> Result<(IntegrationId, AlertRoute)> {
         let alerts = WebhookAlertSender::new(self.alert_url.clone(), self.alert_secret.clone())?;
-        services
-            .dispatcher
-            .register_sender(INTEGRATION, Arc::new(alerts));
+        Ok((INTEGRATION, AlertRoute::delivery_only(Arc::new(alerts))))
+    }
+
+    async fn run(self: Box<Self>, services: IntegrationServices, ready: ReadySignal) -> Result<()> {
         let webhook = self.bind().await?;
         info!(address = %webhook.local_addr()?, "webhook API listening");
         ready.ready();

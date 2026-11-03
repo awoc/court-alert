@@ -18,7 +18,7 @@ use crate::ports::{BookableSlotSnapshotRepository, SubscriptionRepository};
 
 pub use club_directory::ClubDirectory;
 pub use court_conversion::{ConversionPass, CourtNameConversion};
-pub use dispatch::AlertDispatcher;
+pub use dispatch::{AlertDispatcher, AlertRoute};
 
 pub trait Clock: Send + Sync {
     fn now(&self) -> DateTime<Utc>;

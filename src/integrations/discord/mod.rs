@@ -15,6 +15,7 @@ use crate::alerts::AlertMessageLifecycle;
 use crate::config::{Config, DiscordSettings};
 use crate::integrations::{Integration, IntegrationServices, ReadySignal};
 use crate::model::{IntegrationId, Sport, SubscriberRef};
+use crate::subscriptions::AlertRoute;
 
 mod commands;
 mod dm;
@@ -86,6 +87,16 @@ impl Integration for DiscordIntegration {
         self.admin_ids.clone()
     }
 
+    fn alert_route(&self) -> Result<(IntegrationId, AlertRoute)> {
+        Ok((
+            INTEGRATION,
+            AlertRoute::chat_provider(Arc::new(DiscordSender::new(
+                self.http.clone(),
+                self.alert_lifecycle.clone(),
+            ))),
+        ))
+    }
+
     async fn run(self: Box<Self>, services: IntegrationServices, ready: ReadySignal) -> Result<()> {
         let handler = Handler {
             service: services.subscriptions,
@@ -94,14 +105,6 @@ impl Integration for DiscordIntegration {
             ready,
             commands_registered: AtomicBool::new(false),
         };
-        services.dispatcher.register_chat_provider(
-            INTEGRATION,
-            Arc::new(DiscordSender::new(
-                self.http.clone(),
-                self.alert_lifecycle.clone(),
-            )),
-        );
-
         let ws_url = match self.http.get_gateway().await {
             Ok(gateway) => gateway.url,
             Err(error) => {
@@ -134,9 +137,12 @@ mod tests {
     use super::*;
 
     use crate::integrations::readiness;
+    use crate::model::{AvailabilityChange, BookableSlot, CourtFilter, Schedule, VenueId};
     use crate::store::SqliteStore;
-    use crate::subscriptions::testing::registry;
-    use crate::subscriptions::{AlertDispatcher, BerlinClock, ClubDirectory, SubscriptionService};
+    use crate::subscriptions::contract::SubscriptionRequest;
+    use crate::subscriptions::testing::{dispatcher_on, registry};
+    use crate::subscriptions::{BerlinClock, ClubDirectory, SubscriptionService};
+    use chrono::{TimeZone, Utc, Weekday};
     use futures::SinkExt;
     use serenity::all::{ApplicationId, HttpBuilder};
     use std::time::Duration;
@@ -144,6 +150,7 @@ mod tests {
     use tokio_tungstenite::tungstenite::Message;
     use tokio_tungstenite::tungstenite::protocol::CloseFrame;
     use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+    use uuid::Uuid;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -324,11 +331,10 @@ base_url = "https://kurse.zhs-muenchen.de"
                 store.clone(),
                 HashSet::new(),
                 registry.clone(),
-                crate::model::CourtFilter::Any,
+                CourtFilter::Any,
                 Arc::new(BerlinClock),
             )),
-            clubs: ClubDirectory::new(registry.clone()),
-            dispatcher: Arc::new(AlertDispatcher::new(store, registry, Arc::new(BerlinClock))),
+            clubs: ClubDirectory::new(registry),
         }
     }
 
@@ -373,5 +379,60 @@ base_url = "https://kurse.zhs-muenchen.de"
             format!("{error:#}").starts_with("starting serenity client"),
             "unexpected error: {error:#}"
         );
+    }
+    #[tokio::test]
+    async fn the_alert_route_reaches_discord_before_the_gateway_starts() {
+        let api = MockServer::start().await;
+        let integration = integration_against(&api).await;
+        let store = Arc::new(SqliteStore::open_in_memory().await.unwrap());
+        let registry = registry();
+        let subscriptions = SubscriptionService::new(
+            store.clone(),
+            store.clone(),
+            HashSet::new(),
+            registry.clone(),
+            CourtFilter::Any,
+            Arc::new(BerlinClock),
+        );
+        let subscriber = SubscriberRef {
+            integration: INTEGRATION,
+            subscriber_id: "42".into(),
+        };
+        subscriptions
+            .subscribe(
+                &subscriber,
+                &SubscriptionRequest {
+                    sport: Sport::Padel,
+                    venue: None,
+                    schedule: Schedule::Weekday(Weekday::Tue),
+                    start_minute: 18 * 60,
+                    end_minute: 22 * 60,
+                    courts: None,
+                    filter: None,
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let dispatcher = dispatcher_on(store, registry, [integration.alert_route().unwrap()]);
+
+        let starts_at = Utc.with_ymd_and_hms(2026, 6, 2, 18, 0, 0).unwrap();
+        dispatcher
+            .dispatch(&[AvailabilityChange::BecameBookable(BookableSlot {
+                venue_id: VenueId::new("casa-padel"),
+                court_id: Uuid::from_u128(101),
+                court_name: "Court 1 (Indoor)".into(),
+                starts_at,
+                ends_at: starts_at + chrono::Duration::minutes(90),
+                available_places: 4,
+            })])
+            .await;
+
+        let requests = api.received_requests().await.unwrap_or_default();
+        let opened_dm = requests
+            .iter()
+            .find(|request| request.url.path() == "/api/v10/users/@me/channels")
+            .expect("the route never tried to open a DM");
+        assert_eq!(opened_dm.headers.get("authorization").unwrap(), "Bot token");
     }
 }

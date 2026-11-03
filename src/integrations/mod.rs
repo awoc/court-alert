@@ -1,7 +1,7 @@
 pub mod discord;
 pub mod webhook;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -11,14 +11,13 @@ use tokio::sync::watch;
 
 use crate::alerts::AlertMessageLifecycle;
 use crate::config::Settings;
-use crate::model::SubscriberRef;
-use crate::subscriptions::{AlertDispatcher, ClubDirectory, SubscriptionService};
+use crate::model::{IntegrationId, SubscriberRef};
+use crate::subscriptions::{AlertRoute, ClubDirectory, SubscriptionService};
 
 #[derive(Clone)]
 pub struct IntegrationServices {
     pub subscriptions: Arc<SubscriptionService>,
     pub clubs: ClubDirectory,
-    pub dispatcher: Arc<AlertDispatcher>,
 }
 
 #[async_trait]
@@ -26,6 +25,8 @@ pub trait Integration: Send {
     fn admins(&self) -> HashSet<SubscriberRef> {
         HashSet::new()
     }
+
+    fn alert_route(&self) -> Result<(IntegrationId, AlertRoute)>;
 
     async fn run(self: Box<Self>, services: IntegrationServices, ready: ReadySignal) -> Result<()>;
 }
@@ -85,6 +86,15 @@ pub fn build(
     integrations
 }
 
+pub fn alert_routes(
+    integrations: &[Box<dyn Integration>],
+) -> Result<HashMap<IntegrationId, AlertRoute>> {
+    integrations
+        .iter()
+        .map(|integration| integration.alert_route())
+        .collect()
+}
+
 pub async fn run_all(
     integrations: Vec<Box<dyn Integration>>,
     services: IntegrationServices,
@@ -106,6 +116,7 @@ mod tests {
 
     use crate::store::SqliteStore;
     use crate::subscriptions::BerlinClock;
+    use crate::subscriptions::contract::{AlertSender, AvailabilityAlert};
     use std::time::Duration;
 
     #[tokio::test]
@@ -147,10 +158,26 @@ mod tests {
         );
     }
 
+    struct NullSender;
+
+    #[async_trait]
+    impl AlertSender for NullSender {
+        async fn send_alert(&self, _: &str, _: &AvailabilityAlert) -> Result<()> {
+            Ok(())
+        }
+    }
+
     struct InstantReady;
 
     #[async_trait]
     impl Integration for InstantReady {
+        fn alert_route(&self) -> Result<(IntegrationId, AlertRoute)> {
+            Ok((
+                "instant".into(),
+                AlertRoute::delivery_only(Arc::new(NullSender)),
+            ))
+        }
+
         async fn run(
             self: Box<Self>,
             _services: IntegrationServices,
@@ -175,7 +202,6 @@ mod tests {
                 Arc::new(BerlinClock),
             )),
             clubs: ClubDirectory::new(registry.clone()),
-            dispatcher: Arc::new(AlertDispatcher::new(store, registry, Arc::new(BerlinClock))),
         };
         let (signals, barrier) = readiness(2);
 
@@ -188,5 +214,38 @@ mod tests {
         .unwrap();
 
         barrier.wait().await;
+    }
+    struct NoRoute;
+
+    #[async_trait]
+    impl Integration for NoRoute {
+        fn alert_route(&self) -> Result<(IntegrationId, AlertRoute)> {
+            anyhow::bail!("no route today")
+        }
+
+        async fn run(
+            self: Box<Self>,
+            _services: IntegrationServices,
+            _ready: ReadySignal,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn each_integration_contributes_its_route() {
+        let routes = alert_routes(&[Box::new(InstantReady)]).unwrap();
+
+        assert_eq!(routes.len(), 1);
+        assert!(routes.contains_key(&IntegrationId::from("instant")));
+    }
+
+    #[test]
+    fn a_route_that_cannot_be_built_fails_the_whole_assembly() {
+        let integrations: [Box<dyn Integration>; 2] = [Box::new(InstantReady), Box::new(NoRoute)];
+
+        let error = alert_routes(&integrations).err().expect("a missing route");
+
+        assert_eq!(error.to_string(), "no route today");
     }
 }
