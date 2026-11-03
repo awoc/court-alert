@@ -114,7 +114,7 @@ impl SubscriptionService {
             }
             SubscriptionRejection::UnknownClub { unknown } => SubscriptionResult::UnknownClub {
                 unknown: unknown.to_string(),
-                available: self.clubs_of(request.sport),
+                available: self.clubs.clubs_of(request.sport),
             },
             SubscriptionRejection::InvalidTimeRange => SubscriptionResult::InvalidTimeRange,
             SubscriptionRejection::InvalidSchedule => SubscriptionResult::InvalidSchedule,

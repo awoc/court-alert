@@ -16,8 +16,8 @@ use tracing::{error, info, warn};
 use crate::integrations::ReadySignal;
 use crate::model::Sport;
 use crate::model::SubscriberRef;
-use crate::subscriptions::SubscriptionService;
 use crate::subscriptions::contract::{SubscriptionCommand, SubscriptionResult};
+use crate::subscriptions::{ClubDirectory, SubscriptionService};
 
 use super::INTEGRATION;
 use super::commands::register_commands;
@@ -26,6 +26,7 @@ use super::render::{ReplyMessage, render_button_reply, render_help, render_reply
 
 pub(super) struct Handler {
     pub(super) service: Arc<SubscriptionService>,
+    pub(super) clubs: ClubDirectory,
     pub(super) guild_id: Option<GuildId>,
     pub(super) ready: ReadySignal,
     pub(super) commands_registered: AtomicBool,
@@ -42,7 +43,7 @@ impl EventHandler for Handler {
         if self.commands_registered.load(Ordering::SeqCst) {
             return;
         }
-        let padel_clubs = self.service.clubs_of(Sport::Padel);
+        let padel_clubs = self.clubs.clubs_of(Sport::Padel);
         match register_commands(&ctx, self.guild_id, &padel_clubs).await {
             Ok(()) => self.commands_registered.store(true, Ordering::SeqCst),
             Err(e) => error!(error = %format!("{e:#}"), "failed to register slash commands"),

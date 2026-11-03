@@ -11,12 +11,16 @@ use super::auth::require_signature;
 use super::response::InvalidRequest;
 use super::subscriptions;
 use crate::model::Sport;
-use crate::subscriptions::SubscriptionService;
 use crate::subscriptions::contract::{ClubSummary, CourtSummary};
+use crate::subscriptions::{ClubDirectory, SubscriptionService};
 
-pub(super) fn router(service: Arc<SubscriptionService>, api_secret: Arc<str>) -> Router {
+pub(super) fn router(
+    service: Arc<SubscriptionService>,
+    directory: ClubDirectory,
+    api_secret: Arc<str>,
+) -> Router {
     Router::new()
-        .route("/clubs", get(clubs))
+        .route("/clubs", get(clubs).with_state(directory))
         .route(
             "/subscriptions",
             get(subscriptions::list).post(subscriptions::subscribe),
@@ -78,12 +82,12 @@ impl From<CourtSummary> for Court {
 }
 
 async fn clubs(
-    State(service): State<Arc<SubscriptionService>>,
+    State(directory): State<ClubDirectory>,
     query: Result<Query<ClubsQuery>, QueryRejection>,
 ) -> Result<Json<ClubList>, InvalidRequest> {
     let Query(query) = query?;
-    let clubs = service
-        .club_directory(query.sport)
+    let clubs = directory
+        .summaries_of(query.sport)
         .into_iter()
         .map(Club::from)
         .collect();

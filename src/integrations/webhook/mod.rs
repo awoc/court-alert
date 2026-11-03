@@ -17,9 +17,9 @@ use tokio::net::TcpListener;
 use tracing::info;
 
 use crate::config::WebhookSettings;
-use crate::integrations::{Integration, ReadySignal};
+use crate::integrations::{Integration, IntegrationServices, ReadySignal};
 use crate::model::IntegrationId;
-use crate::subscriptions::SubscriptionService;
+use crate::subscriptions::{ClubDirectory, SubscriptionService};
 use alerts::WebhookAlertSender;
 
 pub(crate) const INTEGRATION: IntegrationId = IntegrationId::from_static("webhook");
@@ -64,8 +64,12 @@ impl BoundWebhookApi {
             .context("reading the webhook API address")
     }
 
-    pub async fn serve(self, service: Arc<SubscriptionService>) -> Result<()> {
-        axum::serve(self.listener, api::router(service, self.api_secret))
+    pub async fn serve(
+        self,
+        service: Arc<SubscriptionService>,
+        clubs: ClubDirectory,
+    ) -> Result<()> {
+        axum::serve(self.listener, api::router(service, clubs, self.api_secret))
             .await
             .context("serving the webhook API")
     }
@@ -73,16 +77,14 @@ impl BoundWebhookApi {
 
 #[async_trait]
 impl Integration for WebhookIntegration {
-    async fn run(
-        self: Box<Self>,
-        service: Arc<SubscriptionService>,
-        ready: ReadySignal,
-    ) -> Result<()> {
+    async fn run(self: Box<Self>, services: IntegrationServices, ready: ReadySignal) -> Result<()> {
         let alerts = WebhookAlertSender::new(self.alert_url.clone(), self.alert_secret.clone())?;
-        service.register_sender(INTEGRATION, Arc::new(alerts));
+        services
+            .subscriptions
+            .register_sender(INTEGRATION, Arc::new(alerts));
         let webhook = self.bind().await?;
         info!(address = %webhook.local_addr()?, "webhook API listening");
         ready.ready();
-        webhook.serve(service).await
+        webhook.serve(services.subscriptions, services.clubs).await
     }
 }

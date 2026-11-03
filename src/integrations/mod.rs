@@ -12,7 +12,13 @@ use tokio::sync::watch;
 use crate::alerts::AlertMessageLifecycle;
 use crate::config::Settings;
 use crate::model::SubscriberRef;
-use crate::subscriptions::SubscriptionService;
+use crate::subscriptions::{ClubDirectory, SubscriptionService};
+
+#[derive(Clone)]
+pub struct IntegrationServices {
+    pub subscriptions: Arc<SubscriptionService>,
+    pub clubs: ClubDirectory,
+}
 
 #[async_trait]
 pub trait Integration: Send {
@@ -20,11 +26,7 @@ pub trait Integration: Send {
         HashSet::new()
     }
 
-    async fn run(
-        self: Box<Self>,
-        service: Arc<SubscriptionService>,
-        ready: ReadySignal,
-    ) -> Result<()>;
+    async fn run(self: Box<Self>, services: IntegrationServices, ready: ReadySignal) -> Result<()>;
 }
 
 pub struct ReadySignal {
@@ -84,12 +86,12 @@ pub fn build(
 
 pub async fn run_all(
     integrations: Vec<Box<dyn Integration>>,
-    service: Arc<SubscriptionService>,
+    services: IntegrationServices,
     signals: Vec<ReadySignal>,
 ) -> Result<()> {
     let mut tasks = tokio::task::JoinSet::new();
     for (integration, ready) in integrations.into_iter().zip(signals) {
-        tasks.spawn(integration.run(service.clone(), ready));
+        tasks.spawn(integration.run(services.clone(), ready));
     }
     while let Some(res) = tasks.join_next().await {
         res.context("integration task panicked")??;
@@ -102,7 +104,7 @@ mod tests {
     use super::*;
 
     use crate::store::SqliteStore;
-    use crate::subscriptions::{BerlinClock, SubscriptionService};
+    use crate::subscriptions::BerlinClock;
     use std::time::Duration;
 
     #[tokio::test]
@@ -150,7 +152,7 @@ mod tests {
     impl Integration for InstantReady {
         async fn run(
             self: Box<Self>,
-            _service: Arc<SubscriptionService>,
+            _services: IntegrationServices,
             ready: ReadySignal,
         ) -> Result<()> {
             ready.ready();
@@ -161,19 +163,23 @@ mod tests {
     #[tokio::test]
     async fn run_all_hands_each_integration_its_ready_signal() {
         let store = Arc::new(SqliteStore::open_in_memory().await.unwrap());
-        let service = Arc::new(SubscriptionService::new(
-            store.clone(),
-            store,
-            HashSet::new(),
-            Arc::new(std::sync::RwLock::new(crate::model::VenueRegistry::new())),
-            crate::model::CourtFilter::Any,
-            Arc::new(BerlinClock),
-        ));
+        let registry = Arc::new(std::sync::RwLock::new(crate::model::VenueRegistry::new()));
+        let services = IntegrationServices {
+            subscriptions: Arc::new(SubscriptionService::new(
+                store.clone(),
+                store,
+                HashSet::new(),
+                registry.clone(),
+                crate::model::CourtFilter::Any,
+                Arc::new(BerlinClock),
+            )),
+            clubs: ClubDirectory::new(registry),
+        };
         let (signals, barrier) = readiness(2);
 
         run_all(
             vec![Box::new(InstantReady), Box::new(InstantReady)],
-            service,
+            services,
             signals,
         )
         .await

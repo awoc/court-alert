@@ -1,5 +1,6 @@
 pub mod contract;
 
+mod club_directory;
 mod commands;
 mod court_conversion;
 mod dispatch;
@@ -18,6 +19,7 @@ use crate::model::{
 use crate::ports::{BookableSlotSnapshotRepository, SubscriptionRepository};
 use contract::AlertSender;
 
+pub use club_directory::ClubDirectory;
 pub use court_conversion::{ConversionPass, CourtNameConversion};
 
 pub trait Clock: Send + Sync {
@@ -42,6 +44,7 @@ pub struct SubscriptionService {
     senders: RwLock<HashMap<IntegrationId, Arc<dyn AlertSender>>>,
     admins: HashSet<SubscriberRef>,
     registry: Arc<RwLock<VenueRegistry>>,
+    clubs: ClubDirectory,
     tennis_default_filter: CourtFilter,
     clock: Arc<dyn Clock>,
 }
@@ -60,6 +63,7 @@ impl SubscriptionService {
             slot_snapshots,
             senders: RwLock::new(HashMap::new()),
             admins,
+            clubs: ClubDirectory::new(registry.clone()),
             registry,
             tennis_default_filter,
             clock,
@@ -93,42 +97,6 @@ impl SubscriptionService {
         self.catalogs_for(sport, venue)
             .iter()
             .flat_map(|(_, catalog)| catalog.courts().iter().map(contract::CourtSummary::from))
-            .collect()
-    }
-
-    pub fn clubs_of(&self, sport: Sport) -> Vec<contract::ClubRef> {
-        self.club_directory(sport)
-            .into_iter()
-            .map(|club| contract::ClubRef {
-                venue_id: club.venue_id,
-                name: club.name,
-            })
-            .collect()
-    }
-
-    pub fn club_directory(&self, sport: Sport) -> Vec<contract::ClubSummary> {
-        let registry = self.registry.read().expect("venue registry poisoned");
-        registry
-            .venues_of_sport(sport)
-            .into_iter()
-            .map(|venue_id| {
-                let courts = registry
-                    .catalog(&venue_id)
-                    .map(|catalog| {
-                        catalog
-                            .courts()
-                            .iter()
-                            .map(contract::CourtSummary::from)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                contract::ClubSummary {
-                    name: registry.club_label(&venue_id),
-                    venue_id,
-                    sport,
-                    courts,
-                }
-            })
             .collect()
     }
 

@@ -7,14 +7,14 @@ use tracing::{info, warn};
 use crate::alerts::AlertMessageLifecycle;
 use crate::config::{Config, Settings};
 use crate::integrations::discord::DiscordNotifier;
-use crate::integrations::{self, Integration};
+use crate::integrations::{self, Integration, IntegrationServices};
 use crate::model::{Sport, VenueRegistry};
 use crate::monitor::Monitor;
 use crate::notify::{ChannelSink, SportScopedSink, SurfaceFilteredSink};
 use crate::ports::{AvailabilityChangeSink, ProviderSources};
 use crate::sources;
 use crate::store::SqliteStore;
-use crate::subscriptions::{BerlinClock, CourtNameConversion, SubscriptionService};
+use crate::subscriptions::{BerlinClock, ClubDirectory, CourtNameConversion, SubscriptionService};
 
 const INTEGRATION_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -141,6 +141,10 @@ impl App {
                 .run_until_done(),
         );
 
+        let services = IntegrationServices {
+            subscriptions: service,
+            clubs: ClubDirectory::new(registry.clone()),
+        };
         let (ready_signals, ready_barrier) = integrations::readiness(integrations.len());
 
         tokio::try_join!(
@@ -156,7 +160,7 @@ impl App {
                     .run()
                     .await
             },
-            integrations::run_all(integrations, service, ready_signals),
+            integrations::run_all(integrations, services, ready_signals),
             async {
                 dispatch.await.context("dispatch loop task failed")?;
                 Ok(())

@@ -9,9 +9,8 @@ use serenity::async_trait;
 
 use crate::alerts::AlertMessageLifecycle;
 use crate::config::{Config, DiscordSettings};
-use crate::integrations::{Integration, ReadySignal};
+use crate::integrations::{Integration, IntegrationServices, ReadySignal};
 use crate::model::{IntegrationId, Sport, SubscriberRef};
-use crate::subscriptions::SubscriptionService;
 
 mod commands;
 mod dm;
@@ -82,13 +81,10 @@ impl Integration for DiscordIntegration {
         self.admin_ids.clone()
     }
 
-    async fn run(
-        self: Box<Self>,
-        service: Arc<SubscriptionService>,
-        ready: ReadySignal,
-    ) -> Result<()> {
+    async fn run(self: Box<Self>, services: IntegrationServices, ready: ReadySignal) -> Result<()> {
         let handler = Handler {
-            service: service.clone(),
+            service: services.subscriptions.clone(),
+            clubs: services.clubs,
             guild_id: self.guild_id,
             ready,
             commands_registered: AtomicBool::new(false),
@@ -98,7 +94,7 @@ impl Integration for DiscordIntegration {
             .await
             .context("building serenity client")?;
 
-        service.register_sender(
+        services.subscriptions.register_sender(
             INTEGRATION,
             Arc::new(DiscordSender::new(
                 client.http.clone(),
