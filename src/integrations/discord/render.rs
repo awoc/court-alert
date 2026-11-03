@@ -2,7 +2,7 @@ use super::INTEGRATION;
 use super::text::{DISCORD_CHUNK_BUDGET, chunk_lines, fmt_club_slot_line};
 use crate::model::{CourtFilter, Schedule, TimeRange};
 use crate::subscriptions::contract::{
-    OwnedSubscriptionSummary, SubscriptionResult, SubscriptionSummary,
+    CourtChoice, OwnedSubscriptionSummary, SubscriptionResult, SubscriptionSummary,
 };
 use crate::time::fmt_hhmm;
 
@@ -66,7 +66,7 @@ pub(super) fn render_reply(reply: &SubscriptionResult) -> Vec<ReplyMessage> {
             vec![format!("Court names are at most {max} characters.")]
         }
         SubscriptionResult::UnknownCourts { unknown, available } => vec![
-            format!("Unknown court(s): {}.", unknown.join(", ")),
+            format!("Unknown court(s): {}.", unknown_courts_label(unknown)),
             format!(
                 "Available courts: {}.",
                 available
@@ -216,6 +216,17 @@ fn owned_summary_line(owned: &OwnedSubscriptionSummary) -> String {
         summary_line(&owned.summary),
         subscriber.integration
     )
+}
+
+fn unknown_courts_label(unknown: &CourtChoice) -> String {
+    match unknown {
+        CourtChoice::Names(names) => names.join(", "),
+        CourtChoice::Ids(ids) => ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", "),
+    }
 }
 
 fn scope_label(courts: Option<&[String]>, filter: CourtFilter) -> String {
@@ -512,7 +523,7 @@ mod tests {
     #[test]
     fn renders_unknown_courts_with_available_alternatives() {
         let text = reply_text(&SubscriptionResult::UnknownCourts {
-            unknown: vec!["Cort 2".into()],
+            unknown: CourtChoice::Names(vec!["Cort 2".into()]),
             available: ["Court 2", "Court 5"]
                 .into_iter()
                 .map(|name| CourtSummary {
@@ -525,6 +536,15 @@ mod tests {
         });
         assert!(text.contains("Unknown court(s): Cort 2."));
         assert!(text.contains("Available courts: Court 2, Court 5."));
+    }
+
+    #[test]
+    fn renders_unknown_court_ids_as_the_ids_that_were_chosen() {
+        let text = reply_text(&SubscriptionResult::UnknownCourts {
+            unknown: CourtChoice::Ids(vec![Uuid::from_u128(42)]),
+            available: vec![],
+        });
+        assert!(text.contains("Unknown court(s): 00000000-0000-0000-0000-00000000002a."));
     }
 
     #[test]

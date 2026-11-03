@@ -52,7 +52,7 @@ pub enum SubscriptionResult {
         max: usize,
     },
     UnknownCourts {
-        unknown: Vec<String>,
+        unknown: CourtChoice,
         available: Vec<CourtSummary>,
     },
     CourtsNeedClub,

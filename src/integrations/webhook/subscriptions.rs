@@ -197,7 +197,10 @@ fn respond(result: SubscriptionResult) -> Response {
         }
         SubscriptionResult::UnknownCourts { unknown, available } => rejected(json!({
             "error": "unknown_courts",
-            "unknown": unknown,
+            "unknown": match unknown {
+                CourtChoice::Names(names) => json!(names),
+                CourtChoice::Ids(ids) => json!(ids),
+            },
             "available": available
                 .into_iter()
                 .map(|court| json!({ "id": court.id, "name": court.name }))

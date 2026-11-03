@@ -220,12 +220,14 @@ impl SubscriptionService {
                     }));
                 }
                 self.canonicalize_court_names(sport, venue, names)
+                    .map_err(CourtChoice::Names)
             }
             CourtChoice::Ids(ids) => {
                 let Some(venue) = venue else {
                     return Err(Box::new(SubscriptionResult::CourtsNeedClub));
                 };
                 self.court_names_by_id(sport, venue, ids)
+                    .map_err(CourtChoice::Ids)
             }
         };
         resolved.map(Some).map_err(|unknown| {
@@ -241,7 +243,7 @@ impl SubscriptionService {
         sport: Sport,
         venue: &VenueId,
         ids: Vec<Uuid>,
-    ) -> Result<Vec<String>, Vec<String>> {
+    ) -> Result<Vec<String>, Vec<Uuid>> {
         let catalogs = self.catalogs_for(sport, Some(venue));
         let mut names: Vec<String> = Vec::with_capacity(ids.len());
         let mut unknown = Vec::new();
@@ -252,7 +254,7 @@ impl SubscriptionService {
             {
                 Some(court) if names.iter().any(|name| name == court.name()) => {}
                 Some(court) => names.push(court.name().to_owned()),
-                None => unknown.push(id.to_string()),
+                None => unknown.push(id),
             }
         }
         if unknown.is_empty() {
@@ -351,10 +353,10 @@ impl SubscriptionService {
 #[cfg(test)]
 mod tests {
     use super::super::testing::{
-        PADEL_CLUB_NAME, SYNTHETIC_COURT, admin_uref, date_subscribe_cmd, open_slot,
+        PADEL_CLUB_NAME, SYNTHETIC_COURT, admin_uref, court_id, date_subscribe_cmd, open_slot,
         padel_venue_id, service, service_defaulting_to_clay, service_with_admin,
         service_with_clock, service_with_failing_slot_snapshot, service_with_slots,
-        service_without_padel, subscribe_cmd, uref,
+        service_without_padel, subscribe_cmd, uref, venue_id,
     };
     use crate::model::{
         CourtFilter, CourtLocation, CourtSurface, Schedule, Sport, SubscriptionDraft, TimeRange,
@@ -763,8 +765,39 @@ mod tests {
         let SubscriptionResult::UnknownCourts { unknown, available } = reply else {
             panic!("expected UnknownCourts, got {reply:?}");
         };
-        assert_eq!(unknown, vec!["Court 42".to_string()]);
+        assert_eq!(unknown, CourtChoice::Names(vec!["Court 42".to_string()]));
         assert!(available.iter().any(|court| court.name == "Court 2"));
+        assert_eq!(
+            svc.handle(&uref("1"), SubscriptionCommand::List)
+                .await
+                .unwrap(),
+            SubscriptionResult::SubscriptionList(vec![])
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_court_ids_are_reported_as_ids_and_store_nothing() {
+        let svc = service().await;
+        let stranger = uuid::Uuid::from_u128(4242);
+        let reply = svc
+            .handle(
+                &uref("1"),
+                SubscriptionCommand::Subscribe {
+                    sport: Sport::Tennis,
+                    venue: Some(venue_id()),
+                    schedule: Schedule::Weekday(Weekday::Tue),
+                    start_minute: 18 * 60,
+                    end_minute: 20 * 60,
+                    courts: Some(CourtChoice::Ids(vec![court_id("Court 2"), stranger])),
+                    filter: None,
+                },
+            )
+            .await
+            .unwrap();
+        let SubscriptionResult::UnknownCourts { unknown, .. } = reply else {
+            panic!("expected UnknownCourts, got {reply:?}");
+        };
+        assert_eq!(unknown, CourtChoice::Ids(vec![stranger]));
         assert_eq!(
             svc.handle(&uref("1"), SubscriptionCommand::List)
                 .await
