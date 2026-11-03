@@ -244,6 +244,17 @@ where
     (integration.into(), AlertRoute::chat_provider(provider))
 }
 
+impl AlertDispatcher {
+    /// Runs one batch through a whole dispatch loop and returns once every integration has
+    /// finished it.
+    pub(crate) async fn dispatch(self: &Arc<Self>, changes: &[AvailabilityChange]) {
+        let (input, rx) = tokio::sync::mpsc::channel(1);
+        input.send(changes.to_vec()).await.unwrap();
+        drop(input);
+        self.clone().dispatch_loop(rx).await;
+    }
+}
+
 pub(crate) fn dispatcher_on(
     store: Arc<SqliteStore>,
     registry: Arc<RwLock<VenueRegistry>>,

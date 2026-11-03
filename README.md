@@ -76,6 +76,14 @@ A subscription stores each court it selects as a club and a court ID. A court ke
 
 A Discord court name, or a number such as `2`, picks every court with that name or number when the reminder is created. With no club set it looks across all clubs of the sport, and with a club set it looks only at that club. A court added later under the same name is not included. Naming courts is rejected while a club in scope has not loaded its courts yet.
 
+## Alert delivery
+
+Each integration delivers alerts on its own worker, with a queue of up to 8 batches and up to 16 alerts in flight. A batch is what one poll of a club changed for that integration. A stalled receiver delays only its own integration and never holds back polling.
+
+Within an integration, batches go out in order. A chat provider updates its alert messages for a batch only after that batch's alerts have finished. There is no ordering between integrations.
+
+When an integration's queue is full, court-alert drops that integration's new batch and logs a warning with the integration and the number of alerts and slots dropped. It never retries or stores a dropped batch, so those alerts are lost. A dropped batch can also leave a stale line on a Discord alert message, because the update that would have marked the slot was in that batch.
+
 ## Webhook integration
 
 The webhook integration lets an agent on the same LAN manage subscriptions for the people it talks to and receive matching alerts, all over HTTP. It runs alongside Discord and is enabled by `COURT_ALERT_WEBHOOK_LISTEN`.
@@ -101,4 +109,4 @@ Each request sends `X-Webhook-Timestamp` (Unix seconds) and `X-Webhook-Signature
 
 ### Alerts
 
-When slots open that match a webhook subscriber's subscriptions, court-alert sends one `POST` per subscriber per poll to `COURT_ALERT_WEBHOOK_ALERT_URL`, with the body `{"subscriber_id": "...", "slots": [{"club", "court", "court_id", "starts_at", "ends_at"}]}` and times in UTC. Alerts carry `X-Webhook-Timestamp` and `X-Webhook-Signature-V2`, the HMAC-SHA256 of `"<timestamp>.<body>"` keyed by `COURT_ALERT_WEBHOOK_ALERT_SECRET`, and a unique `webhook-id` header. A failed delivery is logged and dropped without retries. Slots that become unbookable send nothing.
+When slots open that match a webhook subscriber's subscriptions, court-alert sends one `POST` per subscriber per poll to `COURT_ALERT_WEBHOOK_ALERT_URL`, with the body `{"subscriber_id": "...", "slots": [{"club", "court", "court_id", "starts_at", "ends_at"}]}` and times in UTC. Alerts carry `X-Webhook-Timestamp` and `X-Webhook-Signature-V2`, the HMAC-SHA256 of `"<timestamp>.<body>"` keyed by `COURT_ALERT_WEBHOOK_ALERT_SECRET`, and a unique `webhook-id` header. A failed delivery is logged and dropped without retries, and so is a batch that finds the [delivery queue](#alert-delivery) full. Slots that become unbookable send nothing.
