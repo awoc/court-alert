@@ -3,13 +3,12 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::StatusCode;
 use axum::http::request::Parts;
 use axum::middleware::Next;
 use axum::response::Response;
 use http_body_util::LengthLimitError;
 
-use super::response::{error, invalid_request};
+use super::response::ApiError;
 use super::signing;
 
 const TIMESTAMP_HEADER: &str = "x-webhook-timestamp";
@@ -22,11 +21,10 @@ pub(super) async fn require_signature(
     State(secret): State<Arc<str>>,
     request: Request,
     next: Next,
-) -> Response {
+) -> Result<Response, ApiError> {
     let (parts, body) = request.into_parts();
-    let Some(claim) = SignatureClaim::from_headers(&parts, chrono::Utc::now().timestamp()) else {
-        return unauthorized();
-    };
+    let claim = SignatureClaim::from_headers(&parts, chrono::Utc::now().timestamp())
+        .ok_or(ApiError::Unauthorized)?;
     let body = match tokio::time::timeout(
         BODY_READ_TIMEOUT,
         axum::body::to_bytes(body, MAX_BODY_BYTES),
@@ -34,20 +32,18 @@ pub(super) async fn require_signature(
     .await
     {
         Ok(Ok(body)) => body,
-        Ok(Err(e)) if is_over_limit(&e) => {
-            return error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large");
+        Ok(Err(e)) if is_over_limit(&e) => return Err(ApiError::BodyTooLarge),
+        Ok(Err(_)) => {
+            return Err(ApiError::invalid_request(
+                "the request body could not be read",
+            ));
         }
-        Ok(Err(_)) => return invalid_request("the request body could not be read".into()),
-        Err(_) => return error(StatusCode::REQUEST_TIMEOUT, "request_timeout"),
+        Err(_) => return Err(ApiError::RequestTimeout),
     };
     if !claim.matches(&secret, &parts, &body) {
-        return unauthorized();
+        return Err(ApiError::Unauthorized);
     }
-    next.run(Request::from_parts(parts, Body::from(body))).await
-}
-
-fn unauthorized() -> Response {
-    error(StatusCode::UNAUTHORIZED, "unauthorized")
+    Ok(next.run(Request::from_parts(parts, Body::from(body))).await)
 }
 
 fn is_over_limit(e: &axum::Error) -> bool {

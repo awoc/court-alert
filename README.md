@@ -101,7 +101,7 @@ The API is plain HTTP and JSON, meant for the LAN only. Every request carries a 
 
 In a subscription, `courts` is `null` when it watches every court, otherwise one `{"id", "name"}` object per selected court. `id` is the court ID from `GET /clubs`, and it is what the subscription matches on. `name` is the court's current name, so it follows renames. `name` is `null` while the club's catalog has not loaded, for example just after a restart, and once the court has left the catalog; the court stays selected either way. `id` is `null` only for an older subscription still stored by name.
 
-Errors are JSON with an `error` kind: `400` for malformed JSON or query parameters, `401` for a missing or invalid signature, `404` for a missing subscription, `408` for a body that takes over 10 seconds to arrive, `413` for a body over 64 KiB, `422` for validation rejections (with the valid alternatives where there are any) and `500` for a server failure.
+Errors are JSON with an `error` kind: `400` for a malformed request, such as bad JSON, query parameters, a subscription ID in the path or times not written as `HH:MM`, `401` for a missing or invalid signature, `404` for a missing subscription, `408` for a body that takes over 10 seconds to arrive, `413` for a body over 64 KiB, `422` for validation rejections (with the valid alternatives where there are any) and `500` for a server failure.
 
 ### Signing
 

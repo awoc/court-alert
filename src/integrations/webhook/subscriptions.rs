@@ -12,13 +12,13 @@ use tracing::error;
 use uuid::Uuid;
 
 use super::INTEGRATION;
-use super::response::{InvalidRequest, error, invalid_request, rejected};
+use super::response::ApiError;
 use super::slot::Slot;
 use crate::model::{CourtFilter, MINUTES_PER_DAY, Schedule, Sport, SubscriberRef, VenueId};
 use crate::subscriptions::SubscriptionService;
 use crate::subscriptions::contract::{
-    CourtChoice, SelectedCourtSummary, Subscribed, SubscriptionRejection, SubscriptionRequest,
-    SubscriptionSummary, UnsubscribeOutcome,
+    CourtChoice, SelectedCourtSummary, Subscribed, SubscriptionRequest, SubscriptionSummary,
+    UnsubscribeOutcome,
 };
 use crate::time::fmt_hhmm;
 
@@ -106,23 +106,21 @@ impl From<SubscriptionSummary> for Subscription {
 pub(super) async fn subscribe(
     State(service): State<Arc<SubscriptionService>>,
     request: Result<Json<SubscribeRequest>, JsonRejection>,
-) -> Result<Response, InvalidRequest> {
+) -> Result<Response, ApiError> {
     let Json(request) = request?;
     let schedule = match (request.weekday, request.date) {
         (Some(weekday), None) => Schedule::Weekday(weekday),
         (None, Some(date)) => Schedule::Date(date),
-        _ => return Ok(rejection_response(SubscriptionRejection::InvalidSchedule)),
+        _ => return Err(ApiError::InvalidSchedule),
     };
     let (Some(start_minute), Some(end_minute)) =
         (minute_of_day(&request.start), minute_of_day(&request.end))
     else {
-        return Ok(invalid_request(
-            "start and end must be times of day as HH:MM".into(),
+        return Err(ApiError::invalid_request(
+            "start and end must be times of day as HH:MM",
         ));
     };
-    let Some(subscriber) = subscriber_ref(&request.subscriber_id) else {
-        return Ok(invalid_subscriber_id());
-    };
+    let subscriber = subscriber_ref(&request.subscriber_id).ok_or(ApiError::InvalidSubscriberId)?;
     let request = SubscriptionRequest {
         sport: request.sport,
         venue: request.club,
@@ -132,40 +130,39 @@ pub(super) async fn subscribe(
         courts: request.courts.map(CourtChoice::Ids),
         filter: request.filter,
     };
-    Ok(respond(
-        service.subscribe(&subscriber, &request).await,
-        |outcome| match outcome {
-            Ok(subscribed) => subscribed_response(subscribed),
-            Err(rejection) => rejection_response(rejection),
-        },
-    ))
+    let subscribed = service
+        .subscribe(&subscriber, &request)
+        .await
+        .map_err(internal_error)??;
+    Ok(subscribed_response(subscribed))
 }
 
 pub(super) async fn list(
     State(service): State<Arc<SubscriptionService>>,
     query: Result<Query<SubscriberQuery>, QueryRejection>,
-) -> Result<Response, InvalidRequest> {
+) -> Result<Response, ApiError> {
     let Query(query) = query?;
-    let Some(subscriber) = subscriber_ref(&query.subscriber_id) else {
-        return Ok(invalid_subscriber_id());
-    };
-    Ok(respond(service.list(&subscriber).await, list_response))
+    let subscriber = subscriber_ref(&query.subscriber_id).ok_or(ApiError::InvalidSubscriberId)?;
+    let subscriptions = service.list(&subscriber).await.map_err(internal_error)?;
+    Ok(list_response(subscriptions))
 }
 
 pub(super) async fn unsubscribe(
     State(service): State<Arc<SubscriptionService>>,
     id: Result<Path<i64>, PathRejection>,
     query: Result<Query<SubscriberQuery>, QueryRejection>,
-) -> Result<Response, InvalidRequest> {
+) -> Result<Response, ApiError> {
     let Path(id) = id?;
     let Query(query) = query?;
-    let Some(subscriber) = subscriber_ref(&query.subscriber_id) else {
-        return Ok(invalid_subscriber_id());
-    };
-    Ok(respond(
-        service.unsubscribe(&subscriber, id).await,
-        unsubscribe_response,
-    ))
+    let subscriber = subscriber_ref(&query.subscriber_id).ok_or(ApiError::InvalidSubscriberId)?;
+    match service
+        .unsubscribe(&subscriber, id)
+        .await
+        .map_err(internal_error)?
+    {
+        UnsubscribeOutcome::Removed { .. } => Ok(StatusCode::NO_CONTENT.into_response()),
+        UnsubscribeOutcome::NotFound { .. } => Err(ApiError::NotFound),
+    }
 }
 
 fn minute_of_day(raw: &str) -> Option<u32> {
@@ -188,18 +185,9 @@ fn subscriber_ref(subscriber_id: &str) -> Option<SubscriberRef> {
     })
 }
 
-fn invalid_subscriber_id() -> Response {
-    rejected(json!({ "error": "invalid_subscriber_id" }))
-}
-
-fn respond<T>(outcome: anyhow::Result<T>, success: impl FnOnce(T) -> Response) -> Response {
-    match outcome {
-        Ok(outcome) => success(outcome),
-        Err(e) => {
-            error!(error = %format!("{e:#}"), "webhook API subscription command failed");
-            internal_error()
-        }
-    }
+fn internal_error(e: anyhow::Error) -> ApiError {
+    error!(error = %format!("{e:#}"), "webhook API subscription command failed");
+    ApiError::Internal
 }
 
 fn subscribed_response(subscribed: Subscribed) -> Response {
@@ -221,67 +209,4 @@ fn list_response(subscriptions: Vec<SubscriptionSummary>) -> Response {
             .collect::<Vec<_>>(),
     }))
     .into_response()
-}
-
-fn unsubscribe_response(outcome: UnsubscribeOutcome) -> Response {
-    match outcome {
-        UnsubscribeOutcome::Removed { .. } => StatusCode::NO_CONTENT.into_response(),
-        UnsubscribeOutcome::NotFound { .. } => error(StatusCode::NOT_FOUND, "not_found"),
-    }
-}
-
-fn rejection_response(rejection: SubscriptionRejection) -> Response {
-    match rejection {
-        SubscriptionRejection::InvalidTimeRange => {
-            rejected(json!({ "error": "invalid_time_range" }))
-        }
-        SubscriptionRejection::InvalidSchedule => rejected(json!({ "error": "invalid_schedule" })),
-        SubscriptionRejection::TooManyCourts { max } => {
-            rejected(json!({ "error": "too_many_courts", "max": max }))
-        }
-        SubscriptionRejection::CourtNameTooLong { max } => {
-            rejected(json!({ "error": "court_name_too_long", "max": max }))
-        }
-        SubscriptionRejection::UnknownCourts { unknown, available } => rejected(json!({
-            "error": "unknown_courts",
-            "unknown": match unknown {
-                CourtChoice::Names(names) => json!(names),
-                CourtChoice::Ids(ids) => json!(ids),
-            },
-            "available": available
-                .iter()
-                .map(|court| json!({ "id": court.id(), "name": court.name() }))
-                .collect::<Vec<_>>(),
-        })),
-        SubscriptionRejection::CourtsNeedClub => rejected(json!({ "error": "courts_need_club" })),
-        SubscriptionRejection::CourtCatalogsNotReady => {
-            rejected(json!({ "error": "court_catalogs_not_ready" }))
-        }
-        SubscriptionRejection::UnknownClub { unknown, available } => rejected(json!({
-            "error": "unknown_club",
-            "unknown": unknown.as_str(),
-            "available": available
-                .into_iter()
-                .map(|club| json!({ "id": club.venue_id.as_str(), "name": club.name }))
-                .collect::<Vec<_>>(),
-        })),
-        SubscriptionRejection::NoClubsConfigured { sport } => rejected(json!({
-            "error": "no_clubs_configured",
-            "sport": sport.as_str(),
-        })),
-        SubscriptionRejection::FilterExcludesCourts { courts, filter } => rejected(json!({
-            "error": "filter_excludes_courts",
-            "courts": courts,
-            "filter": filter.as_str(),
-        })),
-        SubscriptionRejection::FilterNotForSport { sport, filter } => rejected(json!({
-            "error": "filter_not_for_sport",
-            "sport": sport.as_str(),
-            "filter": filter.as_str(),
-        })),
-    }
-}
-
-fn internal_error() -> Response {
-    error(StatusCode::INTERNAL_SERVER_ERROR, "internal")
 }

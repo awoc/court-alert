@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::auth::require_signature;
-use super::response::InvalidRequest;
+use super::response::ApiError;
 use super::subscriptions;
 use crate::model::Sport;
 use crate::subscriptions::contract::{ClubSummary, CourtSummary};
@@ -84,7 +84,7 @@ impl From<CourtSummary> for Court {
 async fn clubs(
     State(directory): State<ClubDirectory>,
     query: Result<Query<ClubsQuery>, QueryRejection>,
-) -> Result<Json<ClubList>, InvalidRequest> {
+) -> Result<Json<ClubList>, ApiError> {
     let Query(query) = query?;
     let clubs = directory
         .summaries_of(query.sport)
