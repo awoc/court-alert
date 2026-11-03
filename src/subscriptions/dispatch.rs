@@ -229,12 +229,8 @@ impl AlertDispatcher {
         if subs.is_empty() {
             return by_integration;
         }
-        let matched = {
-            let registry = self.registry.read().expect("venue registry poisoned");
-            match_subscriptions(changes, &subs, &registry)
-        };
         let registry = self.registry.read().expect("venue registry poisoned");
-        for (subscriber, slots) in matched {
+        for (subscriber, slots) in match_subscriptions(changes, &subs, &registry) {
             if !self.routes.contains_key(&subscriber.integration) {
                 warn!(
                     integration = %subscriber.integration,
