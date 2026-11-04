@@ -1,9 +1,12 @@
 use anyhow::{Context, Result};
 use chrono::{NaiveDate, Weekday};
 use rusqlite::Row;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::model::{
-    CourtFilter, ProviderUserRef, Schedule, Sport, Subscription, TimeRange, VenueId,
+    CourtFilter, CourtSelection, Schedule, SelectedCourt, Sport, SubscriberRef, Subscription,
+    TimeRange, VenueId,
 };
 
 use super::DbRepr;
@@ -19,6 +22,7 @@ pub(super) struct SubscriptionRow {
     start_minute: u32,
     end_minute: u32,
     courts: Option<String>,
+    selected_courts: Option<String>,
     court_filter: String,
 }
 
@@ -37,6 +41,7 @@ impl TryFrom<&Row<'_>> for SubscriptionRow {
             start_minute: row.get("start_minute")?,
             end_minute: row.get("end_minute")?,
             courts: row.get("courts")?,
+            selected_courts: row.get("selected_courts")?,
             court_filter: row.get("court_filter")?,
         })
     }
@@ -54,15 +59,15 @@ impl TryFrom<SubscriptionRow> for Subscription {
         })?;
         Ok(Self {
             id: row.id,
-            user: ProviderUserRef {
-                provider: row.provider,
-                user_id: row.user_id,
+            subscriber: SubscriberRef {
+                integration: row.provider.into(),
+                subscriber_id: row.user_id,
             },
             sport: Sport::from_db(row.sport)?,
             venue: row.venue.map(VenueId::from),
             schedule: Schedule::from_db((row.weekday, row.on_date))?,
             time_range,
-            courts: Option::<Vec<String>>::from_db(row.courts)?,
+            courts: CourtSelection::from_db((row.courts, row.selected_courts))?,
             filter: CourtFilter::from_db(row.court_filter)?,
         })
     }
@@ -130,19 +135,66 @@ impl DbRepr for Sport {
     }
 }
 
-impl DbRepr for Option<Vec<String>> {
-    type Db = Option<String>;
+#[derive(Serialize, Deserialize)]
+struct StoredCourt {
+    venue_id: String,
+    court_id: Uuid,
+}
+
+impl From<SelectedCourt> for StoredCourt {
+    fn from(court: SelectedCourt) -> Self {
+        Self {
+            venue_id: court.venue_id.to_string(),
+            court_id: court.court_id,
+        }
+    }
+}
+
+impl From<StoredCourt> for SelectedCourt {
+    fn from(court: StoredCourt) -> Self {
+        Self {
+            venue_id: court.venue_id.into(),
+            court_id: court.court_id,
+        }
+    }
+}
+
+impl DbRepr for CourtSelection {
+    /// `(courts, selected_courts)`: the names of a pending selection, or the
+    /// identities of a converted one.
+    type Db = (Option<String>, Option<String>);
 
     fn into_db(self) -> Result<Self::Db> {
-        self.map(|courts| serde_json::to_string(&courts).context("serializing courts list"))
-            .transpose()
+        Ok(match self {
+            Self::Every => (None, None),
+            Self::PendingNames(names) => (
+                Some(serde_json::to_string(&names).context("serializing court names")?),
+                None,
+            ),
+            Self::Selected(courts) => {
+                let stored: Vec<StoredCourt> = courts.into_iter().map(Into::into).collect();
+                (
+                    None,
+                    Some(serde_json::to_string(&stored).context("serializing selected courts")?),
+                )
+            }
+        })
     }
 
     fn from_db(db: Self::Db) -> rusqlite::Result<Self> {
         match db {
-            None => Ok(None),
-            Some(text) => serde_json::from_str(&text)
+            (None, None) => Ok(Self::Every),
+            (Some(names), None) => serde_json::from_str(&names)
+                .map(Self::PendingNames)
                 .map_err(|error| conversion_error(format!("invalid stored courts JSON: {error}"))),
+            (None, Some(courts)) => serde_json::from_str::<Vec<StoredCourt>>(&courts)
+                .map(|stored| Self::Selected(stored.into_iter().map(Into::into).collect()))
+                .map_err(|error| {
+                    conversion_error(format!("invalid stored selected_courts JSON: {error}"))
+                }),
+            (Some(_), Some(_)) => Err(conversion_error(
+                "subscription row has both courts and selected_courts".into(),
+            )),
         }
     }
 }

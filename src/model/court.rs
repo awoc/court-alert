@@ -148,6 +148,13 @@ impl CourtFilter {
         }
     }
 
+    pub fn applies_to(self, sport: Sport) -> bool {
+        matches!(
+            (self, sport),
+            (Self::Any, _) | (Self::Surface(_), Sport::Tennis) | (Self::Location(_), Sport::Padel)
+        )
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Any => "any",
@@ -256,30 +263,29 @@ impl CourtCatalog {
     }
 
     pub fn attributes_of(&self, court_id: Uuid) -> Option<&CourtAttributes> {
-        self.courts
-            .iter()
-            .find(|court| court.id() == court_id)
-            .map(Court::attributes)
+        self.find_by_id(court_id).map(Court::attributes)
     }
 
-    pub fn find_by_name(&self, name: &str) -> Option<&Court> {
-        self.courts
-            .iter()
-            .find(|court| court.name().eq_ignore_ascii_case(name))
+    pub fn find_by_id(&self, court_id: Uuid) -> Option<&Court> {
+        self.courts.iter().find(|court| court.id() == court_id)
     }
 
-    pub fn resolve(&self, input: &str) -> Option<&Court> {
-        let input = input.trim();
-        if let Some(number) = first_number(input)
-            && let Some(court) = self
-                .courts
-                .iter()
-                .find(|court| court.number() == Some(number))
-        {
-            return Some(court);
-        }
-        self.find_by_name(input)
+    pub fn courts_named(&self, name: &str) -> impl Iterator<Item = &Court> {
+        self.courts
+            .iter()
+            .filter(move |court| same_court_name(court.name(), name))
     }
+
+    pub fn courts_numbered_in(&self, input: &str) -> impl Iterator<Item = &Court> {
+        let number = first_number(input);
+        self.courts
+            .iter()
+            .filter(move |court| number.is_some() && court.number() == number)
+    }
+}
+
+pub(super) fn same_court_name(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
 }
 
 #[cfg(test)]
@@ -413,27 +419,84 @@ mod tests {
         assert_eq!(catalog.courts()[2].number(), None);
     }
 
-    #[test]
-    fn resolving_matches_on_the_court_number() {
-        let catalog = catalog();
-        for input in ["19", " 19 ", "Court 19", "court 19 - synthetic", "#19"] {
-            assert_eq!(
-                catalog.resolve(input).map(Court::name),
-                Some("Court 19 - Synthetic"),
-                "input {input:?}"
-            );
-        }
+    fn names<'a>(courts: impl Iterator<Item = &'a Court>) -> Vec<&'a str> {
+        courts.map(Court::name).collect()
     }
 
     #[test]
-    fn resolving_falls_back_to_the_name_when_there_is_no_number() {
+    fn a_number_anywhere_in_the_input_finds_the_courts_with_that_number() {
+        let catalog = catalog();
+        for input in ["19", " 19 ", "Court 19", "court 19 - synthetic", "#19"] {
+            assert_eq!(
+                names(catalog.courts_numbered_in(input)),
+                ["Court 19 - Synthetic"],
+                "input {input:?}"
+            );
+        }
+        assert!(catalog.courts_numbered_in("Court 7").next().is_none());
+        assert!(catalog.courts_numbered_in("nonsense").next().is_none());
+    }
+
+    #[test]
+    fn every_court_with_the_number_is_found() {
+        let catalog = CourtCatalog::new(vec![
+            Court::new(
+                Uuid::from_u128(1),
+                "Court 2".into(),
+                CourtAttributes::tennis(CourtSurface::Clay),
+            ),
+            Court::new(
+                Uuid::from_u128(2),
+                "Pista 2".into(),
+                CourtAttributes::tennis(CourtSurface::Clay),
+            ),
+        ]);
+        assert_eq!(
+            names(catalog.courts_numbered_in("2")),
+            ["Court 2", "Pista 2"]
+        );
+    }
+
+    #[test]
+    fn names_compare_in_full_and_ignore_case() {
         let catalog = catalog();
         assert_eq!(
-            catalog.resolve("centre court").map(Court::name),
-            Some("Centre Court")
+            names(catalog.courts_named("centre court")),
+            ["Centre Court"]
         );
-        assert!(catalog.resolve("Court 7").is_none());
-        assert!(catalog.resolve("nonsense").is_none());
+        assert!(catalog.courts_named("Court 19").next().is_none());
+        assert!(catalog.courts_named("nonsense").next().is_none());
+    }
+
+    #[test]
+    fn names_ignore_the_case_of_letters_outside_ascii() {
+        let catalog = CourtCatalog::new(vec![Court::new(
+            Uuid::from_u128(1),
+            "Platz Süd".into(),
+            CourtAttributes::tennis(CourtSurface::Clay),
+        )]);
+        assert_eq!(names(catalog.courts_named("PLATZ SÜD")), ["Platz Süd"]);
+    }
+
+    #[test]
+    fn every_court_sharing_a_name_is_found() {
+        let catalog = CourtCatalog::new(vec![
+            Court::new(
+                Uuid::from_u128(1),
+                "Centre Court".into(),
+                CourtAttributes::tennis(CourtSurface::Clay),
+            ),
+            Court::new(
+                Uuid::from_u128(2),
+                "Centre Court".into(),
+                CourtAttributes::tennis(CourtSurface::Synthetic),
+            ),
+        ]);
+        let ids: Vec<Uuid> = catalog
+            .courts_named("Centre Court")
+            .map(Court::id)
+            .collect();
+        assert_eq!(ids, [Uuid::from_u128(1), Uuid::from_u128(2)]);
     }
 
     #[test]

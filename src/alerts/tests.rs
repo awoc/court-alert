@@ -1,5 +1,5 @@
 use super::*;
-use crate::model::StrikePlan;
+use crate::model::{IntegrationId, StrikePlan};
 use crate::store::SqliteStore;
 use chrono::{DateTime, Duration, Utc};
 use std::sync::Mutex;
@@ -27,7 +27,7 @@ impl AlertMessageRepository for Repository {
     }
     async fn plan_strikes(
         &self,
-        chat_provider: &str,
+        chat_provider: &IntegrationId,
         surface: AlertSurface,
         slots: &[BookableSlotId],
     ) -> Result<Vec<StrikePlan>> {
@@ -87,8 +87,8 @@ fn slot(line: &AlertLine) -> BookableSlotId {
 #[tokio::test]
 async fn chat_providers_share_pruning_but_edit_only_their_own_messages() {
     let (lifecycle, repository) = lifecycle(Faults::default()).await;
-    let first = lifecycle.tracker("first", AlertSurface::DirectMessage);
-    let second = lifecycle.tracker("second", AlertSurface::DirectMessage);
+    let first = lifecycle.tracker("first".into(), AlertSurface::DirectMessage);
+    let second = lifecycle.tracker("second".into(), AlertSurface::DirectMessage);
     let announced = line();
     first
         .record(Some("77"), "42", std::slice::from_ref(&announced))
@@ -113,7 +113,7 @@ async fn chat_providers_share_pruning_but_edit_only_their_own_messages() {
         .lock()
         .unwrap()
         .iter()
-        .map(|k| k.chat_provider.clone())
+        .map(|k| k.chat_provider.to_string())
         .collect();
     chat_providers.sort();
     assert_eq!(chat_providers, ["first", "second"]);
@@ -122,7 +122,7 @@ async fn chat_providers_share_pruning_but_edit_only_their_own_messages() {
         assert!(
             repository
                 .store
-                .plan_strikes(chat_provider, AlertSurface::DirectMessage, &slots)
+                .plan_strikes(&chat_provider.into(), AlertSurface::DirectMessage, &slots)
                 .await
                 .unwrap()
                 .is_empty()
@@ -133,7 +133,7 @@ async fn chat_providers_share_pruning_but_edit_only_their_own_messages() {
 #[tokio::test]
 async fn a_failed_edit_keeps_its_plan_and_does_not_block_other_messages() {
     let (lifecycle, repository) = lifecycle(Faults::default()).await;
-    let tracker = lifecycle.tracker("test", AlertSurface::Channel);
+    let tracker = lifecycle.tracker("test".into(), AlertSurface::Channel);
     let announced = line();
     for id in ["failed", "sent"] {
         tracker
@@ -152,7 +152,7 @@ async fn a_failed_edit_keeps_its_plan_and_does_not_block_other_messages() {
         .unwrap();
     let pending = repository
         .store
-        .plan_strikes("test", AlertSurface::Channel, &slots)
+        .plan_strikes(&"test".into(), AlertSurface::Channel, &slots)
         .await
         .unwrap();
     assert_eq!(pending.len(), 1);
@@ -165,7 +165,7 @@ async fn a_failed_edit_keeps_its_plan_and_does_not_block_other_messages() {
     assert!(
         repository
             .store
-            .plan_strikes("test", AlertSurface::Channel, &slots)
+            .plan_strikes(&"test".into(), AlertSurface::Channel, &slots)
             .await
             .unwrap()
             .is_empty()
@@ -181,7 +181,7 @@ async fn failed_edit_persistence_leaves_the_message_tracked() {
             ..Faults::default()
         })
         .await;
-        let tracker = lifecycle.tracker("test", AlertSurface::DirectMessage);
+        let tracker = lifecycle.tracker("test".into(), AlertSurface::DirectMessage);
         let announced = line();
         tracker
             .record(Some("room"), "42", std::slice::from_ref(&announced))
@@ -200,7 +200,7 @@ async fn failed_edit_persistence_leaves_the_message_tracked() {
         assert_eq!(
             repository
                 .store
-                .plan_strikes("test", AlertSurface::DirectMessage, &slots)
+                .plan_strikes(&"test".into(), AlertSurface::DirectMessage, &slots)
                 .await
                 .unwrap()
                 .len(),
@@ -216,7 +216,7 @@ async fn planning_failure_still_prunes_and_failed_pruning_can_be_retried() {
         ..Faults::default()
     })
     .await;
-    let tracker = lifecycle.tracker("test", AlertSurface::Channel);
+    let tracker = lifecycle.tracker("test".into(), AlertSurface::Channel);
     let announced = line();
     repository.fail_next_prune.store(true, Ordering::SeqCst);
     assert!(
@@ -251,8 +251,8 @@ async fn planning_failure_still_prunes_and_failed_pruning_can_be_retried() {
 #[tokio::test]
 async fn edits_precede_pruning_and_the_grace_keeps_other_surfaces_available() {
     let (lifecycle, repository) = lifecycle(Faults::default()).await;
-    let channel = lifecycle.tracker("test", AlertSurface::Channel);
-    let dm = lifecycle.tracker("test", AlertSurface::DirectMessage);
+    let channel = lifecycle.tracker("test".into(), AlertSurface::Channel);
+    let dm = lifecycle.tracker("test".into(), AlertSurface::DirectMessage);
     let mut old = line();
     old.starts_at = Utc::now() - Duration::hours(3);
     old.ends_at = old.starts_at + Duration::hours(1);

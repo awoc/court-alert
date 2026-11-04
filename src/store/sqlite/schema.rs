@@ -8,7 +8,7 @@
 use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 const SCHEMA: &str = include_str!("../../../sql/schema.sql");
 
@@ -58,6 +58,7 @@ fn is_empty(conn: &Connection) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{CourtSelection, Subscription};
 
     const UPGRADE_TO_V1: &str = include_str!("../../../sql/migrations/0001_strict_schema.sql");
     const UPGRADE_TO_V2: &str =
@@ -68,6 +69,8 @@ mod tests {
     const UPGRADE_TO_V5: &str = include_str!("../../../sql/migrations/0005_dm_alert_messages.sql");
     const UPGRADE_TO_V6: &str =
         include_str!("../../../sql/migrations/0006_provider_scoped_alert_messages.sql");
+    const UPGRADE_TO_V7: &str =
+        include_str!("../../../sql/migrations/0007_subscription_court_ids.sql");
 
     const LEGACY_SCHEMA: &str = "
         CREATE TABLE subscriptions (
@@ -116,6 +119,7 @@ mod tests {
         conn.execute_batch(UPGRADE_TO_V4).unwrap();
         conn.execute_batch(UPGRADE_TO_V5).unwrap();
         conn.execute_batch(UPGRADE_TO_V6).unwrap();
+        conn.execute_batch(UPGRADE_TO_V7).unwrap();
         ensure_current(conn).unwrap();
     }
 
@@ -184,6 +188,7 @@ mod tests {
         conn.execute_batch(UPGRADE_TO_V4).unwrap();
         conn.execute_batch(UPGRADE_TO_V5).unwrap();
         conn.execute_batch(UPGRADE_TO_V6).unwrap();
+        conn.execute_batch(UPGRADE_TO_V7).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         assert!(table_sql(&conn, "bookable_slots").is_none());
         assert!(table_sql(&conn, "venue_state").is_none());
@@ -394,6 +399,14 @@ mod tests {
             "INSERT INTO subscriptions
              (provider, user_id, sport, weekday, start_minute, end_minute, courts, court_filter)
              VALUES ('discord', '12345', 'tennis', 2, 1080, 1320, 'Court 2', 'clay')",
+            // selected_courts is not a JSON array
+            "INSERT INTO subscriptions
+             (provider, user_id, sport, weekday, start_minute, end_minute, selected_courts, court_filter)
+             VALUES ('discord', '12345', 'tennis', 2, 1080, 1320, 'zhs-munich', 'clay')",
+            // a selection stored by name and by identity at once
+            "INSERT INTO subscriptions
+             (provider, user_id, sport, weekday, start_minute, end_minute, courts, selected_courts, court_filter)
+             VALUES ('discord', '12345', 'tennis', 2, 1080, 1320, '[\"Court 2\"]', '[]', 'clay')",
             "INSERT INTO subscriptions
              (provider, user_id, sport, weekday, start_minute, end_minute, court_filter)
              VALUES ('discord', '12345', 'tennis', 2, 1080, 1320, 'grass')",
@@ -588,6 +601,8 @@ mod tests {
                      '2026-07-13T08:00:00.000Z', '2026-07-13T09:00:00.000Z', 0);"
         ).unwrap();
         conn.execute_batch(UPGRADE_TO_V6).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 6);
+        conn.execute_batch(UPGRADE_TO_V7).unwrap();
         ensure_current(&mut conn).unwrap();
         let rows: Vec<(String, String, String, String, Option<String>, i64)> = conn
             .prepare(
@@ -629,7 +644,37 @@ mod tests {
                 ),
             ]
         );
-        assert_eq!(schema_version(&conn).unwrap(), 6);
         assert!(conn.execute_batch(UPGRADE_TO_V6).is_err());
+    }
+
+    #[test]
+    fn seventh_migration_refuses_to_run_twice() {
+        let mut conn = legacy_database();
+        migrate_by_hand(&mut conn);
+
+        assert!(conn.execute_batch(UPGRADE_TO_V7).is_err());
+    }
+
+    #[test]
+    fn seventh_migration_leaves_named_courts_pending_for_the_app_to_convert() {
+        let mut conn = legacy_database();
+        migrate_by_hand(&mut conn);
+
+        let subscriptions: Vec<Subscription> = conn
+            .prepare("SELECT * FROM subscriptions ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Subscription::try_from(super::super::SubscriptionRow::try_from(row)?)
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+
+        assert_eq!(subscriptions[0].id, 7);
+        assert_eq!(
+            subscriptions[0].courts,
+            CourtSelection::PendingNames(vec!["Court 2".into()])
+        );
+        assert_eq!(subscriptions[1].courts, CourtSelection::Every);
     }
 }

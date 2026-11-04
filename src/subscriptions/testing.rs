@@ -1,24 +1,26 @@
 use std::collections::HashSet;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
-use chrono::{DateTime, NaiveDate, Utc, Weekday};
+use chrono::{DateTime, NaiveDate, TimeZone, Utc, Weekday};
 
 use crate::model::{
-    BookableSlot, BookableSlotSnapshot, Court, CourtAttributes, CourtCatalog, CourtFilter,
-    CourtLocation, CourtSurface, ProviderUserRef, Schedule, Sport, Venue, VenueId, VenueIdentity,
-    VenueRegistry,
+    AvailabilityChange, BookableSlot, BookableSlotId, BookableSlotSnapshot, Court, CourtAttributes,
+    CourtCatalog, CourtFilter, CourtLocation, CourtSurface, IntegrationId, Schedule, Sport,
+    SubscriberRef, Venue, VenueId, VenueIdentity, VenueRegistry,
 };
 use crate::ports::BookableSlotSnapshotRepository;
 use crate::store::SqliteStore;
-use crate::subscriptions::contract::SubscriptionCommand;
+use crate::subscriptions::contract::{
+    AlertMessageUpdater, AlertSender, AvailabilityAlert, CourtChoice, SubscriptionRequest,
+};
 use uuid::Uuid;
 
-use super::{BerlinClock, Clock, SubscriptionService};
+use super::{AlertDispatcher, AlertRoute, BerlinClock, Clock, SubscriptionService};
 
-pub(super) fn uref(id: &str) -> ProviderUserRef {
-    ProviderUserRef {
-        provider: "discord".into(),
-        user_id: id.into(),
+pub(super) fn uref(id: &str) -> SubscriberRef {
+    SubscriberRef {
+        integration: "discord".into(),
+        subscriber_id: id.into(),
     }
 }
 
@@ -100,7 +102,7 @@ pub(super) fn catalog() -> CourtCatalog {
     ])
 }
 
-pub(super) fn registry() -> Arc<RwLock<VenueRegistry>> {
+pub(crate) fn registry() -> Arc<RwLock<VenueRegistry>> {
     let mut registry = VenueRegistry::new();
     registry.register(&tennis_venue());
     registry.set_catalog(&venue_id(), catalog());
@@ -118,14 +120,58 @@ pub(super) fn tennis_only_registry() -> Arc<RwLock<VenueRegistry>> {
 
 pub(super) fn court_id(name: &str) -> Uuid {
     catalog()
-        .find_by_name(name)
-        .map_or_else(Uuid::new_v4, |court| court.id())
+        .courts_named(name)
+        .next()
+        .map_or_else(Uuid::new_v4, Court::id)
 }
 
 pub(super) fn padel_court_id(name: &str) -> Uuid {
     padel_catalog()
-        .find_by_name(name)
-        .map_or_else(Uuid::new_v4, |court| court.id())
+        .courts_named(name)
+        .next()
+        .map_or_else(Uuid::new_v4, Court::id)
+}
+
+pub(super) fn tennis_club(id: &str) -> Venue {
+    Venue {
+        id: VenueId::new(id),
+        ..tennis_venue()
+    }
+}
+
+pub(super) fn padel_club(id: &str) -> Venue {
+    Venue {
+        id: VenueId::new(id),
+        ..padel_venue()
+    }
+}
+
+pub(super) fn clay_court(id: u128, name: &str) -> Court {
+    Court::new(
+        Uuid::from_u128(id),
+        name.into(),
+        CourtAttributes::tennis(CourtSurface::Clay),
+    )
+}
+
+pub(super) fn padel_court(id: u128, name: &str) -> Court {
+    Court::new(
+        Uuid::from_u128(id),
+        name.into(),
+        CourtAttributes::padel(None),
+    )
+}
+
+/// Every club in `clubs`, with its catalog set where one is given.
+pub(super) fn registry_of(clubs: Vec<(Venue, Option<Vec<Court>>)>) -> Arc<RwLock<VenueRegistry>> {
+    let mut registry = VenueRegistry::new();
+    for (club, courts) in clubs {
+        registry.register(&club);
+        if let Some(courts) = courts {
+            registry.set_catalog(&club.id, CourtCatalog::new(courts));
+        }
+    }
+    Arc::new(RwLock::new(registry))
 }
 
 pub(super) struct FixedClock(pub(super) DateTime<Utc>);
@@ -140,13 +186,13 @@ fn noon_utc(date: NaiveDate) -> DateTime<Utc> {
     date.and_hms_opt(12, 0, 0).expect("valid time").and_utc()
 }
 
-async fn store() -> Arc<SqliteStore> {
+pub(super) async fn store() -> Arc<SqliteStore> {
     Arc::new(SqliteStore::open_in_memory().await.unwrap())
 }
 
 fn build(
     store: Arc<SqliteStore>,
-    admins: HashSet<ProviderUserRef>,
+    admins: HashSet<SubscriberRef>,
     clock: Arc<dyn Clock>,
 ) -> Arc<SubscriptionService> {
     Arc::new(SubscriptionService::new(
@@ -161,6 +207,83 @@ fn build(
 
 pub(super) async fn service() -> Arc<SubscriptionService> {
     build(store().await, HashSet::new(), Arc::new(BerlinClock))
+}
+
+pub(super) fn service_on(
+    store: Arc<SqliteStore>,
+    registry: Arc<RwLock<VenueRegistry>>,
+) -> Arc<SubscriptionService> {
+    Arc::new(SubscriptionService::new(
+        store.clone(),
+        store,
+        HashSet::new(),
+        registry,
+        CourtFilter::Any,
+        Arc::new(BerlinClock),
+    ))
+}
+
+pub(super) async fn service_over(registry: Arc<RwLock<VenueRegistry>>) -> Arc<SubscriptionService> {
+    service_on(store().await, registry)
+}
+
+pub(crate) fn delivery_route(
+    integration: &'static str,
+    sender: Arc<dyn AlertSender>,
+) -> (IntegrationId, AlertRoute) {
+    (integration.into(), AlertRoute::delivery_only(sender))
+}
+
+pub(crate) fn chat_route<P>(
+    integration: &'static str,
+    provider: Arc<P>,
+) -> (IntegrationId, AlertRoute)
+where
+    P: AlertSender + AlertMessageUpdater + 'static,
+{
+    (integration.into(), AlertRoute::chat_provider(provider))
+}
+
+impl AlertDispatcher {
+    /// Runs one batch through a whole dispatch loop and returns once every integration has
+    /// finished it.
+    pub(crate) async fn dispatch(self: &Arc<Self>, changes: &[AvailabilityChange]) {
+        let (input, rx) = tokio::sync::mpsc::channel(1);
+        input.send(changes.to_vec()).await.unwrap();
+        drop(input);
+        self.clone().dispatch_loop(rx).await;
+    }
+}
+
+pub(crate) fn dispatcher_on(
+    store: Arc<SqliteStore>,
+    registry: Arc<RwLock<VenueRegistry>>,
+    routes: impl IntoIterator<Item = (IntegrationId, AlertRoute)>,
+) -> Arc<AlertDispatcher> {
+    Arc::new(AlertDispatcher::new(
+        store,
+        registry,
+        routes.into_iter().collect(),
+        Arc::new(BerlinClock),
+    ))
+}
+
+/// A service and a dispatcher sharing one store and registry, as in production.
+pub(super) async fn service_and_dispatcher_over(
+    registry: Arc<RwLock<VenueRegistry>>,
+    routes: impl IntoIterator<Item = (IntegrationId, AlertRoute)>,
+) -> (Arc<SubscriptionService>, Arc<AlertDispatcher>) {
+    let store = store().await;
+    (
+        service_on(store.clone(), registry.clone()),
+        dispatcher_on(store, registry, routes),
+    )
+}
+
+pub(super) async fn service_and_dispatcher(
+    routes: impl IntoIterator<Item = (IntegrationId, AlertRoute)>,
+) -> (Arc<SubscriptionService>, Arc<AlertDispatcher>) {
+    service_and_dispatcher_over(registry(), routes).await
 }
 
 pub(super) async fn service_defaulting_to_clay() -> Arc<SubscriptionService> {
@@ -191,7 +314,7 @@ pub(super) async fn service_with_store() -> (Arc<SubscriptionService>, Arc<Sqlit
     )
 }
 
-pub(super) fn admin_uref() -> ProviderUserRef {
+pub(super) fn admin_uref() -> SubscriberRef {
     uref("999")
 }
 
@@ -201,8 +324,95 @@ pub(super) async fn service_with_admin() -> Arc<SubscriptionService> {
     build(store().await, admins, Arc::new(BerlinClock))
 }
 
-pub(super) fn subscribe_cmd(from: u32, to: u32) -> SubscriptionCommand {
-    SubscriptionCommand::Subscribe {
+/// All of Tuesday, at `venue` or at every club of the sport.
+pub(super) fn subscribe_to_courts(
+    sport: Sport,
+    venue: Option<&VenueId>,
+    courts: CourtChoice,
+) -> SubscriptionRequest {
+    SubscriptionRequest {
+        sport,
+        venue: venue.cloned(),
+        schedule: Schedule::Weekday(Weekday::Tue),
+        start_minute: 0,
+        end_minute: 24 * 60,
+        courts: Some(courts),
+        filter: None,
+    }
+}
+
+/// A slot on a Tuesday, a matching time for `subscribe_to_courts`.
+pub(super) fn tuesday_slot(venue: &VenueId, court: u128, name: &str) -> AvailabilityChange {
+    let starts_at = Utc.with_ymd_and_hms(2030, 1, 1, 12, 0, 0).unwrap();
+    AvailabilityChange::BecameBookable(BookableSlot {
+        venue_id: venue.clone(),
+        court_id: Uuid::from_u128(court),
+        court_name: name.into(),
+        starts_at,
+        ends_at: starts_at + chrono::Duration::hours(1),
+        available_places: 1,
+    })
+}
+
+pub(super) struct RecordingSender {
+    pub(super) sent: Mutex<Vec<(String, AvailabilityAlert)>>,
+    pub(super) struck: Mutex<Vec<Vec<BookableSlotId>>>,
+    pub(super) order: Mutex<Vec<&'static str>>,
+    pub(super) fail: bool,
+}
+
+impl RecordingSender {
+    pub(super) fn new(fail: bool) -> Arc<Self> {
+        Arc::new(Self {
+            sent: Mutex::new(Vec::new()),
+            struck: Mutex::new(Vec::new()),
+            order: Mutex::new(Vec::new()),
+            fail,
+        })
+    }
+
+    pub(super) fn struck(&self) -> Vec<BookableSlotId> {
+        self.struck.lock().unwrap().concat()
+    }
+
+    pub(super) fn order(&self) -> Vec<&'static str> {
+        self.order.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl AlertSender for RecordingSender {
+    async fn send_alert(
+        &self,
+        subscriber_id: &str,
+        alert: &AvailabilityAlert,
+    ) -> anyhow::Result<()> {
+        self.sent
+            .lock()
+            .unwrap()
+            .push((subscriber_id.to_string(), alert.clone()));
+        self.order.lock().unwrap().push("send");
+        if self.fail {
+            anyhow::bail!("simulated alert failure");
+        }
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl AlertMessageUpdater for RecordingSender {
+    async fn mark_unbookable(&self, slots: &[BookableSlotId]) -> anyhow::Result<()> {
+        self.struck.lock().unwrap().push(slots.to_vec());
+        self.order.lock().unwrap().push("strike");
+        if self.fail {
+            anyhow::bail!("simulated strike failure");
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn subscribe_request(from: u32, to: u32) -> SubscriptionRequest {
+    SubscriptionRequest {
         sport: Sport::Tennis,
         venue: None,
         schedule: Schedule::Weekday(Weekday::Tue),
@@ -213,8 +423,8 @@ pub(super) fn subscribe_cmd(from: u32, to: u32) -> SubscriptionCommand {
     }
 }
 
-pub(super) fn date_subscribe_cmd(date: NaiveDate, from: u32, to: u32) -> SubscriptionCommand {
-    SubscriptionCommand::Subscribe {
+pub(super) fn date_subscribe_request(date: NaiveDate, from: u32, to: u32) -> SubscriptionRequest {
+    SubscriptionRequest {
         sport: Sport::Tennis,
         venue: None,
         schedule: Schedule::Date(date),

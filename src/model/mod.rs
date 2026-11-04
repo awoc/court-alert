@@ -3,6 +3,7 @@ mod court;
 mod registry;
 mod slot;
 mod subscription;
+mod subscription_policy;
 mod venue;
 
 pub use alert_message::{AlertLine, AlertMessage, AlertMessageKey, AlertSurface, StrikePlan};
@@ -13,6 +14,13 @@ pub use slot::{
     diff_availability,
 };
 pub use subscription::{
-    MINUTES_PER_DAY, ProviderUserRef, Schedule, Subscription, SubscriptionDraft, TimeRange,
+    CourtSelection, IntegrationId, MINUTES_PER_DAY, Schedule, SelectedCourt, SubscriberRef,
+    Subscription, TimeRange,
 };
-pub use venue::{OperatingWindow, Provider, Sport, Venue, VenueId, VenueIdentity};
+#[cfg(test)]
+pub(crate) use subscription_policy::UncheckedDraft;
+pub use subscription_policy::{
+    CourtChoice, SubscriptionDraft, SubscriptionPolicy, SubscriptionRejection, SubscriptionRequest,
+    courts_with_stored_names,
+};
+pub use venue::{ClubRef, OperatingWindow, Provider, Sport, Venue, VenueId, VenueIdentity};

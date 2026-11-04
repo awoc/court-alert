@@ -1,13 +1,49 @@
-use chrono::{NaiveDate, Weekday};
+use std::borrow::Cow;
+use std::fmt;
 
-use super::{CourtFilter, Sport, VenueId};
+use chrono::{NaiveDate, Weekday};
+use uuid::Uuid;
+
+use super::court::same_court_name;
+use super::{BookableSlot, CourtFilter, Sport, VenueId};
 
 pub const MINUTES_PER_DAY: u32 = 24 * 60;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ProviderUserRef {
-    pub provider: String,
-    pub user_id: String,
+pub struct IntegrationId(Cow<'static, str>);
+
+impl IntegrationId {
+    pub const fn from_static(name: &'static str) -> Self {
+        Self(Cow::Borrowed(name))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&'static str> for IntegrationId {
+    fn from(name: &'static str) -> Self {
+        Self::from_static(name)
+    }
+}
+
+impl From<String> for IntegrationId {
+    fn from(name: String) -> Self {
+        Self(Cow::Owned(name))
+    }
+}
+
+impl fmt::Display for IntegrationId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SubscriberRef {
+    pub integration: IntegrationId,
+    pub subscriber_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -43,26 +79,47 @@ impl TimeRange {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SelectedCourt {
+    pub venue_id: VenueId,
+    pub court_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CourtSelection {
+    Every,
+    Selected(Vec<SelectedCourt>),
+    /// Stored by name before courts had an identity here. Matches by name until
+    /// it is converted to `Selected`.
+    PendingNames(Vec<String>),
+}
+
+impl CourtSelection {
+    pub fn includes(&self, slot: &BookableSlot) -> bool {
+        match self {
+            Self::Every => true,
+            Self::Selected(courts) => courts
+                .iter()
+                .any(|court| court.venue_id == slot.venue_id && court.court_id == slot.court_id),
+            Self::PendingNames(names) => names
+                .iter()
+                .any(|name| same_court_name(name, &slot.court_name)),
+        }
+    }
+}
+
+/// A subscription as stored. A row can predate today's rules or outlive its
+/// catalog, so holding one promises nothing about them, and there is no way back
+/// from here to a `SubscriptionDraft`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Subscription {
     pub id: i64,
-    pub user: ProviderUserRef,
+    pub subscriber: SubscriberRef,
     pub sport: Sport,
     pub venue: Option<VenueId>,
     pub schedule: Schedule,
     pub time_range: TimeRange,
-    pub courts: Option<Vec<String>>,
-    pub filter: CourtFilter,
-}
-
-#[derive(Debug, Clone)]
-pub struct SubscriptionDraft {
-    pub user: ProviderUserRef,
-    pub sport: Sport,
-    pub venue: Option<VenueId>,
-    pub schedule: Schedule,
-    pub time_range: TimeRange,
-    pub courts: Option<Vec<String>>,
+    pub courts: CourtSelection,
     pub filter: CourtFilter,
 }
 

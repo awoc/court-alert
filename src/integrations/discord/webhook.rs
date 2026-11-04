@@ -11,7 +11,7 @@ use crate::ports::AvailabilityChangeSink;
 
 use super::format::{added_slots, channel_lines, chunk_lines, render};
 use super::http::{HTTP_TIMEOUT, redact_discord_webhook_tokens, send_with_rate_limit_retry};
-use super::{DISCORD_UNKNOWN_MESSAGE, PROVIDER_NAME};
+use super::{DISCORD_UNKNOWN_MESSAGE, INTEGRATION};
 
 pub struct DiscordNotifier {
     webhook_url: reqwest::Url,
@@ -36,7 +36,7 @@ impl DiscordNotifier {
         Ok(Self {
             webhook_url,
             client,
-            alert_tracker: alert_lifecycle.tracker(PROVIDER_NAME, AlertSurface::Channel),
+            alert_tracker: alert_lifecycle.tracker(INTEGRATION, AlertSurface::Channel),
         })
     }
 
@@ -199,7 +199,7 @@ mod tests {
     async fn plan_strikes(store: &Arc<SqliteStore>, slot: &BookableSlot) -> Vec<StrikePlan> {
         store
             .plan_strikes(
-                PROVIDER_NAME,
+                &INTEGRATION,
                 AlertSurface::Channel,
                 &[BookableSlotId::from(slot)],
             )
@@ -299,7 +299,7 @@ mod tests {
     async fn seed(store: &Arc<SqliteStore>, message_id: &str, slot: &BookableSlot) {
         store
             .record_message(
-                &AlertMessageKey::new(PROVIDER_NAME, AlertSurface::Channel, None, message_id),
+                &AlertMessageKey::new(INTEGRATION, AlertSurface::Channel, None, message_id),
                 &[AlertLine::from(slot)],
             )
             .await
@@ -368,7 +368,7 @@ mod tests {
         let (notifier, store) = notifier(&server).await;
         store
             .record_message(
-                &AlertMessageKey::new(PROVIDER_NAME, AlertSurface::Channel, None, "1408"),
+                &AlertMessageKey::new(INTEGRATION, AlertSurface::Channel, None, "1408"),
                 &[AlertLine::from(&staying), AlertLine::from(&gone)],
             )
             .await

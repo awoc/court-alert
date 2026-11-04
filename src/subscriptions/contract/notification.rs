@@ -10,8 +10,11 @@ pub struct AvailabilityAlert {
 }
 
 #[async_trait]
-pub trait DirectMessageSender: Send + Sync {
-    async fn send_dm(&self, user_id: &str, alert: &AvailabilityAlert) -> Result<()>;
+pub trait AlertSender: Send + Sync {
+    async fn send_alert(&self, subscriber_id: &str, alert: &AvailabilityAlert) -> Result<()>;
+}
 
-    async fn strike_taken(&self, slots: &[BookableSlotId]) -> Result<()>;
+#[async_trait]
+pub trait AlertMessageUpdater: Send + Sync {
+    async fn mark_unbookable(&self, slots: &[BookableSlotId]) -> Result<()>;
 }

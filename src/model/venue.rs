@@ -35,6 +35,12 @@ impl<'de> Deserialize<'de> for VenueId {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClubRef {
+    pub venue_id: VenueId,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Sport {
     Tennis,

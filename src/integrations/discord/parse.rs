@@ -4,44 +4,49 @@ use serenity::all::{CommandDataOptionValue, CommandInteraction};
 use tracing::warn;
 
 use crate::model::{CourtFilter, Schedule, Sport, VenueId};
-use crate::subscriptions::contract::SubscriptionCommand;
+use crate::subscriptions::contract::{CourtChoice, SubscriptionRequest};
 use crate::time::today_berlin;
 
-const MAX_COURTS: usize = 20;
-const MAX_COURT_NAME_CHARS: usize = 100;
 const MAX_COURT_FILTER_CHARS: usize = 500;
 
 const UNSUBSCRIBE_PREFIX: &str = "unsubscribe:";
+
+#[derive(Debug)]
+pub(super) enum SlashCommand {
+    Subscribe(SubscriptionRequest),
+    List,
+    Unsubscribe { id: i64 },
+    ListAll,
+}
 
 pub(super) fn unsubscribe_custom_id(id: i64) -> String {
     format!("{UNSUBSCRIBE_PREFIX}{id}")
 }
 
-pub(super) fn parse_component(custom_id: &str) -> Result<SubscriptionCommand> {
-    let id = custom_id
+pub(super) fn parse_component(custom_id: &str) -> Result<i64> {
+    custom_id
         .strip_prefix(UNSUBSCRIBE_PREFIX)
         .and_then(|id| id.parse().ok())
-        .with_context(|| format!("unknown component id: {custom_id:?}"))?;
-    Ok(SubscriptionCommand::Unsubscribe { id })
+        .with_context(|| format!("unknown component id: {custom_id:?}"))
 }
 
-pub(super) fn parse_interaction(cmd: &CommandInteraction) -> Result<SubscriptionCommand> {
+pub(super) fn parse_interaction(cmd: &CommandInteraction) -> Result<SlashCommand> {
     match cmd.data.name.as_str() {
         "tennis" => {
             let (schedule, start_minute, end_minute) = parse_when(cmd)?;
-            Ok(SubscriptionCommand::Subscribe {
+            Ok(SlashCommand::Subscribe(SubscriptionRequest {
                 sport: Sport::Tennis,
                 venue: None,
                 schedule,
                 start_minute,
                 end_minute,
                 courts: parse_courts(get_string_opt(cmd, "courts"))?,
-                filter: parse_surface(get_string_opt(cmd, "surface"))?,
-            })
+                filter: parse_filter(get_string_opt(cmd, "surface"), Sport::Tennis)?,
+            }))
         }
         "padel" => {
             let (schedule, start_minute, end_minute) = parse_when(cmd)?;
-            Ok(SubscriptionCommand::Subscribe {
+            Ok(SlashCommand::Subscribe(SubscriptionRequest {
                 sport: Sport::Padel,
                 venue: get_string_opt(cmd, "club")
                     .filter(|raw| !raw.trim().is_empty())
@@ -50,14 +55,14 @@ pub(super) fn parse_interaction(cmd: &CommandInteraction) -> Result<Subscription
                 start_minute,
                 end_minute,
                 courts: None,
-                filter: parse_location(get_string_opt(cmd, "location"))?,
-            })
+                filter: parse_filter(get_string_opt(cmd, "location"), Sport::Padel)?,
+            }))
         }
-        "list" => Ok(SubscriptionCommand::List),
-        "listall" => Ok(SubscriptionCommand::ListAll),
+        "list" => Ok(SlashCommand::List),
+        "listall" => Ok(SlashCommand::ListAll),
         "unsubscribe" => {
             let id = get_integer_opt(cmd, "id").context("missing 'id'")?;
-            Ok(SubscriptionCommand::Unsubscribe { id })
+            Ok(SlashCommand::Unsubscribe { id })
         }
         other => {
             warn!(name = %other, "unknown slash command");
@@ -73,11 +78,11 @@ fn parse_when(cmd: &CommandInteraction) -> Result<(Schedule, u32, u32)> {
     Ok((
         parse_schedule(&day, today_berlin()).context("invalid 'day'")?,
         parse_hhmm(&from).context("invalid 'from' (expected HH:MM or whole hour)")?,
-        parse_hhmm(&to).context("invalid 'to' (expected HH:MM or whole hour)")?,
+        parse_hhmm(&to).context("invalid 'to' (expected HH:MM or whole hour, up to 24:00)")?,
     ))
 }
 
-fn parse_courts(input: Option<String>) -> Result<Option<Vec<String>>> {
+fn parse_courts(input: Option<String>) -> Result<Option<CourtChoice>> {
     let Some(input) = input else {
         return Ok(None);
     };
@@ -91,41 +96,22 @@ fn parse_courts(input: Option<String>) -> Result<Option<Vec<String>>> {
         .filter(|court| !court.is_empty())
         .map(str::to_string)
         .collect();
-    anyhow::ensure!(
-        courts.len() <= MAX_COURTS,
-        "'courts' must contain at most {MAX_COURTS} names"
-    );
-    anyhow::ensure!(
-        courts
-            .iter()
-            .all(|court| court.chars().count() <= MAX_COURT_NAME_CHARS),
-        "each court name must be at most {MAX_COURT_NAME_CHARS} characters"
-    );
-    Ok((!courts.is_empty()).then_some(courts))
+    Ok(Some(CourtChoice::Names(courts)))
 }
 
-fn parse_surface(input: Option<String>) -> Result<Option<CourtFilter>> {
-    parse_filter(input, "surface", |filter| {
-        matches!(filter, CourtFilter::Any | CourtFilter::Surface(_))
-    })
-}
-
-fn parse_location(input: Option<String>) -> Result<Option<CourtFilter>> {
-    parse_filter(input, "location", |filter| {
-        matches!(filter, CourtFilter::Any | CourtFilter::Location(_))
-    })
-}
-
-fn parse_filter(
-    input: Option<String>,
-    option: &str,
-    accepted: impl Fn(CourtFilter) -> bool,
-) -> Result<Option<CourtFilter>> {
+fn parse_filter(input: Option<String>, sport: Sport) -> Result<Option<CourtFilter>> {
+    let option = match sport {
+        Sport::Tennis => "surface",
+        Sport::Padel => "location",
+    };
     let Some(raw) = input.filter(|raw| !raw.trim().is_empty()) else {
         return Ok(None);
     };
     let filter: CourtFilter = raw.parse().with_context(|| format!("invalid '{option}'"))?;
-    anyhow::ensure!(accepted(filter), "'{option}' does not accept {filter:?}");
+    anyhow::ensure!(
+        filter.applies_to(sport),
+        "'{option}' does not accept {filter:?}"
+    );
     Ok(Some(filter))
 }
 
@@ -169,8 +155,8 @@ pub(super) fn parse_hhmm(s: &str) -> Result<u32> {
     let (hour, minute) = s.split_once(':').unwrap_or((s, "0"));
     let hour: u32 = hour.parse().context("hour is not a number")?;
     let minute: u32 = minute.parse().context("minute is not a number")?;
-    if hour > 23 || minute > 59 {
-        return Err(anyhow!("expected hour 0-23 and minute 0-59"));
+    if !matches!((hour, minute), (0..=23, 0..=59) | (24, 0)) {
+        return Err(anyhow!("expected hour 0-23 and minute 0-59, or 24:00"));
     }
     Ok(hour * 60 + minute)
 }
@@ -205,14 +191,11 @@ pub(super) fn parse_date(s: &str, today: NaiveDate) -> Result<NaiveDate> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{MINUTES_PER_DAY, TimeRange};
 
     #[test]
     fn an_unsubscribe_button_click_round_trips_its_reminder_id() {
-        let command = parse_component(&unsubscribe_custom_id(7)).unwrap();
-        assert!(matches!(
-            command,
-            SubscriptionCommand::Unsubscribe { id: 7 }
-        ));
+        assert_eq!(parse_component(&unsubscribe_custom_id(7)).unwrap(), 7);
     }
 
     #[test]
@@ -229,37 +212,43 @@ mod tests {
     fn court_filter_is_trimmed_and_empty_names_are_ignored() {
         assert_eq!(
             parse_courts(Some(" Court 1, ,Court 2 ".into())).unwrap(),
-            Some(vec!["Court 1".into(), "Court 2".into()])
+            Some(CourtChoice::Names(vec!["Court 1".into(), "Court 2".into()]))
         );
-        assert_eq!(parse_courts(Some(" , ".into())).unwrap(), None);
+        assert_eq!(
+            parse_courts(Some(" , ".into())).unwrap(),
+            Some(CourtChoice::Names(vec![]))
+        );
     }
 
     #[test]
     fn surface_is_optional_and_validated() {
-        assert_eq!(parse_surface(None).unwrap(), None);
-        assert_eq!(parse_surface(Some("  ".into())).unwrap(), None);
+        assert_eq!(parse_filter(None, Sport::Tennis).unwrap(), None);
         assert_eq!(
-            parse_surface(Some("clay".into())).unwrap(),
+            parse_filter(Some("  ".into()), Sport::Tennis).unwrap(),
+            None
+        );
+        assert_eq!(
+            parse_filter(Some("clay".into()), Sport::Tennis).unwrap(),
             Some(CourtFilter::CLAY)
         );
         assert_eq!(
-            parse_surface(Some("all".into())).unwrap(),
+            parse_filter(Some("all".into()), Sport::Tennis).unwrap(),
             Some(CourtFilter::Any)
         );
-        assert!(parse_surface(Some("grass".into())).is_err());
+        assert!(parse_filter(Some("grass".into()), Sport::Tennis).is_err());
     }
 
     #[test]
     fn an_option_rejects_the_other_sports_vocabulary() {
         for raw in ["indoor", "outdoor"] {
             assert!(
-                parse_surface(Some(raw.into())).is_err(),
+                parse_filter(Some(raw.into()), Sport::Tennis).is_err(),
                 "surface accepted {raw:?}"
             );
         }
         for raw in ["clay", "synthetic"] {
             assert!(
-                parse_location(Some(raw.into())).is_err(),
+                parse_filter(Some(raw.into()), Sport::Padel).is_err(),
                 "location accepted {raw:?}"
             );
         }
@@ -267,27 +256,21 @@ mod tests {
 
     #[test]
     fn location_is_optional_and_validated() {
-        assert_eq!(parse_location(None).unwrap(), None);
+        assert_eq!(parse_filter(None, Sport::Padel).unwrap(), None);
         assert_eq!(
-            parse_location(Some("indoor".into())).unwrap(),
+            parse_filter(Some("indoor".into()), Sport::Padel).unwrap(),
             Some(CourtFilter::Location(crate::model::CourtLocation::Indoor))
         );
         assert_eq!(
-            parse_location(Some("any".into())).unwrap(),
+            parse_filter(Some("any".into()), Sport::Padel).unwrap(),
             Some(CourtFilter::Any)
         );
-        assert!(parse_location(Some("grass".into())).is_err());
+        assert!(parse_filter(Some("grass".into()), Sport::Padel).is_err());
     }
 
     #[test]
     fn court_filter_rejects_oversized_input() {
         assert!(parse_courts(Some("x".repeat(MAX_COURT_FILTER_CHARS + 1))).is_err());
-        let too_many = (0..=MAX_COURTS)
-            .map(|i| format!("Court {i}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        assert!(parse_courts(Some(too_many)).is_err());
-        assert!(parse_courts(Some("x".repeat(MAX_COURT_NAME_CHARS + 1))).is_err());
     }
 
     #[test]
@@ -303,12 +286,32 @@ mod tests {
 
     #[test]
     fn rejects_invalid_hhmm() {
-        assert!(parse_hhmm("24:00").is_err());
-        assert!(parse_hhmm("24").is_err());
+        assert!(parse_hhmm("24:01").is_err());
+        assert!(parse_hhmm("24:30").is_err());
+        assert!(parse_hhmm("25").is_err());
+        assert!(parse_hhmm("25:00").is_err());
+        assert!(parse_hhmm("4294967295").is_err());
         assert!(parse_hhmm("12:60").is_err());
         assert!(parse_hhmm("1800").is_err());
         assert!(parse_hhmm("ab:cd").is_err());
         assert!(parse_hhmm("").is_err());
+    }
+
+    #[test]
+    fn midnight_parses_with_or_without_minutes() {
+        assert_eq!(parse_hhmm("24:00").unwrap(), MINUTES_PER_DAY);
+        assert_eq!(parse_hhmm("24").unwrap(), MINUTES_PER_DAY);
+    }
+
+    #[test]
+    fn midnight_is_valid_only_as_the_end_of_a_time_range() {
+        let range = |from, to| TimeRange::new(parse_hhmm(from).unwrap(), parse_hhmm(to).unwrap());
+
+        assert!(range("22:00", "24:00").is_some());
+        assert!(range("22", "24").is_some());
+        assert!(range("24:00", "24:00").is_none());
+        assert!(range("24", "24").is_none());
+        assert!(range("24:00", "08:00").is_none());
     }
 
     fn d(y: i32, m: u32, day: u32) -> NaiveDate {

@@ -8,7 +8,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tracing::{debug, warn};
 
-use crate::model::{AlertLine, AlertMessage, AlertMessageKey, AlertSurface, BookableSlotId};
+use crate::model::{
+    AlertLine, AlertMessage, AlertMessageKey, AlertSurface, BookableSlotId, IntegrationId,
+};
 use crate::ports::AlertMessageRepository;
 use prune::DailyPruner;
 
@@ -32,12 +34,12 @@ impl AlertMessageLifecycle {
 
     pub fn tracker(
         self: &Arc<Self>,
-        chat_provider: &str,
+        chat_provider: IntegrationId,
         surface: AlertSurface,
     ) -> AlertMessageTracker {
         AlertMessageTracker {
             lifecycle: self.clone(),
-            chat_provider: chat_provider.to_owned(),
+            chat_provider,
             surface,
         }
     }
@@ -45,14 +47,19 @@ impl AlertMessageLifecycle {
 
 pub struct AlertMessageTracker {
     lifecycle: Arc<AlertMessageLifecycle>,
-    chat_provider: String,
+    chat_provider: IntegrationId,
     surface: AlertSurface,
 }
 
 impl AlertMessageTracker {
     /// Records a successfully delivered alert. Persistence errors are logged.
     pub async fn record(&self, destination: Option<&str>, message_id: &str, lines: &[AlertLine]) {
-        let key = AlertMessageKey::new(&self.chat_provider, self.surface, destination, message_id);
+        let key = AlertMessageKey::new(
+            self.chat_provider.clone(),
+            self.surface,
+            destination,
+            message_id,
+        );
         if let Err(error) = self.lifecycle.messages.record_message(&key, lines).await {
             warn!(
                 chat_provider = %self.chat_provider,

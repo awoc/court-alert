@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::env::VarError;
+use std::fmt;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -16,6 +18,7 @@ const DEFAULT_CONFIG_PATH: &str = "config.toml";
 const DEFAULT_DB_PATH: &str = "data/court-alert.db";
 const DEFAULT_WINDOW_START_HOUR: u32 = 8;
 const DEFAULT_WINDOW_END_HOUR: u32 = 24;
+const REDACTED: &str = "<redacted>";
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -372,13 +375,43 @@ pub struct Settings {
     pub discord_webhook: Option<reqwest::Url>,
     pub discord_error_webhook: Option<reqwest::Url>,
     pub discord_bot: Option<DiscordSettings>,
+    pub webhook: Option<WebhookSettings>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DiscordSettings {
     pub token: String,
     pub guild_id: Option<u64>,
     pub admin_ids: HashSet<String>,
+}
+
+impl fmt::Debug for DiscordSettings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DiscordSettings")
+            .field("token", &REDACTED)
+            .field("guild_id", &self.guild_id)
+            .field("admin_ids", &self.admin_ids)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+pub struct WebhookSettings {
+    pub listen: SocketAddr,
+    pub api_secret: String,
+    pub alert_url: reqwest::Url,
+    pub alert_secret: String,
+}
+
+impl fmt::Debug for WebhookSettings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WebhookSettings")
+            .field("listen", &self.listen)
+            .field("api_secret", &REDACTED)
+            .field("alert_url", &self.alert_url)
+            .field("alert_secret", &REDACTED)
+            .finish()
+    }
 }
 
 impl Settings {
@@ -390,6 +423,7 @@ impl Settings {
             discord_webhook: env_parsed("COURT_ALERT_DISCORD_WEBHOOK")?,
             discord_error_webhook: env_parsed("COURT_ALERT_DISCORD_ERROR_WEBHOOK")?,
             discord_bot: discord_from_env()?,
+            webhook: webhook_from_vars(|name| std::env::var(name).ok())?,
         })
     }
 }
@@ -422,6 +456,57 @@ fn discord_from_env() -> Result<Option<DiscordSettings>> {
         token,
         guild_id,
         admin_ids,
+    }))
+}
+
+const WEBHOOK_LISTEN: &str = "COURT_ALERT_WEBHOOK_LISTEN";
+const WEBHOOK_API_SECRET: &str = "COURT_ALERT_WEBHOOK_API_SECRET";
+const WEBHOOK_ALERT_URL: &str = "COURT_ALERT_WEBHOOK_ALERT_URL";
+const WEBHOOK_ALERT_SECRET: &str = "COURT_ALERT_WEBHOOK_ALERT_SECRET";
+
+fn webhook_from_vars(env: impl Fn(&str) -> Option<String>) -> Result<Option<WebhookSettings>> {
+    let var = |name: &str| {
+        env(name)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let Some(listen) = var(WEBHOOK_LISTEN) else {
+        return Ok(None);
+    };
+
+    let (api_secret, alert_url, alert_secret) = match (
+        var(WEBHOOK_API_SECRET),
+        var(WEBHOOK_ALERT_URL),
+        var(WEBHOOK_ALERT_SECRET),
+    ) {
+        (Some(api_secret), Some(alert_url), Some(alert_secret)) => {
+            (api_secret, alert_url, alert_secret)
+        }
+        (api_secret, alert_url, alert_secret) => {
+            let missing: Vec<&str> = [
+                (WEBHOOK_API_SECRET, api_secret.is_none()),
+                (WEBHOOK_ALERT_URL, alert_url.is_none()),
+                (WEBHOOK_ALERT_SECRET, alert_secret.is_none()),
+            ]
+            .into_iter()
+            .filter_map(|(name, missing)| missing.then_some(name))
+            .collect();
+            anyhow::bail!(
+                "{WEBHOOK_LISTEN} enables the webhook integration, which also needs {}",
+                missing.join(", ")
+            );
+        }
+    };
+
+    Ok(Some(WebhookSettings {
+        listen: listen
+            .parse()
+            .with_context(|| format!("parsing {WEBHOOK_LISTEN}={listen:?}"))?,
+        api_secret,
+        alert_url: alert_url
+            .parse()
+            .with_context(|| format!("parsing {WEBHOOK_ALERT_URL}={alert_url:?}"))?,
+        alert_secret,
     }))
 }
 
@@ -823,5 +908,115 @@ name = "Tennis Court 1"
     #[test]
     fn split_ids_empty_input_yields_no_admins() {
         assert!(split_ids("").is_empty());
+    }
+
+    fn lookup<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            vars.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.to_string())
+        }
+    }
+
+    const WEBHOOK_VARS: [(&str, &str); 4] = [
+        (WEBHOOK_LISTEN, "127.0.0.1:8645"),
+        (WEBHOOK_API_SECRET, "api-secret"),
+        (
+            WEBHOOK_ALERT_URL,
+            "http://agent.lan:8644/webhooks/court-alert",
+        ),
+        (WEBHOOK_ALERT_SECRET, "alert-secret"),
+    ];
+
+    fn webhook_vars_with(name: &str, value: &'static str) -> [(&'static str, &'static str); 4] {
+        WEBHOOK_VARS.map(|(key, default)| (key, if key == name { value } else { default }))
+    }
+
+    #[test]
+    fn the_webhook_integration_is_disabled_without_a_listen_address() {
+        let rest = &WEBHOOK_VARS[1..];
+        assert!(webhook_from_vars(lookup(rest)).unwrap().is_none());
+        assert!(webhook_from_vars(lookup(&[])).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_listen_address_with_its_secrets_and_alert_url_enables_the_webhook_integration() {
+        let settings = webhook_from_vars(lookup(&WEBHOOK_VARS))
+            .unwrap()
+            .expect("webhook integration enabled");
+        assert_eq!(settings.listen, "127.0.0.1:8645".parse().unwrap());
+        assert_eq!(settings.api_secret, "api-secret");
+        assert_eq!(
+            settings.alert_url.as_str(),
+            "http://agent.lan:8644/webhooks/court-alert"
+        );
+        assert_eq!(settings.alert_secret, "alert-secret");
+    }
+
+    #[test]
+    fn a_listen_address_without_the_other_webhook_variables_names_the_missing_ones() {
+        for missing in &WEBHOOK_VARS[1..] {
+            let vars: Vec<_> = WEBHOOK_VARS
+                .iter()
+                .filter(|(key, _)| key != &missing.0)
+                .copied()
+                .collect();
+            let error = webhook_from_vars(lookup(&vars))
+                .expect_err("a half-configured webhook integration must fail");
+            assert!(
+                format!("{error:#}").contains(missing.0),
+                "{} is not named: {error:#}",
+                missing.0
+            );
+        }
+
+        let error = webhook_from_vars(lookup(&WEBHOOK_VARS[..1])).unwrap_err();
+        let message = format!("{error:#}");
+        for (name, _) in &WEBHOOK_VARS[1..] {
+            assert!(message.contains(name), "{name} is not named: {message}");
+        }
+    }
+
+    #[test]
+    fn a_blank_webhook_variable_counts_as_missing() {
+        let vars = webhook_vars_with(WEBHOOK_API_SECRET, "  ");
+        let error = webhook_from_vars(lookup(&vars)).unwrap_err();
+        assert!(format!("{error:#}").contains(WEBHOOK_API_SECRET));
+    }
+
+    #[test]
+    fn formatting_webhook_settings_never_shows_their_secrets() {
+        let settings = webhook_from_vars(lookup(&WEBHOOK_VARS))
+            .unwrap()
+            .expect("webhook integration enabled");
+
+        for formatted in [format!("{settings:?}"), format!("{settings:#?}")] {
+            assert!(!formatted.contains("api-secret"), "{formatted}");
+            assert!(!formatted.contains("alert-secret"), "{formatted}");
+            assert!(formatted.contains("127.0.0.1:8645"), "{formatted}");
+        }
+    }
+
+    #[test]
+    fn formatting_discord_settings_never_shows_the_token() {
+        let settings = DiscordSettings {
+            token: "bot-token".into(),
+            guild_id: Some(42),
+            admin_ids: HashSet::from(["7".to_string()]),
+        };
+
+        for formatted in [format!("{settings:?}"), format!("{settings:#?}")] {
+            assert!(!formatted.contains("bot-token"), "{formatted}");
+            assert!(formatted.contains("42"), "{formatted}");
+        }
+    }
+
+    #[test]
+    fn a_malformed_listen_address_or_alert_url_is_rejected() {
+        let vars = webhook_vars_with(WEBHOOK_LISTEN, "not an address");
+        assert!(webhook_from_vars(lookup(&vars)).is_err());
+
+        let vars = webhook_vars_with(WEBHOOK_ALERT_URL, "not a url");
+        assert!(webhook_from_vars(lookup(&vars)).is_err());
     }
 }

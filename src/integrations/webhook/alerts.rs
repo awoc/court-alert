@@ -1,0 +1,65 @@
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use chrono::Utc;
+use serde::Serialize;
+use uuid::Uuid;
+
+use super::signing;
+use super::slot::Slot;
+use crate::subscriptions::contract::{AlertSender, AvailabilityAlert};
+
+const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+
+pub(super) struct WebhookAlertSender {
+    client: reqwest::Client,
+    url: reqwest::Url,
+    secret: String,
+}
+
+impl WebhookAlertSender {
+    pub(super) fn new(url: reqwest::Url, secret: String) -> Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(HTTP_TIMEOUT)
+            .build()
+            .context("building the webhook alert HTTP client")?;
+        Ok(Self {
+            client,
+            url,
+            secret,
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct Alert<'a> {
+    subscriber_id: &'a str,
+    slots: Vec<Slot<'a>>,
+}
+
+#[async_trait]
+impl AlertSender for WebhookAlertSender {
+    async fn send_alert(&self, subscriber_id: &str, alert: &AvailabilityAlert) -> Result<()> {
+        let body = serde_json::to_vec(&Alert {
+            subscriber_id,
+            slots: alert.slots.iter().map(Slot::from).collect(),
+        })
+        .context("encoding the webhook alert")?;
+        let timestamp = Utc::now().timestamp().to_string();
+        let signature = signing::sign_alert(&self.secret, &timestamp, &body);
+        self.client
+            .post(self.url.clone())
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header("X-Webhook-Timestamp", timestamp)
+            .header("X-Webhook-Signature-V2", signature)
+            .header("webhook-id", Uuid::new_v4().to_string())
+            .body(body)
+            .send()
+            .await
+            .context("sending the webhook alert")?
+            .error_for_status()
+            .context("the webhook alert was rejected")?;
+        Ok(())
+    }
+}
