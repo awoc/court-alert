@@ -249,7 +249,11 @@ impl SubscriptionPolicy<'_> {
                     .venue
                     .as_ref()
                     .ok_or(SubscriptionRejection::CourtsNeedClub)?;
-                self.courts_by_id(venue, ids).map_err(CourtChoice::Ids)
+                let catalog = self
+                    .registry
+                    .catalog(venue)
+                    .ok_or(SubscriptionRejection::CourtCatalogsNotReady)?;
+                courts_by_id(&catalog, venue, ids).map_err(CourtChoice::Ids)
             }
         };
         resolved.map(CourtSelection::Selected).map_err(|unknown| {
@@ -274,26 +278,6 @@ impl SubscriptionPolicy<'_> {
             .iter()
             .flat_map(|catalog| catalog.courts().iter().cloned())
             .collect()
-    }
-
-    fn courts_by_id(&self, venue: &VenueId, ids: &[Uuid]) -> Result<Vec<SelectedCourt>, Vec<Uuid>> {
-        let catalog = self.registry.catalog(venue);
-        let mut selected = Vec::with_capacity(ids.len());
-        let mut unknown = Vec::new();
-        for &id in ids {
-            match catalog.as_deref().and_then(|known| known.find_by_id(id)) {
-                Some(court) => selected.push(SelectedCourt {
-                    venue_id: venue.clone(),
-                    court_id: court.id(),
-                }),
-                None => unknown.push(id),
-            }
-        }
-        if unknown.is_empty() {
-            Ok(distinct_courts(selected))
-        } else {
-            Err(unknown)
-        }
     }
 
     fn courts_excluded_by(
@@ -329,6 +313,29 @@ impl SubscriptionPolicy<'_> {
             (Sport::Tennis, CourtSelection::Every) => self.tennis_default_filter,
             _ => CourtFilter::Any,
         })
+    }
+}
+
+fn courts_by_id(
+    catalog: &CourtCatalog,
+    venue: &VenueId,
+    ids: &[Uuid],
+) -> Result<Vec<SelectedCourt>, Vec<Uuid>> {
+    let mut selected = Vec::with_capacity(ids.len());
+    let mut unknown = Vec::new();
+    for &id in ids {
+        match catalog.find_by_id(id) {
+            Some(court) => selected.push(SelectedCourt {
+                venue_id: venue.clone(),
+                court_id: court.id(),
+            }),
+            None => unknown.push(id),
+        }
+    }
+    if unknown.is_empty() {
+        Ok(distinct_courts(selected))
+    } else {
+        Err(unknown)
     }
 }
 
@@ -878,9 +885,22 @@ mod tests {
     }
 
     #[test]
-    fn ids_at_a_club_with_no_catalog_are_unknown_rather_than_awaited() {
-        let registry = registry_of(vec![(tennis("north"), None)]);
+    fn ids_wait_for_the_catalog_of_their_club_alone() {
+        let registry = registry_of(vec![
+            (tennis("north"), Some(vec![clay(1, "Court 1")])),
+            (tennis("south"), None),
+        ]);
         let reply = rejection(
+            &registry,
+            SubscriptionRequest {
+                venue: Some(VenueId::new("south")),
+                courts: ids(&[1]),
+                ..request()
+            },
+        );
+        assert_eq!(reply, Rejected::CourtCatalogsNotReady);
+
+        let sub = accepted(
             &registry,
             SubscriptionRequest {
                 venue: north(),
@@ -888,7 +908,7 @@ mod tests {
                 ..request()
             },
         );
-        assert_eq!(unknown_courts(reply), ids(&[1]).unwrap());
+        assert_eq!(selected_ids(&sub), [("north", 1)]);
     }
 
     #[test]

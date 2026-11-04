@@ -856,6 +856,33 @@ async fn listing_keeps_the_id_of_a_court_whose_name_is_not_known_right_now() {
 }
 
 #[tokio::test]
+async fn saved_court_ids_are_asked_to_wait_until_their_club_has_loaded() {
+    let store = Arc::new(SqliteStore::open_in_memory().await.unwrap());
+    let mut unresolved = VenueRegistry::new();
+    unresolved.register(&padel_club());
+    let registry = Arc::new(std::sync::RwLock::new(unresolved));
+    let api = serve(services_with(store, registry.clone())).await;
+
+    let response = api.subscribe(subscribe_to_court_one("alice")).await;
+    assert_eq!(response.status(), 422);
+    assert_eq!(
+        response.json::<Value>().await.unwrap(),
+        json!({"error": "court_catalogs_not_ready"})
+    );
+    assert_eq!(
+        api.subscriptions_of("alice").await["subscriptions"],
+        json!([])
+    );
+
+    registry.write().unwrap().set_catalog(
+        &club_id(),
+        CourtCatalog::new(vec![centre_court(1, "Centre Court")]),
+    );
+    let retried = api.subscribe(subscribe_to_court_one("alice")).await;
+    assert_eq!(retried.status(), 201);
+}
+
+#[tokio::test]
 async fn listing_shows_a_selection_stored_by_name_without_an_id() {
     let store = Arc::new(SqliteStore::open_in_memory().await.unwrap());
     store
