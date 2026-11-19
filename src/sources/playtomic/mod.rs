@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::{Datelike, NaiveDate};
+use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, REFERER};
 use serde::de::DeserializeOwned;
 use tracing::debug;
 use uuid::Uuid;
@@ -24,7 +25,7 @@ const BASE_URL: &str = "https://playtomic.com";
 
 // The RSC endpoint serves a different payload to non-browser clients.
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
-     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36";
 
 // Throttle the undocumented API, which publishes no rate limit.
 const INTER_DATE_DELAY: Duration = Duration::from_millis(500);
@@ -120,6 +121,7 @@ impl PlaytomicClient {
     async fn availability<T: DeserializeOwned>(
         &self,
         tenant_id: Uuid,
+        slug: &str,
         date: NaiveDate,
         sport_id: &str,
     ) -> Result<Vec<T>> {
@@ -130,8 +132,19 @@ impl PlaytomicClient {
             .append_pair("date", &date.to_string())
             // The endpoint defaults to PADEL when this is omitted.
             .append_pair("sport_id", sport_id);
+        let referer = format!("{}/clubs/{slug}", self.base_url);
         let response = self
-            .send_with_retry(|| self.http.get(url.clone()))
+            .send_with_retry(|| {
+                self.http
+                    .get(url.clone())
+                    .header(ACCEPT, "application/json, text/plain, */*")
+                    .header(ACCEPT_LANGUAGE, "de-DE,de;q=0.9,en;q=0.8")
+                    .header(REFERER, &referer)
+                    .header("sec-ch-ua-platform", "\"macOS\"")
+                    .header("sec-fetch-site", "same-origin")
+                    .header("sec-fetch-mode", "cors")
+                    .header("sec-fetch-dest", "empty")
+            })
             .await
             .with_context(|| format!("requesting availability for {date}"))?;
         let status = response.status();
@@ -370,6 +383,11 @@ mod tests {
                 .and(query_param("tenant_id", TENANT))
                 .and(query_param("date", date))
                 .and(query_param("sport_id", "PADEL"))
+                .and(header(
+                    "referer",
+                    format!("{}/clubs/casa-padel-pineapple-park", server.uri()).as_str(),
+                ))
+                .and(header("sec-fetch-mode", "cors"))
                 .respond_with(
                     ResponseTemplate::new(200).set_body_string(if date == "2026-08-05" {
                         AVAILABILITY

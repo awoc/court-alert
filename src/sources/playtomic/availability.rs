@@ -48,7 +48,7 @@ impl VenueAvailabilitySource for PlaytomicAvailabilitySource {
         starts_at: DateTime<Utc>,
         ends_at: DateTime<Utc>,
     ) -> Result<Vec<SlotObservation>> {
-        let (tenant_id, _) = super::playtomic_identity(venue)?;
+        let (tenant_id, slug) = super::playtomic_identity(venue)?;
         let sport_id = playtomic_sport_id(venue.sport);
         let dates = berlin_dates_in(starts_at, ends_at);
 
@@ -59,7 +59,7 @@ impl VenueAvailabilitySource for PlaytomicAvailabilitySource {
             }
             let resources = self
                 .client
-                .availability(tenant_id, *date, sport_id)
+                .availability(tenant_id, slug, *date, sport_id)
                 .await
                 .with_context(|| {
                     format!("fetching availability for venue {} on {date}", venue.id)
